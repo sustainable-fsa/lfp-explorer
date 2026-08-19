@@ -28,10 +28,10 @@
    export job must not rewrite the visitor's own preference.
    ========================================================================== */
 
-import { getTheme, setTheme, urlParams } from 'https://sustainable-fsa.com/style/v0.1.0/core/core.js';
-import { captureCompositeMap, composeBranded } from 'https://sustainable-fsa.com/style/v0.1.0/ui/export.js';
-import { addCountyLayers } from 'https://sustainable-fsa.com/style/v0.1.0/county/county.js';
-import { resolveToken } from 'https://sustainable-fsa.com/style/v0.1.0/map/map.js';
+import { getTheme, setTheme, urlParams } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
+import { captureCompositeMap, composeBranded } from 'https://sustainable-fsa.com/style/v0.2.0/ui/export.js';
+import { addCountyLayers } from 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
+import { resolveToken } from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
 
 import { getYearType, typeSlug } from './data.js';
 import { NO_DATA, VARIABLES, ramps } from './color.js';

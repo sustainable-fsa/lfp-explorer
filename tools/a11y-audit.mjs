@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* ============================================================================
    FSA Normal Grazing Periods · tools/a11y-audit.mjs
-   Axe over the app in BOTH themes at TWO viewports and in SIX interaction
+   Axe over the app in BOTH themes at TWO viewports and in SEVEN interaction
    states. Serious/critical violations fail the run — the kit's rule (AGENTS.md
    §6: "the axe workflow failing on serious/critical is a hard stop, not a flake
    to re-run") applies to consumers too.
@@ -27,17 +27,18 @@
 
      · ngpReady IS A GATE HERE. The kit's demo degrades to an error note when
        the boundary fetch or WebGL is missing and audits the rest of the page
-       anyway; this app IS the map, and four of the six states below cannot be
+       anyway; this app IS the map, and four of the seven states below cannot be
        reached before the data has landed. A run that never sees ngpReady is
        reported as a failure rather than as a thin pass. Note what the flag
        proves: the data loaded and the first choropleth paint ran. It is NOT
        evidence of painted tiles, and nothing in CI should read it that way.
 
-     · SIX STATES PER COMBO, not two. The kit probes the combobox because its
+     · SEVEN STATES PER COMBO, not two. The kit probes the combobox because its
        listbox does not exist until something is typed. Every floating surface
-       in this app has the same property — the card, the two <dialog>s and the
-       dropdown are all absent or [hidden] at rest, so a rest-only audit covers
-       the navbar and a WebGL rectangle. The states:
+       in this app has the same property — the card, the two <dialog>s, the
+       dropdown and (on the phone) the control drawer and its scrim are all
+       absent, [hidden] or `visibility: hidden` at rest, so a rest-only audit
+       covers the navbar and a WebGL rectangle. The states:
 
          rest           the page as it boots
          help           the help <dialog>, rendered from help.md
@@ -46,6 +47,9 @@
                         is then an info row, and while that row was
                         role="presentation" this was aria-required-children
                         (critical) in all four combos
+         drawer-open    the control drawer open: the desktop fixture as it
+                        boots, and on the phone the off-canvas overlay plus its
+                        scrim, which exist only after a tap
          card           a county selected, the detail card open over the map
          table          the data-table <dialog>, ~3,000 rows of markup
 
@@ -86,8 +90,11 @@ const SETTLE_MS = 1500;
 /** Seeded before load. `sfsa-ngp-seen-intro` suppresses the first-visit help
     auto-open, which would otherwise land on top of the "rest" state 350ms in
     and make that state a coin flip. The help modal is audited deliberately,
-    two states below. */
-const INIT_LS = { 'sfsa-ngp-seen-intro': '1' };
+    two states below. `sfsa-ngp-drawer` pins the desktop drawer open, which is
+    also the app's default — it states the assumption the `wide` states are
+    written against instead of inheriting whatever a run left behind. The phone
+    force-closes the drawer regardless of what is stored. */
+const INIT_LS = { 'sfsa-ngp-seen-intro': '1', 'sfsa-ngp-drawer': 'open' };
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -158,10 +165,11 @@ function selectCounty(page, id) {
   }, id);
 }
 
-/* ── The six states ───────────────────────────────────────────────────────
+/* ── The seven states ─────────────────────────────────────────────────────
    Each `enter` leaves the page in the state; each `exit` puts it back. They
    run in order inside one page, so the exits matter: a card left open under
-   the table dialog would make the last state a compound of two.
+   the table dialog would make the last state a compound of two, and on the
+   phone a drawer left open would put its scrim over everything after it.
 
    A state that cannot be reached is reported as `:unavailable` and the axe
    pass still runs — the probe is extra reach, not the gate. */
@@ -208,7 +216,22 @@ const STATES = [
     async exit(page) { await clearSearch(page); },
   },
   {
+    name: 'drawer-open',
+    // On `wide` this is the boot layout — the drawer is a fixture there, so the
+    // enter is a no-op and the pass re-audits it in the state list's own terms.
+    // On `narrow` it is the only pass that ever sees the off-canvas overlay and
+    // its scrim: at rest both are out of the way (`.is-closed` hides the drawer
+    // with `visibility`, the scrim is `[hidden]`), and axe cannot report on a
+    // surface that is not there. The two things to watch are the toggles' names
+    // and whether anything focusable ended up inside the scrim.
+    async enter(page) { await openDrawer(page); },
+    async exit(page) { await closeDrawerIfOverlay(page); },
+  },
+  {
     name: 'card',
+    // Reached with the drawer CLOSED on narrow: the states above all restore it,
+    // which is what makes the Escape exit below hit the sheet. See
+    // closeDrawerIfOverlay().
     async enter(page) {
       // Missoula County, MT — a county with data in every year and a polygon in
       // both vintages, so this state is the same state on every run.
@@ -242,11 +265,61 @@ const STATES = [
   },
 ];
 
-/** The search input is collapsed behind a toggle below 640px. */
+/* ── Reaching the drawer ──────────────────────────────────────────────────
+   The app's data controls — search, year, pasture type, colour-by, legend —
+   all live in the left drawer now. On `wide` that drawer is a fixture: it is
+   open at boot and the app never closes it, so a state that wants a control
+   just uses it. On `narrow` it boots closed as an off-canvas overlay behind a
+   scrim, and the navbar hamburger is the only way in.
+
+   `#btn-drawer` is the discriminator these helpers key off: the kit gives
+   `.sfsa-drawer-toggle` `display: none` above the compact breakpoint, so "the
+   hamburger is visible" IS "this viewport treats the drawer as an overlay" —
+   no viewport arithmetic duplicated from the CSS. */
+
+/** True while the drawer carries the kit's closed class. */
+const drawerClosed = (page) => page.evaluate(
+  () => document.getElementById('drawer').classList.contains('is-closed'));
+
+/** Open the drawer with whichever toggle this viewport actually shows. */
+async function openDrawer(page) {
+  if (!(await drawerClosed(page))) return;
+  const hamburger = page.locator('#btn-drawer');
+  const toggle = (await hamburger.isVisible()) ? hamburger : page.locator('#drawer-tab');
+  await toggle.click({ timeout: 3000 });
+  await page.waitForFunction(
+    () => !document.getElementById('drawer').classList.contains('is-closed'),
+    null, { timeout: 3000 });
+  // The slide is 0.2s and the scrim fades with it; axe should measure the
+  // surface where it lands, not halfway there.
+  await page.waitForTimeout(400);
+}
+
+/**
+ * Put the compact overlay back, and leave the desktop fixture alone.
+ *
+ * Every caller needs both halves of that: on `narrow` a drawer left open would
+ * carry its scrim across the map into the next state (auditing a compound of
+ * two states and calling it one), and it would also steal the `card` state's
+ * Escape — the drawer is registered above the card, so the exit there would
+ * close the drawer and time out waiting for the sheet.
+ */
+async function closeDrawerIfOverlay(page) {
+  const hamburger = page.locator('#btn-drawer');
+  if (!(await hamburger.isVisible())) return;      // wide: it is a fixture
+  if (await drawerClosed(page)) return;
+  await hamburger.click({ timeout: 3000 });
+  await page.waitForFunction(
+    () => document.getElementById('drawer').classList.contains('is-closed'),
+    null, { timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(400);
+}
+
+/** The search input is inside the drawer, so reaching it means opening it. */
 async function openSearch(page) {
   const input = page.locator('#county-search');
   if (!(await input.isVisible())) {
-    await page.locator('#btn-search-toggle').click({ timeout: 3000 });
+    await openDrawer(page);
     await input.waitFor({ state: 'visible', timeout: 3000 });
   }
 }
@@ -256,6 +329,9 @@ async function clearSearch(page) {
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => document.getElementById('county-results').hidden,
     null, { timeout: 3000 }).catch(() => {});
+  // That Escape closed the dropdown, which consumed it — the drawer under it is
+  // still open on `narrow`. Put it back, or the next state inherits an overlay.
+  await closeDrawerIfOverlay(page);
 }
 
 /* ── Run ──────────────────────────────────────────────────────────────────── */
@@ -401,6 +477,6 @@ for (const r of rows) console.log(`  ${r.label.padEnd(30)}  ${r.states}`);
 console.log(rows.every((r) => r.ready)
   ? '  ngpReady in every combo: the payload joined and the choropleth painted.'
   : '  ngpReady MISSING in at least one combo — see above. This is a failure, not '
-    + 'a degradation: four of the six states are unreachable without it.');
+    + 'a degradation: four of the seven states are unreachable without it.');
 
 process.exit(failed ? 1 : 0);

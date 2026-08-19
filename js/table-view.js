@@ -22,7 +22,7 @@
    has changed since — reopening an unchanged view reuses the markup.
    ========================================================================== */
 
-import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.1.0/core/core.js';
+import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 import { countyName, getYearType } from './data.js';
 
 /** Above this, a rebuild is worth warning the user about — measured on the

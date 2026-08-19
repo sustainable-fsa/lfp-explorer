@@ -4,15 +4,17 @@
 
 ## Using the map
 
+**The controls panel.** Everything that changes what the map shows — county search, year, pasture type, color by, and the legend — is in one panel down the left side. On a wide screen the panel is open when you arrive and the map fills whatever is left of the window; the slim tab on the panel's right edge collapses it, and the map takes the space back. On a phone, or in a short window, the panel slides in over the map instead: open it with the **menu button** (☰) at the right of the top bar, and close it with that same button, by tapping the dimmed map, or with `Esc`.
+
 **Choose what you see.** The **year** slider steps through program years 2008–2026. The **pasture type** menu selects one of the 16 forage classifications FSA reports (Native Pasture, Improved Pasture, Long Season Small Grains, and so on). **Color by** switches the variable painted on the counties: *Season Start*, *Season End*, or *Duration*.
 
-**Read the legend.** Season Start and Season End are days of the year, so they use a **cyclic month wheel**: a county's color is the position of its date around the calendar, read against the month labels on the ring. The palette wraps, so late December and early January are neighboring hues rather than opposite ends of a scale — which is what you want for dates, since a period beginning December 28 is not a world away from one beginning January 3. Winter forage types routinely start in the calendar year *before* their program year; those dates take their place on the wheel like any other. Duration is not cyclic, so it uses a plain **linear color bar**, dark to light, running 0 to 52 weeks.
+**Read the legend.** The legend is the last section of the controls panel, and it always shows the scale in use. Season Start and Season End are days of the year, so they use a **cyclic month wheel**: a county's color is the position of its date around the calendar, read against the month labels on the ring. The palette wraps, so late December and early January are neighboring hues rather than opposite ends of a scale — which is what you want for dates, since a period beginning December 28 is not a world away from one beginning January 3. Winter forage types routinely start in the calendar year *before* their program year; those dates take their place on the wheel like any other. Duration is not cyclic, so it uses a plain **linear color bar**, dark to light, running 0 to 52 weeks.
 
-**Look up a county.** Click any county, or type a name in the search box, to open its detail card. The card is not limited to the year on the slider: it charts the county's grazing-period spans for the selected pasture type across all years 2008–2026, so you can see at a glance where the period has shifted, lengthened, or gone unreported, with the underlying dates in a table below.
+**Look up a county.** Click any county, or type a name in the **search box** at the top of the controls panel, to open its detail card — docked against the right edge of the map on a wide screen, and a sheet at the bottom on a phone. The card is not limited to the year on the slider: it charts the county's grazing-period spans for the selected pasture type across all years 2008–2026, so you can see at a glance where the period has shifted, lengthened, or gone unreported, with the underlying dates in a table below.
 
 **Change the theme.** The navbar toggle switches between the light theme and a high-contrast theme that strengthens outlines and text contrast.
 
-**Share what you are looking at.** The address bar always reflects the current view — year, pasture type, color-by variable, and selected county — so copying it or bookmarking it reproduces exactly what is on your screen. The **Share** button copies that link for you.
+**Share what you are looking at.** The address bar always reflects the current view — year, pasture type, color-by variable, selected county, and whether the controls panel is collapsed — so copying it or bookmarking it reproduces exactly what is on your screen. The **Share** button copies that link for you.
 
 **Save an image.** The **PNG export** button downloads the current map as a branded image, legend and all, suitable for a slide or a report.
 
@@ -23,8 +25,8 @@
 | `Tab` / `Shift`+`Tab` | Move between controls |
 | `Arrow` keys | Adjust the focused slider or menu |
 | `Enter` / `Space` | Activate the focused control |
-| `/` | Jump to the county search box |
-| `Esc` | Close the open card, menu, or dialog |
+| `/` | Jump to the county search box, opening the controls panel first if it is closed |
+| `Esc` | Close the open dialog, search list, controls panel, or county card — one layer per press, in that order (the panel only when it is overlaying the map, on a phone or a short window) |
 
 Single-key shortcuts (`/`) can be turned off by adding `?kbd=off` to the map's URL — useful with speech input or other assistive tools that send keystrokes.
 

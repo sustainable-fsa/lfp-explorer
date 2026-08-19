@@ -7,9 +7,14 @@
    kit path rewritten — which is exactly how the smoke test exercises it.
 
    ── The payload ────────────────────────────────────────────────────────────
-   `assets/fsa-normal-grazing-period-web.json`, schema `fsa-ngp-web/1` (FROZEN):
+   `../fsa-normal-grazing-period/fsa-normal-grazing-period.json`, schema
+   `fsa-ngp-web/1` (FROZEN). This repo does not ship the payload: the archive
+   repo builds and commits it on every update, and the RELATIVE path above
+   resolves to the archive's own same-origin Pages copy in production
+   (sustainable-fsa.com/fsa-normal-grazing-period/…) and to the sibling
+   checkout in local dev, where the workspace root is what gets served.
 
-     scalars      schema, generated, license, year0 = 2008, n = 244890
+     scalars      schema, license, year0 = 2008, n = 244890
      years        [firstProgramYear, lastProgramYear] — a RANGE, not a list
      dictionaries types[16] · counties[3095] · county_names[] · state_names[]
                   (the three county arrays are index-aligned)
@@ -38,12 +43,15 @@
    into the wrong program year for most of the United States.
    ========================================================================== */
 
-import { fetchJSON } from 'https://sustainable-fsa.com/style/v0.1.0/core/core.js';
+import { fetchJSON } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
-/** Default payload location, relative to the app page. */
-export const DATA_URL = 'assets/fsa-normal-grazing-period-web.json';
+/** Default payload location, relative to the app page — the archive repo's own
+    committed copy, one directory up. Deliberately RELATIVE and not the
+    data.sustainable-fsa.com mirror: same-origin Pages gzips the ~5 MB file to
+    ~100 KB, the mirror is cross-origin and serves it uncompressed. */
+export const DATA_URL = '../fsa-normal-grazing-period/fsa-normal-grazing-period.json';
 
 /** The schema this module knows how to read. A mismatch is a hard failure. */
 export const SCHEMA = 'fsa-ngp-web/1';
@@ -87,8 +95,8 @@ function assertReady(who) {
  * resolves immediately against the already-built indexes.
  *
  * @param {string} [url]
- * @returns {Promise<{schema: string, generated: string, license: string,
- *                    n: number, years: number[], types: string[]}>}
+ * @returns {Promise<{schema: string, license: string, n: number,
+ *                    years: number[], types: string[]}>}
  *          a small metadata summary — the indexes themselves stay private.
  */
 export async function initData(url = DATA_URL) {
@@ -162,12 +170,11 @@ export async function initData(url = DATA_URL) {
   return meta();
 }
 
-/** @returns {{schema: string, generated: string, license: string, n: number,
+/** @returns {{schema: string, license: string, n: number,
  *             years: number[], types: string[]}} */
 export function meta() {
   return {
     schema: raw ? raw.schema : null,
-    generated: raw ? raw.generated : null,
     license: raw ? raw.license : null,
     n: raw ? raw.n : 0,
     years: yearList.slice(),

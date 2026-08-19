@@ -80,16 +80,21 @@ drawn.
       visible, not a 1×1 sliver.
 - [ ] Enter on it moves focus to `#main` and the next Tab lands **inside** the
       map region, not back at the top of the navbar.
-- [ ] Without the skip link, the order runs: logo link → year slider → pasture
-      type select → Start / End / Duration → county search → search toggle →
-      table → export → share → theme → help (`?`) → map. Nothing is reached
-      twice, nothing is skipped, and focus never jumps backwards.
+- [ ] Without the skip link, the order runs: logo link → table → export →
+      share → theme → help (`?`) → county search → year slider → pasture type
+      select → Start / End / Duration → the drawer's edge tab → map. (The
+      controls live in the drawer, which sits after the navbar in the DOM; on
+      a phone the ☰ button appears in the navbar and a **closed** drawer's
+      controls are out of the tab order entirely — `visibility: hidden`, not
+      just off-canvas.) Nothing is reached twice, nothing is skipped, and
+      focus never jumps backwards.
 - [ ] Tab **out** of the last navbar control reaches the footer links and then
       leaves the page. Focus is never trapped in the navbar.
 - [ ] Every one of those stops has a **visible focus ring** in both themes,
       including the range thumb and the `<select>`.
-- [ ] The legend's collapse toggle is reachable and its ring is visible where
-      the panel meets the map.
+- [ ] The drawer's edge tab is reachable and its ring is visible where the
+      drawer meets the map — in both drawer states (the closed tab hugs the
+      window edge).
 
 ### Controls
 
@@ -104,8 +109,9 @@ drawn.
 
 ### The `/` shortcut and its opt-out
 
-- [ ] `/` from anywhere on the page focuses the county search (and, below
-      640px, expands it first).
+- [ ] `/` from anywhere on the page focuses the county search — opening the
+      controls drawer first if it is closed, at any size, so the shortcut
+      never focuses an invisible field.
 - [ ] `/` typed **inside** the search field types a slash — the shortcut stands
       down inside a text input.
 - [ ] With `?kbd=off`, `/` does nothing anywhere (WCAG 2.1.4).
@@ -123,6 +129,8 @@ drawn.
       returns focus to whatever opened it (the search input, or the map).
 - [ ] Escape while the help or table dialog is open closes **only** the dialog.
       The card underneath survives.
+- [ ] On desktop, Escape never closes the drawer — it is a fixture there, not
+      a layer. (The compact overlay drawer *is* a layer; see manual pass 2.)
 
 ### Modal focus
 
@@ -141,15 +149,20 @@ Use a real device or a device-emulation mode with **touch** enabled — a 375 px
 desktop window still reports a fine pointer, and every touch-sizing rule the
 kit ships behind `@media (hover: none)` stays inert in it.
 
-- [ ] **No horizontal scroll** anywhere, at boot and with the card open.
-- [ ] Every control is at least 40 × 40 (44 × 44 for the card and modal ×).
-      The legend's collapse toggle is deliberately 36 × 36 — that is the kit's
-      own value, not a miss.
+- [ ] **No horizontal scroll** anywhere: at boot, with the card open, and with
+      the drawer overlay open.
+- [ ] **The drawer boots closed** and the navbar shows the ☰ button. Tapping ☰
+      slides the drawer over the map with a scrim behind it; the scrim dims
+      the map (and an open sheet) but never the navbar. Scrim tap, Escape, and
+      ☰ again all close it — and with the sheet open underneath, the first
+      Escape closes only the drawer, the second the sheet.
+- [ ] Every control is at least 40 × 40 (44 × 44 for the card and modal ×) —
+      measured **with the drawer open**, since that is where the year slider,
+      type select, colour-by buttons and search now live.
 - [ ] **The county card docks as a bottom sheet**: flush to the bottom edge,
       rounded on top only, no more than 45 dvh tall, with the map still the
       larger half of the screen.
-      ⚠️ **This currently fails — see Known defect NGP-1 below.**
-- [ ] The card's × can be **tapped**. (Same defect.)
+- [ ] The card's × can be **tapped**.
 - [ ] With the sheet open, the bottom-right MapLibre controls and any toast lift
       clear of it — they read `--sheet-h`, which JS stamps at the sheet's real
       height.
@@ -157,15 +170,16 @@ kit ships behind `@media (hover: none)` stays inert in it.
 - [ ] Pinch-zoom **on the map** zooms the map and does not scroll the page.
 - [ ] A vertical drag **outside** the map (navbar, footer, inside the card body)
       scrolls that surface, not the map.
-- [ ] The search input is collapsed behind the magnifier; tapping it expands the
-      field, focuses it, and tapping away collapses it again.
+- [ ] Search lives in the drawer: tapping ☰ and then the field focuses it, and
+      picking a result closes the drawer so the map (and the sheet) are what
+      the user sees next.
 - [ ] Export and Share have shed their text labels but keep their accessible
       names (VoiceOver / TalkBack announces "Export map as PNG", "Copy a link to
       this view").
 - [ ] The funder acknowledgement in the footer is visually clipped but still
       read by a screen reader.
 - [ ] On a notched device, nothing sits under the notch or the home indicator:
-      the sheet, the legend and the footer all respect `env(safe-area-inset-*)`.
+      the sheet, the drawer and the footer all respect `env(safe-area-inset-*)`.
       (`viewport-fit=cover` is set in `index.html`; without it every safe-area
       padding silently resolves to 0.)
 
@@ -253,7 +267,19 @@ Run in **both** themes, from the button and from `?export=`.
 
 ## Known defects
 
-### NGP-1 — the county card is not a bottom sheet at ≤ 640 px, and its close button cannot be tapped
+*(none currently open)*
+
+## Resolved defects
+
+### NGP-1 — the county card was not a bottom sheet at ≤ 640 px, and its close button could not be tapped
+
+**Status: resolved.** First fixed by scoping the desktop inset override to
+`@media (min-width: 641px) and (min-height: 561px)`; then made moot when the
+drawer restructure removed the app-side inset entirely — the kit's
+`.sfsa-card.dock-right` (desktop) and compact bottom-sheet rules now own the
+card's placement, and `tools/verify.mjs` asserts both geometries. Kept as a
+record of the failure mode: an app-side **ID** rule outside a media query
+silently outranks the kit's class-level responsive overrides.
 
 **Where** `css/app.css` §6, the `#county-card` rule (`top: .75rem;
 right: .75rem; max-height: min(70dvh, 640px, 100% - 1.5rem)`).

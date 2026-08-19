@@ -1,6 +1,7 @@
 /* ============================================================================
    FSA Normal Grazing Periods · js/app.js
-   The application core: state, URL, map, controls, legend, county card.
+   The application core: state, URL, map, the controls drawer, legend, county
+   card.
 
    ES module, no build step. Everything shared comes from the Sustainable FSA
    house-style kit; everything app-specific comes from ./data.js and ./color.js.
@@ -21,6 +22,9 @@
      ?type   pasture-type slug    ?theme  light | high-contrast
      ?variable start|end|duration ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
+     ?drawer closed — desktop only, and only when closed (the drawer defaults
+             open, and on compact it is an overlay that always boots closed, so
+             a compact session never emits it)
 
    ── What this file does NOT do ─────────────────────────────────────────────
    The month-wheel legend, the county card's span chart, the on-demand data
@@ -28,23 +32,30 @@
    documented seam at the bottom of this file — see `===== N-W4 FEATURES =====`.
    ========================================================================== */
 
+/* ── Kit imports ─────────────────────────────────────────────────────────────
+   Pinned at v0.2.0, like every kit reference in index.html and js/. Any bump
+   or dev-state sweep is ALL-OR-NOTHING across all of them: two different
+   core.js URLs are two module instances, and therefore two independent
+   `viewport` pub-subs — the drawer would then be listening to a different
+   viewport than the card. Recipe: README § Developing against an unreleased
+   kit. */
 import {
-  createLiveRegion, getTheme, initCollapsible, initSearchCollapse,
-  initThemeToggle, lsGet, lsSet, reducedMotion, replaceUrlState, showToast,
-  urlParams,
-} from 'https://sustainable-fsa.com/style/v0.1.0/core/core.js';
+  createLiveRegion, getTheme, initThemeToggle, lsGet, lsSet, reducedMotion,
+  replaceUrlState, showToast, urlParams, viewport,
+} from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 import {
   COMPOSITE_BOUNDS, addFitControl, addNavigation, cameraParamsIfDefault,
   createCompositeMap, installZoomFloor,
-} from 'https://sustainable-fsa.com/style/v0.1.0/map/map.js';
+} from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, loadCounties,
   searchItems, vintageForYear,
-} from 'https://sustainable-fsa.com/style/v0.1.0/county/county.js';
-import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.1.0/ui/search.js';
-import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.1.0/ui/card.js';
-import { colorbar } from 'https://sustainable-fsa.com/style/v0.1.0/ui/legend.js';
-import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.1.0/ui/help.js';
+} from 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
+import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.2.0/ui/search.js';
+import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.2.0/ui/card.js';
+import { initDrawer } from 'https://sustainable-fsa.com/style/v0.2.0/ui/drawer.js';
+import { colorbar } from 'https://sustainable-fsa.com/style/v0.2.0/ui/legend.js';
+import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.0/ui/help.js';
 
 import {
   allCountyIds, countyName, getYearType, initData, typeFromSlug, typeSlug,
@@ -72,7 +83,7 @@ const LS = Object.freeze({
   year: 'sfsa-ngp-year',
   type: 'sfsa-ngp-type',
   variable: 'sfsa-ngp-variable',
-  legend: 'sfsa-ngp-legend',
+  drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
 });
 
@@ -90,24 +101,24 @@ const $ = (sel) => document.querySelector(sel);
 
 const els = {
   main: $('#main'),
+  mapFrame: $('#map-frame'),
   map: $('#map'),
   note: $('#app-note'),
+  drawer: $('#drawer'),
+  drawerTab: $('#drawer-tab'),
+  drawerScrim: $('#drawer-scrim'),
+  btnDrawer: $('#btn-drawer'),
   year: $('#year-range'),
   yearOut: $('#year-out'),
   type: $('#type-select'),
   segs: Array.from(document.querySelectorAll('.seg-btn[data-variable]')),
-  searchWrap: $('#search-wrap'),
   search: $('#county-search'),
   results: $('#county-results'),
-  btnSearchToggle: $('#btn-search-toggle'),
   btnTable: $('#btn-table'),
   btnExport: $('#btn-export'),
   btnShare: $('#btn-share'),
   btnTheme: $('#btn-theme'),
   btnInfo: $('#btn-info'),
-  legendPanel: $('#legend-panel'),
-  legendToggle: $('#legend-toggle'),
-  legendBody: $('#legend-body'),
   legendWheel: $('#legend-wheel'),
   legendBar: $('#legend-bar'),
   legendKey: $('#legend-key'),
@@ -122,10 +133,11 @@ const els = {
 };
 
 /** Controls that mean nothing until the data has loaded. Disabled through boot
-    and re-enabled together; the theme and help buttons are deliberately not in
-    this list, because they work with or without data. */
+    and re-enabled together; the theme, help and drawer buttons are deliberately
+    not in this list, because they work with or without data — an empty drawer
+    you cannot open is worse than an empty drawer. */
 const dataControls = [
-  els.year, els.type, ...els.segs, els.search, els.btnSearchToggle,
+  els.year, els.type, ...els.segs, els.search,
   els.btnTable, els.btnExport, els.btnShare,
 ];
 
@@ -141,7 +153,8 @@ const state = {
 
 let params = urlParams();
 let kbdEnabled = true;
-let pendingTypeSlug = null;   // held until the type dictionary exists
+let pendingTypeSlug = null;     // held until the type dictionary exists
+let pendingDrawerParam = null;  // 'open' | 'closed' | null, held until initDrawer
 
 let map = null;
 let mapLoaded = null;         // resolves on the map's own 'load' event
@@ -152,7 +165,7 @@ let zoomFloor = null;
 let vintage = null;           // 'dd17' | 'dd22'
 let vintageTimer = null;
 let searchCtl = null;
-let searchCollapseCtl = null;
+let drawerCtl = null;
 let cardCtl = null;
 let bar = null;               // kit colorbar handle for #legend-bar
 let live = null;
@@ -203,9 +216,11 @@ function failNote(text, retry) {
 /**
  * Read the boot state: URL param > localStorage > default, each validated.
  *
- * The pasture type is the one value that cannot be finished here — the
- * dictionary of valid types arrives with the payload — so its slug is parked
- * in `pendingTypeSlug` and resolved in applyPendingType() once data.js is up.
+ * Two values cannot be finished here. The pasture type's dictionary of valid
+ * names arrives with the payload, so its slug is parked in `pendingTypeSlug`
+ * and resolved in applyPendingType(); the drawer's open/closed state belongs to
+ * a controller that does not exist until wireControls(), so it is parked in
+ * `pendingDrawerParam` and handed over as initDrawer's `startOpen`.
  */
 function readInitialState() {
   params = urlParams();
@@ -228,6 +243,11 @@ function readInitialState() {
   // A selection is not a preference: it comes from the URL only.
   const rawCounty = params.get('county');
   if (rawCounty != null && FSA_ID_RE.test(rawCounty)) state.countyId = rawCounty;
+
+  // Whitelisted like every other param; anything else (including the absent
+  // case) leaves the drawer to its own default — stored preference, then open.
+  const rawDrawer = String(params.get('drawer') ?? '').toLowerCase();
+  pendingDrawerParam = (rawDrawer === 'open' || rawDrawer === 'closed') ? rawDrawer : null;
 
   state.theme = getTheme();   // already validated + stamped by the anti-flash boot
 }
@@ -265,6 +285,13 @@ function pushState() {
   if (map) Object.assign(p, cameraParamsIfDefault(map, { bounds: COMPOSITE_BOUNDS, fitOpts }));
   if (state.theme !== 'light') p.theme = state.theme;
   if (!kbdEnabled) p.kbd = 'off';
+  // The drawer is part of the VIEW on desktop, where closing it genuinely
+  // changes what the map looks like and is worth carrying in a shared link.
+  // Emitted only when closed (open is the default, so a default view stays
+  // clean) and never on compact, where the drawer is a transient overlay that
+  // force-closes on every entry into compact — a `closed` there would describe
+  // the viewport, not the view.
+  if (drawerCtl && !viewport.isCompact() && !drawerCtl.isOpen()) p.drawer = 'closed';
   replaceUrlState(p);
 }
 
@@ -318,7 +345,10 @@ function announceRender(shown, missingGeometry) {
   live.announce(msg);
 }
 
-/* ── Legend ──────────────────────────────────────────────────────────────── */
+/* ── Legend ──────────────────────────────────────────────────────────────────
+   The legend is the last section of the controls drawer, not a collapsible
+   floating panel any more, so there is no collapse state to own here — only
+   which of the two bodies (wheel or bar) is showing. */
 
 /** Plain-language meaning of the active ramp. This is the redundancy channel
     that makes the map legible in grayscale, to a CVD reader, and to a screen
@@ -421,6 +451,14 @@ function selectCounty(id, { fly = false } = {}) {
   if (fly && feature) {
     const center = countyCentroid(feature);
     if (center) {
+      // The county lands CENTRED, not offset for the docked card. Offsetting
+      // the flight is the obvious polish and MapLibre's `padding` is the
+      // obvious way to do it — but transform padding is STICKY: it outlives the
+      // flight, the card's close, and every later fitBounds, so the fit control
+      // would afterwards re-frame the whole country into the left two-thirds of
+      // an empty map. Doing it properly means clearing the padding when the
+      // card closes; until that is wired, the dock simply overlaps the right
+      // third of the map around the selected county.
       const camera = { center, zoom: Math.max(map.getZoom(), 5) };
       // Reduced motion means no ANIMATION, not no navigation: the county still
       // comes into view, it just arrives without the flight. Read live, per
@@ -554,6 +592,35 @@ async function share() {
   }
 }
 
+/* ── The controls drawer ─────────────────────────────────────────────────── */
+
+/**
+ * Let the map catch up with a drawer slide. Desktop only — the caller checks.
+ *
+ * On desktop the drawer is a flex sibling of #map-frame, so opening or closing
+ * it changes the canvas width, and MapLibre only learns about a container
+ * resize when it is told. The kit slides the drawer over `--transition` (0.2s);
+ * resizing on the first frame would paint a letterboxed canvas for the rest of
+ * the animation, so the resize waits for the slide to finish. Under reduced
+ * motion there is no slide to wait for and the resize is immediate.
+ *
+ * Resizing is deliberately NOT the kit's job: initDrawer knows nothing about
+ * what is next to it, and `onToggle` is the documented seam for exactly this.
+ */
+function settleMapAfterDrawer() {
+  if (!map) return;
+  const settle = () => {
+    map.resize();
+    // The zoom floor is derived from cameraForBounds against the CURRENT
+    // container: a wider map can be zoomed out further before the composite
+    // framing breaks, so a stale floor would either clamp too early or let the
+    // user zoom past the layout.
+    if (zoomFloor) zoomFloor.refresh();
+  };
+  if (reducedMotion()) settle();
+  else setTimeout(settle, 240);
+}
+
 /** `/` focuses the county search. A single-character shortcut, so it needs an
     opt-out (WCAG 2.1.4): ?kbd=off disables it entirely, and the param rides
     every URL rewrite so it survives a session. */
@@ -563,11 +630,45 @@ function onDocumentKeyDown(e) {
   const t = e.target;
   if (t && t.closest && t.closest('input, select, textarea, [contenteditable]')) return;
   e.preventDefault();
-  if (searchCollapseCtl && searchCollapseCtl.isCollapsed()) searchCollapseCtl.open();
-  else els.search.focus();
+  // The search box lives in the drawer now, and a closed drawer is
+  // `visibility: hidden` — its input is out of the tab order and cannot take
+  // focus at all. So open first, without letting initDrawer move focus, then
+  // put the caret where the user asked for it.
+  if (drawerCtl && !drawerCtl.isOpen()) drawerCtl.open({ focus: false });
+  els.search.focus();
 }
 
 function wireControls() {
+  // FIRST, and deliberately: initDrawer registers a document-level `keydown`
+  // handler, and the Escape ladder is REGISTRATION-ORDER based. One Escape must
+  // dismiss one layer, outermost first — modal dialog, then the search
+  // dropdown, then (on compact) the drawer overlay, then the card/sheet. The
+  // drawer therefore has to register before initDetailCard, which happens in
+  // loadAndRender(). Move this call below that one and a single Escape on a
+  // phone closes both the sheet and the drawer. (ui/card.js's own header states
+  // the other half of the contract: anything listening for Escape under a card
+  // must stand down on `event.defaultPrevented`.)
+  drawerCtl = initDrawer({
+    drawer: els.drawer,
+    tab: els.drawerTab,
+    toggle: els.btnDrawer,
+    scrim: els.drawerScrim,
+    // Desktop-only persistence; the kit never stores a compact state.
+    storageKey: LS.drawer,
+    // undefined = "no URL opinion, use the stored preference or the default".
+    startOpen: pendingDrawerParam == null ? undefined : pendingDrawerParam === 'open',
+    onToggle: (open, { compact }) => {
+      // Compact is an overlay: the map never changes size, so there is nothing
+      // to resize and nothing to put in the URL.
+      if (!compact) settleMapAfterDrawer();
+      // `booted` is the boot-complete marker: readInitialState() has run, the
+      // camera is framed and the card is wired, so the URL can be rewritten
+      // from live state. Before that, initDrawer applying its initial state
+      // would push a query string built from a half-read view.
+      if (booted) pushState();
+    },
+  });
+
   // The slider fires `input` on every pixel of a drag; throttle to one repaint
   // per frame. The <output> updates immediately either way, so the number
   // under the thumb never lags the thumb.
@@ -598,18 +699,6 @@ function wireControls() {
       if (handle) handle.applyThemePaints();
       syncLegend();          // the no-data chip is a token too
       pushState();
-    },
-  });
-
-  initCollapsible({
-    toggle: els.legendToggle,
-    body: els.legendBody,
-    storageKey: LS.legend,
-    autoCollapseOnCompact: true,
-    // The kit maintains aria-expanded; the LABEL has to invert with the action
-    // or a collapsed panel still offers to "collapse legend" (§5.7).
-    onChange: (collapsed) => {
-      els.legendToggle.setAttribute('aria-label', collapsed ? 'Expand legend' : 'Collapse legend');
     },
   });
 
@@ -648,9 +737,11 @@ async function boot() {
   map = created.map;
   fitOpts = created.fitOpts;
 
-  // Zoom + fit go TOP-LEFT so both right-hand corners stay free for the app's
-  // own surfaces (card top-right, legend bottom-right). The fit control fuses
-  // into the navigation group in whichever corner it is told.
+  // Zoom + fit go TOP-LEFT, which is the corner nothing else claims: the county
+  // card docks against the whole RIGHT edge of #map-frame on desktop and
+  // becomes a bottom sheet on compact, and the attribution owns bottom-right
+  // (css/app.css §5 pads it clear of the dock). The fit control fuses into the
+  // navigation group in whichever corner it is told.
   addNavigation(map, { position: 'top-left' });
   addFitControl(map, {
     bounds: COMPOSITE_BOUNDS,
@@ -758,19 +849,23 @@ async function loadAndRender() {
     },
     onSelect: (item) => {
       els.search.value = item.label;
-      if (searchCollapseCtl) searchCollapseCtl.close({ restoreFocus: false });
+      // On compact the drawer is an overlay ON TOP of the map: picking a result
+      // means the user is done with it and wants to see the county. Focus is
+      // NOT restored to the opener — selectCounty() opens the card immediately
+      // after, and the card is where the answer is.
+      if (viewport.isCompact() && drawerCtl && drawerCtl.isOpen()) {
+        drawerCtl.close({ restoreFocus: false });
+      }
       selectCounty(item.id, { fly: true });
     },
     announce: live.announce,
   });
 
-  searchCollapseCtl = initSearchCollapse({
-    wrap: els.searchWrap,
-    toggle: els.btnSearchToggle,
-    input: els.search,
-    onClose: () => { if (searchCtl) searchCtl.close(); },
-  });
-
+  // NOTE ON ESCAPE ORDER: initDetailCard registers a document keydown handler
+  // and the ladder is registration-order based, so initDrawer (in
+  // wireControls(), which boot() calls before this function) must already have
+  // registered. One Escape then closes one layer: dropdown, then the compact
+  // drawer overlay, then this card.
   cardCtl = initDetailCard({
     card: els.card,
     closeBtn: els.cardClose,

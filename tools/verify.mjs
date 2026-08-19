@@ -15,7 +15,7 @@
    ── Adapted from sustainable-fsa/style tools/consumer-verify.mjs ───────────
    That file is a SKELETON with an empty `appAsserts` array and a standing note
    that a run with it empty "proves nothing about what your app is FOR". This
-   is that array, filled: ~107 assertions across sixteen sections, each one
+   is that array, filled: ~150 assertions across eighteen sections, each one
    about something this county choropleth is actually for.
 
    Deltas from the skeleton, and why:
@@ -76,8 +76,15 @@ const CONFIG = {
 
   /** Seeded before load. The first-visit help auto-open fires 350ms after the
       help fetch resolves and would land on top of whichever step is running
-      then; it is exercised deliberately in its own assertion instead. */
-  initLocalStorage: { 'sfsa-ngp-seen-intro': '1' },
+      then; it is exercised deliberately in its own assertion instead.
+
+      `sfsa-ngp-drawer` pins the desktop control drawer OPEN, which is also the
+      app's default — the seed states the assumption rather than changing it, so
+      every section below starts from one known layout instead of from whatever
+      a previous session happened to leave behind. It is deliberately seeded for
+      the COMPACT run too: the phone force-closes the drawer regardless of what
+      is stored, and §6 asserts exactly that. */
+  initLocalStorage: { 'sfsa-ngp-seen-intro': '1', 'sfsa-ngp-drawer': 'open' },
 
   /** RENDER EVIDENCE. A FUNCTION, never a string: a string predicate is
       eval'd in-page and the meta CSP has no 'unsafe-eval'. */
@@ -306,6 +313,72 @@ const settleFrames = (page) => page.evaluate(() => new Promise((r) => {
   requestAnimationFrame(() => requestAnimationFrame(r));
 }));
 
+/** A drawer slide is 0.2s of CSS transition and THEN the app's post-transition
+    `map.resize()` (240ms, so the resize lands on the final geometry rather than
+    mid-slide). Both have to be over before a width is worth reading; 600ms
+    clears them with room for a slow runner. */
+const settleDrawer = async (page) => {
+  await page.waitForTimeout(600);
+  await settleFrames(page);
+};
+
+/**
+ * Everything about the drawer, the map frame and the two toggles in one round
+ * trip. The three widths are the point: `drawerW` says the drawer moved,
+ * `frameW` says the layout followed, and `canvasW` says MapLibre was told —
+ * a canvas that lags the frame is the letterboxing bug this exists to catch.
+ *
+ * Visibility, not client rects, is what a closed drawer offers: `.is-closed`
+ * slides it out with `margin-left` and hides it with `visibility: hidden`, and
+ * a `visibility: hidden` box still reports rects. The edge tab and the navbar
+ * hamburger ARE display-toggled, so those two read as rects.
+ */
+const drawerGeom = (page) => page.evaluate(() => {
+  const drawer = document.getElementById('drawer');
+  const frame = document.getElementById('map-frame');
+  const tab = document.getElementById('drawer-tab');
+  const toggle = document.getElementById('btn-drawer');
+  const scrim = document.getElementById('drawer-scrim');
+  const search = document.getElementById('county-search');
+  const nav = document.querySelector('header.sfsa-navbar');
+  const cs = getComputedStyle(drawer);
+  const shown = (el) => !!(el && el.getClientRects().length > 0);
+  return {
+    closed: drawer.classList.contains('is-closed'),
+    drawerW: Math.round(drawer.getBoundingClientRect().width),
+    position: cs.position,
+    visibility: cs.visibility,
+    zIndex: cs.zIndex,
+    transform: cs.transform,
+    frameW: frame.clientWidth,
+    frameH: frame.clientHeight,
+    canvasW: (() => {
+      const c = document.querySelector('#map .maplibregl-canvas');
+      return c ? Math.round(c.getBoundingClientRect().width) : null;
+    })(),
+    winW: document.documentElement.clientWidth,
+    tabShown: shown(tab),
+    tabExpanded: tab ? tab.getAttribute('aria-expanded') : null,
+    toggleShown: shown(toggle),
+    toggleExpanded: toggle ? toggle.getAttribute('aria-expanded') : null,
+    scrimShown: shown(scrim) && !scrim.hidden,
+    scrimZ: scrim ? getComputedStyle(scrim).zIndex : null,
+    scrimTop: scrim ? Math.round(scrim.getBoundingClientRect().top) : null,
+    navBottom: nav ? Math.round(nav.getBoundingClientRect().bottom) : null,
+    searchInDrawer: !!(search && drawer.contains(search)),
+    searchVisible: !!(search && search.getClientRects().length > 0
+      && getComputedStyle(search).visibility !== 'hidden'),
+    stored: (() => {
+      try { return localStorage.getItem('sfsa-ngp-drawer'); }
+      catch (e) { return 'unavailable'; }
+    })(),
+  };
+});
+
+/** translateX(0) computes to either `none` or the identity matrix, depending on
+    whether anything else on the element also produced a transform. */
+const noTranslate = (t) => t === 'none' || /^matrix\(1,\s*0,\s*0,\s*1,\s*0,\s*0\)$/.test(t);
+
 /* ══════════════════════════════════════════════════════════════════════════
    1. THE MAIN RUN — light theme, 1440×900, one page, in order.
    ══════════════════════════════════════════════════════════════════════════ */
@@ -532,7 +605,11 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   {
     const pt = await page.evaluate(async (id) => {
       const app = await import(new URL('js/app.js', document.baseURI).href);
-      const county = await import('https://sustainable-fsa.com/style/v0.1.0/county/county.js');
+      // Kit import in the SAME form the app uses, so the harness never mixes
+      // two kit builds in one page. Swept together with index.html and js/ on
+      // any version bump or dev-state sweep (README § Developing against an
+      // unreleased kit).
+      const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
       const c = app.ngpContext();
       const feature = c.getCounties().index.get(id);
       if (!feature) return null;
@@ -546,6 +623,10 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
     if (!pt) {
       skip('county click opens the card', `no polygon for ${CONFIG.county.id}`);
     } else {
+      // Read before the click: the desktop card is a DOCK, and a dock that
+      // stole width from the map would be a flex column, not an overlay.
+      const frameBefore = await page.evaluate(
+        () => document.getElementById('map-frame').clientWidth);
       await page.mouse.click(pt.x, pt.y);
       const opened = await page.waitForFunction(
         () => !document.getElementById('county-card').hidden, null, { timeout: 8000 })
@@ -574,6 +655,53 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
       check('the county is mirrored into the URL as a 5-CHARACTER STRING',
         new URL(page.url()).searchParams.get('county') === CONFIG.county.id,
         page.url());
+
+      /* ── The desktop dock geometry ──────────────────────────────────────
+         On a desktop the card is not a floating panel: the kit's
+         `.sfsa-card.dock-right` pins it to the right edge of #map-frame, runs
+         it the frame's full height, and slides it in over the map. The map
+         frame's own width must not move — the dock is an overlay, so MapLibre
+         is never relaid out and no `map.resize()` is owed. */
+      await page.waitForTimeout(400);
+      const dock = await page.evaluate(() => {
+        const card = document.getElementById('county-card');
+        const frame = document.getElementById('map-frame');
+        const cr = card.getBoundingClientRect();
+        const fr = frame.getBoundingClientRect();
+        return {
+          card: {
+            top: Math.round(cr.top), right: Math.round(cr.right),
+            width: Math.round(cr.width), height: Math.round(cr.height),
+          },
+          frame: {
+            top: Math.round(fr.top), right: Math.round(fr.right),
+            width: frame.clientWidth, height: Math.round(fr.height),
+          },
+          winRight: document.documentElement.clientWidth,
+          // The kit's dock width, evaluated here rather than hardcoded at 360:
+          // 34vw wins on a narrow desktop and 360 on a wide one.
+          expectWidth: Math.round(Math.min(360, 0.34 * window.innerWidth)),
+        };
+      });
+      check('the card DOCKS to the right edge of the map frame, which is the '
+        + 'right edge of the window',
+      Math.abs(dock.card.right - dock.frame.right) <= 2
+        && Math.abs(dock.card.right - dock.winRight) <= 2,
+      `card right ${dock.card.right}, frame right ${dock.frame.right}, `
+        + `window right ${dock.winRight}`);
+      check('the dock runs the FULL height of the map frame (top and height both '
+        + 'match, so there is no floating inset and no max-height clamp)',
+      Math.abs(dock.card.top - dock.frame.top) <= 2
+        && Math.abs(dock.card.height - dock.frame.height) <= 2,
+      `card y ${dock.card.top} h ${dock.card.height} vs frame y ${dock.frame.top} `
+        + `h ${dock.frame.height}`);
+      check(`the dock is min(360px, 34vw) wide (${dock.expectWidth}px here)`,
+        Math.abs(dock.card.width - dock.expectWidth) <= 2,
+        `card is ${dock.card.width}px wide`);
+      check('opening the dock does NOT resize the map frame (it overlays the '
+        + 'map instead of taking a column from it)',
+      dock.frame.width === frameBefore,
+      `#map-frame was ${frameBefore}px, is now ${dock.frame.width}px`);
       clean('county click');
       await shot('06-card-open');
     }
@@ -582,8 +710,16 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   /* ── 1f. Escape precedence: dropdown above card ─────────────────────────
      The kit documents one Escape key shared by the two layers (ui/card.js §):
      the combobox takes it first and stops propagation; the card only sees an
-     Escape nothing else handled. One press must never close both. */
-  section('▸ Escape layering — dropdown above card, dialogs untouched');
+     Escape nothing else handled. One press must never close both.
+
+     The control drawer is registered ahead of both (initDrawer before
+     initDetailCard, js/app.js wireControls) but it is an Escape LAYER ONLY ON
+     COMPACT: on a desktop it is the fixture the app's controls live in, and an
+     Escape that swallowed it would take the year slider, the pasture-type
+     select and the legend with it. The third press below is the proof. The
+     compact half of the same contract — drawer above sheet, one press each —
+     is in §6. */
+  section('▸ Escape layering — dropdown above card, desktop drawer untouchable');
   {
     await page.locator('#county-search').fill('Miss');
     await page.waitForSelector('#county-results [role="option"]:not([aria-disabled="true"])',
@@ -612,16 +748,30 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
       card: !document.getElementById('county-card').hidden,
       info: document.getElementById('info-modal').open,
       table: document.getElementById('table-modal').open,
-      legendExpanded: document.getElementById('legend-toggle').getAttribute('aria-expanded'),
-      legendBodyHidden: document.getElementById('legend-body').hidden,
     }));
     check('the SECOND Escape closes the card', !afterSecond.card);
-    check('Escape did not disturb the other layers (both dialogs still shut, '
-      + 'legend still expanded)',
-      !afterSecond.info && !afterSecond.table && afterSecond.legendExpanded === 'true'
-        && !afterSecond.legendBodyHidden, JSON.stringify(afterSecond));
+    check('Escape did not disturb the other layers (both dialogs still shut)',
+      !afterSecond.info && !afterSecond.table, JSON.stringify(afterSecond));
     check('closing the card drops ?county from the URL',
       !new URL(page.url()).searchParams.has('county'), page.url());
+
+    /* A THIRD press, with every real layer now closed. The only thing left on
+       screen that answers to Escape anywhere is the drawer, and on a desktop it
+       must not: nothing is open, so nothing may close. */
+    const beforeDrawerEsc = await drawerGeom(page);
+    check('setup: the desktop drawer is open and every Escape layer is now shut',
+      !beforeDrawerEsc.closed && !afterSecond.card && !afterSecond.info
+        && !afterSecond.table, JSON.stringify(beforeDrawerEsc));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    const afterDrawerEsc = await drawerGeom(page);
+    check('Escape does NOT close the desktop drawer — it is a fixture, not a '
+      + 'layer, and it keeps saying so through aria-expanded',
+    !afterDrawerEsc.closed && afterDrawerEsc.tabExpanded === 'true'
+      && afterDrawerEsc.searchVisible,
+    JSON.stringify(afterDrawerEsc));
+    check('the drawer-less Escape did not put a stray param in the URL',
+      !new URL(page.url()).searchParams.has('drawer'), page.url());
     clean('escape layering');
     await shot('07-escape');
   }
@@ -1015,7 +1165,114 @@ section('▸ High-contrast theme');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   5. COMPACT 375×720 — the phone.
+   5. DRAWER FIXTURE — the desktop control column.
+   On a desktop the drawer is not a menu: it is a flex column that OWNS its
+   272px and gives them back when it closes. Three things have to be true
+   together or the feature is broken in a way a screenshot will not show — the
+   layout moves, MapLibre is told (or the map letterboxes inside a canvas that
+   is the wrong size), and the collapsed state survives a share link and a
+   return visit.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Drawer fixture — desktop column, map resize, URL and persistence');
+{
+  const s = await open();
+  const { page } = s;
+  check('the drawer page reaches ngpReady', s.ready);
+
+  const booted = await drawerGeom(page);
+  check('the drawer is OPEN at boot (the documented desktop default)',
+    !booted.closed && booted.visibility === 'visible'
+      && booted.tabExpanded === 'true', JSON.stringify(booted));
+  check('the county search lives INSIDE the drawer and is visible there — no '
+    + 'toggle stands between a desktop visitor and the search box',
+  booted.searchInDrawer && booted.searchVisible,
+  `inDrawer=${booted.searchInDrawer}, visible=${booted.searchVisible}`);
+  check('the edge tab is the desktop control; the navbar hamburger stays out of '
+    + 'the way until the viewport is compact',
+  booted.tabShown && !booted.toggleShown,
+  `#drawer-tab shown=${booted.tabShown}, #btn-drawer shown=${booted.toggleShown}`);
+  check('the open drawer is a COLUMN, not an overlay: it and the map frame tile '
+    + 'the window between them',
+  Math.abs(booted.drawerW + booted.frameW - booted.winW) <= 2,
+  `drawer ${booted.drawerW} + frame ${booted.frameW} vs window ${booted.winW}`);
+  check('the map canvas is the size of its frame at boot',
+    booted.canvasW !== null && Math.abs(booted.canvasW - booted.frameW) <= 2,
+    `canvas ${booted.canvasW} vs frame ${booted.frameW}`);
+  check('an open drawer is the default, so it emits NO query param',
+    !new URL(page.url()).searchParams.has('drawer'), page.url());
+  await s.shot('15-drawer-open');
+
+  /* ── Collapse: the map has to grow, and GL has to hear about it ─────────── */
+  await page.locator('#drawer-tab').click();
+  await settleDrawer(page);
+  const closed = await drawerGeom(page);
+  check('the edge tab collapses the drawer (.is-closed, and the aria state '
+    + 'follows)', closed.closed && closed.tabExpanded === 'false',
+  JSON.stringify({ closed: closed.closed, expanded: closed.tabExpanded }));
+  check('a closed drawer is out of the tab order and the a11y tree '
+    + '(visibility: hidden, which the kit uses instead of JS)',
+  closed.visibility === 'hidden' && !closed.searchVisible,
+  `visibility ${closed.visibility}, search visible ${closed.searchVisible}`);
+  check(`the map frame took the drawer's 272px `
+    + `(${booted.frameW} → ${closed.frameW})`,
+  Math.abs((closed.frameW - booted.frameW) - 272) <= 20,
+  `grew by ${closed.frameW - booted.frameW}px, expected ~272`);
+  check('MapLibre was TOLD: the canvas matches the widened frame rather than '
+    + 'letterboxing at its old size',
+  closed.canvasW !== null && Math.abs(closed.canvasW - closed.frameW) <= 2,
+  `canvas ${closed.canvasW} vs frame ${closed.frameW} `
+    + `(was ${booted.canvasW} at ${booted.frameW})`);
+  check('a closed drawer is a shareable state: the URL gains drawer=closed',
+    new URL(page.url()).searchParams.get('drawer') === 'closed', page.url());
+  check('and it is remembered for the next visit (sfsa-ngp-drawer = closed)',
+    closed.stored === 'closed', 'stored ' + JSON.stringify(closed.stored));
+  await s.shot('15b-drawer-closed');
+
+  /* ── Reopen: back to the default, and back to a clean URL ───────────────── */
+  await page.locator('#drawer-tab').click();
+  await settleDrawer(page);
+  const reopened = await drawerGeom(page);
+  check('the tab reopens the drawer and the map frame gives the column back',
+    !reopened.closed && reopened.tabExpanded === 'true'
+      && Math.abs(reopened.frameW - booted.frameW) <= 2,
+    `frame ${reopened.frameW} vs ${booted.frameW} at boot`);
+  check('the canvas followed back in', reopened.canvasW !== null
+    && Math.abs(reopened.canvasW - reopened.frameW) <= 2,
+  `canvas ${reopened.canvasW} vs frame ${reopened.frameW}`);
+  check('reopening restores the CLEAN url — a param at its default is dropped, '
+    + 'not rewritten to drawer=open',
+  !new URL(page.url()).searchParams.has('drawer'), page.url());
+  check('and the preference round-trips (sfsa-ngp-drawer = open)',
+    reopened.stored === 'open', 'stored ' + JSON.stringify(reopened.stored));
+  s.clean('drawer collapse and reopen');
+  await s.ctx.close();
+}
+
+/* ?drawer=closed on a cold boot. The seeded preference says `open`, so this is
+   also the precedence test: a link beats a stored preference, or a shared
+   collapsed view would silently reopen for anyone who had ever used the app. */
+section('▸ Drawer fixture — ?drawer=closed boots collapsed');
+{
+  const s = await open({ query: '?drawer=closed' });
+  const g = await drawerGeom(s.page);
+  check('the deep-linked page reaches ngpReady', s.ready);
+  check('?drawer=closed boots the drawer collapsed, over a stored "open"',
+    g.closed && g.tabExpanded === 'false' && g.visibility === 'hidden',
+    JSON.stringify(g));
+  check('the map frame boots at the full window width, with a canvas to match',
+    Math.abs(g.frameW - g.winW) <= 2 && Math.abs(g.canvasW - g.frameW) <= 2,
+    `frame ${g.frameW}, canvas ${g.canvasW}, window ${g.winW}`);
+  check('the param survives the boot it described (a closed desktop drawer is '
+    + 'still a closed desktop drawer after the app has rewritten the URL)',
+  new URL(s.page.url()).searchParams.get('drawer') === 'closed', s.page.url());
+  s.clean('drawer deep link');
+  await s.shot('15c-drawer-deeplinked-closed');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   6. COMPACT 375×720 — the phone.
    ══════════════════════════════════════════════════════════════════════════ */
 
 section('▸ Compact 375×720 (touch)');
@@ -1031,9 +1288,94 @@ section('▸ Compact 375×720 (touch)');
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
     await page.evaluate(() => `scrollWidth ${document.documentElement.scrollWidth} > `
       + `innerWidth ${window.innerWidth}`));
-  check('the search input is collapsed behind its toggle at 375px',
-    !(await page.locator('#county-search').isVisible()));
-  await s.shot('15-compact-boot');
+
+  /* ── The drawer on a phone: an overlay, not a column ─────────────────────
+     Everything the desktop drawer is, this one is not. It boots closed no
+     matter what `sfsa-ngp-drawer` says (the harness seeds `open`, so this is
+     the force-close path, not a default), the navbar hamburger replaces the
+     edge tab, opening it lays the drawer OVER the map behind a scrim instead
+     of taking a column, and it is a real Escape layer. */
+  const compactBoot = await drawerGeom(page);
+  check('the drawer boots CLOSED at 375px even though the stored preference '
+    + `says open (seeded ${JSON.stringify(compactBoot.stored)})`,
+  compactBoot.closed && compactBoot.toggleExpanded === 'false',
+  JSON.stringify({ closed: compactBoot.closed,
+    expanded: compactBoot.toggleExpanded, stored: compactBoot.stored }));
+  check('nothing is dimmed while the drawer is closed (the scrim is [hidden])',
+    !compactBoot.scrimShown);
+  check('the navbar hamburger is the phone\'s control and the desktop edge tab '
+    + 'is gone from the layout entirely',
+  compactBoot.toggleShown && !compactBoot.tabShown,
+  `#btn-drawer shown=${compactBoot.toggleShown}, `
+    + `#drawer-tab shown=${compactBoot.tabShown}`);
+  check('the closed drawer takes the search box with it — a phone visitor '
+    + 'reaches it through the hamburger, not around it',
+  !compactBoot.searchVisible && compactBoot.searchInDrawer);
+  check('a closed drawer never emits a param on a phone (there is nothing to '
+    + 'share: the phone always boots closed)',
+  !new URL(page.url()).searchParams.has('drawer'), page.url());
+  await s.shot('16-compact-boot');
+
+  await page.locator('#btn-drawer').tap();
+  await settleDrawer(page);
+  const overlay = await drawerGeom(page);
+  check('the hamburger opens the drawer (.is-closed dropped, aria-expanded '
+    + 'true on the button that did it)',
+  !overlay.closed && overlay.toggleExpanded === 'true',
+  JSON.stringify({ closed: overlay.closed, expanded: overlay.toggleExpanded }));
+  check('the open drawer sits OVER the map at the drawer z-tier, fully slid in '
+    + '(no leftover translate)',
+  overlay.position === 'absolute' && overlay.zIndex === '70'
+    && noTranslate(overlay.transform),
+  `position ${overlay.position}, z-index ${overlay.zIndex}, `
+    + `transform ${overlay.transform}`);
+  check('the map frame did NOT shrink for it — an overlay costs the map no '
+    + 'width, so there is no resize to owe',
+  Math.abs(overlay.frameW - compactBoot.frameW) <= 1
+    && Math.abs(overlay.frameW - overlay.winW) <= 2,
+  `frame ${compactBoot.frameW} → ${overlay.frameW} of a ${overlay.winW}px window`);
+  check('the scrim is showing, one tier below the drawer',
+    overlay.scrimShown && overlay.scrimZ === '65',
+    `shown=${overlay.scrimShown}, z-index ${overlay.scrimZ}`);
+  check('the scrim dims the MAP, not the navbar (it starts at the bottom edge '
+    + 'of the header)',
+  overlay.scrimTop !== null && overlay.navBottom !== null
+    && overlay.scrimTop >= overlay.navBottom - 1,
+  `scrim top ${overlay.scrimTop}, navbar bottom ${overlay.navBottom}`);
+  check('the search box is reachable once the drawer is open',
+    overlay.searchVisible);
+  check('the open overlay does not make the page scroll sideways at 375px',
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1),
+    await page.evaluate(() => `scrollWidth ${document.documentElement.scrollWidth} > `
+      + `innerWidth ${window.innerWidth}`));
+  await s.shot('16b-compact-drawer');
+
+  /* Tap the scrim where the drawer is NOT — it covers the whole map area and
+     the drawer covers its left 300px, so the centre of the scrim is under the
+     drawer and a centre tap would be an actionability failure, not a test. */
+  const scrimPt = await page.evaluate(() => {
+    const r = document.getElementById('drawer-scrim').getBoundingClientRect();
+    return { x: Math.round(r.right - 20), y: Math.round(r.top + r.height / 2) };
+  });
+  await page.touchscreen.tap(scrimPt.x, scrimPt.y);
+  await settleDrawer(page);
+  const afterScrim = await drawerGeom(page);
+  check('tapping the scrim closes the drawer and takes the scrim with it',
+    afterScrim.closed && !afterScrim.scrimShown
+      && afterScrim.toggleExpanded === 'false', JSON.stringify(afterScrim));
+
+  await page.locator('#btn-drawer').tap();
+  await settleDrawer(page);
+  check('setup: the hamburger reopened the drawer',
+    !(await drawerGeom(page)).closed);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  const afterEsc = await drawerGeom(page);
+  check('Escape closes the drawer on a phone — here it IS a layer, because it '
+    + 'is covering the map rather than flanking it',
+  afterEsc.closed && !afterEsc.scrimShown && afterEsc.toggleExpanded === 'false',
+  JSON.stringify(afterEsc));
 
   // Open a county: at this width the kit's theme docks .sfsa-card as a bottom
   // sheet (theme §6 COMPACT). Everything below is about whether it actually
@@ -1046,7 +1388,7 @@ section('▸ Compact 375×720 (touch)');
   await page.waitForFunction(() => !document.getElementById('county-card').hidden,
     null, { timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(800);
-  await s.shot('16-compact-card');
+  await s.shot('17-compact-card');
 
   const sheet = await page.evaluate(() => {
     const card = document.getElementById('county-card');
@@ -1080,14 +1422,35 @@ section('▸ Compact 375×720 (touch)');
     sheet.btnBox.w >= 44 && sheet.btnBox.h >= 44,
     `${sheet.btnBox.w}×${sheet.btnBox.h}px`);
 
-  /* Every other interactive control on the phone, measured against the size
-     the KIT's own @media (hover: none) block promises for it — not against a
-     flat 40, which would fail `.sfsa-panel-toggle` for being exactly the
-     36×36 the kit deliberately sets it to two lines below the 44px dismiss
-     rule. A design-system decision is not this app's defect; the measurement
-     is printed either way so a reader can disagree with the kit in the open.
-     (36×36 still clears WCAG 2.5.8 Target Size (Minimum), 24×24 at AA; the
-     40/44 numbers here are the house's 2.5.5-AAA convention.) */
+  /* ── Both surfaces at once ──────────────────────────────────────────────
+     Open the drawer OVER the open sheet. This is the phone's most crowded
+     state, and it is the only one in which every control the contract below
+     names is actually on screen: the year slider, the pasture-type select, the
+     colour-by buttons and the search box all live in the drawer now, so
+     measuring them with the drawer shut would measure boxes no thumb can
+     reach. It is also the setup for the layer-order test that follows. */
+  await page.locator('#btn-drawer').tap();
+  await settleDrawer(page);
+  const stacked = await page.evaluate(() => ({
+    drawerOpen: !document.getElementById('drawer').classList.contains('is-closed'),
+    sheetOpen: !document.getElementById('county-card').hidden,
+  }));
+  check('setup: the drawer is open over an open county sheet',
+    stacked.drawerOpen && stacked.sheetOpen, JSON.stringify(stacked));
+  await s.shot('17b-compact-drawer-over-sheet');
+
+  /* Every interactive control on the phone, measured against the size the KIT's
+     own @media (hover: none) block promises for it rather than against a flat
+     number — a design-system decision is not this app's defect, and the
+     measurement is printed either way so a reader can disagree with the kit in
+     the open. (The 40/44 numbers are the house's WCAG 2.5.5-AAA convention;
+     2.5.8 Target Size (Minimum) at AA asks 24×24.)
+
+     `.sfsa-drawer-tab` is deliberately absent from the list: the kit sets it
+     `display: none` below the compact breakpoint, so it has no client rects
+     here and would self-skip to a vacuous pass. Its 24px `@media (hover: none)`
+     width is a desktop-with-a-touchscreen concern, and the phone's stand-in —
+     `#btn-drawer` — is measured as a `.nav-btn` below. */
   const targets = await page.evaluate(() => {
     const contract = [
       ['.nav-btn, .seg-btn', 40],
@@ -1095,7 +1458,6 @@ section('▸ Compact 375×720 (touch)');
       ['.card-close, .modal-close', 44],
       ['.sfsa-combobox input[type="search"]', 40],
       ['#year-range', 40],
-      ['.sfsa-panel-toggle', 36],
     ];
     const out = [];
     for (const [sel, min] of contract) {
@@ -1114,9 +1476,31 @@ section('▸ Compact 375×720 (touch)');
   console.log('    touch targets: '
     + targets.map((m) => `${m.id} ${m.w}×${m.h}`).join(', '));
   check('every visible control meets the touch size the kit promises it '
-    + '(40px controls, 44px dismiss, 36px panel toggle)',
+    + '(40px controls, 44px dismiss)',
   undersized.length === 0,
   undersized.map((m) => `${m.id} ${m.w}×${m.h} < ${m.min}`).join(', '));
+
+  /* ── One Escape, one layer — the compact stack ───────────────────────────
+     The drawer registers its keydown handler before initDetailCard (js/app.js
+     wireControls, and the kit's ui/drawer.js documents the ordering), so with
+     both surfaces open the drawer is on top and takes the first press. A single
+     Escape that closed both would leave a phone visitor no way to keep the
+     county they had just opened. */
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  const firstEsc = await page.evaluate(() => ({
+    drawerClosed: document.getElementById('drawer').classList.contains('is-closed'),
+    scrimShown: (() => { const sc = document.getElementById('drawer-scrim');
+      return !!(sc && !sc.hidden && sc.getClientRects().length > 0); })(),
+    sheetOpen: !document.getElementById('county-card').hidden,
+  }));
+  check('the FIRST Escape closes ONLY the drawer and leaves the county sheet up',
+    firstEsc.drawerClosed && !firstEsc.scrimShown && firstEsc.sheetOpen,
+    JSON.stringify(firstEsc));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  check('the SECOND Escape closes the sheet',
+    await page.evaluate(() => document.getElementById('county-card').hidden));
 
   s.clean('compact');
   await s.ctx.close();
