@@ -12,6 +12,8 @@
 
 **Look up a county.** Click any county, or type a name in the **search box** at the top of the controls panel, to open its detail card — docked against the right edge of the map on a wide screen, and a sheet at the bottom on a phone. The card is not limited to the year on the slider: it charts the county's grazing-period spans for the selected pasture type across all years 2008–2026, so you can see at a glance where the period has shifted, lengthened, or gone unreported, with the underlying dates in a table below.
 
+**The projection.** The map is drawn in CONUS Albers Equal Area (EPSG:5070), with Alaska, Hawaii, and Puerto Rico repositioned as insets — the same equal-area projection every other Sustainable FSA figure uses, so county sizes here are comparable and match the project's printed maps.
+
 **Change the theme.** The navbar toggle switches between the light theme and a high-contrast theme that strengthens outlines and text contrast.
 
 **Share what you are looking at.** The address bar always reflects the current view — year, pasture type, color-by variable, selected county, and whether the controls panel is collapsed — so copying it or bookmarking it reproduces exactly what is on your screen. The **Share** button copies that link for you.

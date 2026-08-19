@@ -26,6 +26,17 @@
              open, and on compact it is an overlay that always boots closed, so
              a compact session never emits it)
 
+   ?lng AND ?lat ARE NOT LONGITUDE AND LATITUDE. The composite is projected
+   into EPSG:5070 (CONUS Albers) in the browser before MapLibre ever sees it —
+   js/projection.js, which rescales Albers metres into a fixed 10 × 6.075 box of
+   dummy degrees around (0, 0) — so the camera params are positions in THAT
+   space. They are stable across sessions and across the 2015 vintage line
+   (the rescale is hardcoded, not fitted per load), so a shared link still
+   reproduces exactly the view it was copied from; what they are not is
+   portable across the projection change itself. Camera deep links minted
+   against the pre-Albers map land somewhere arbitrary and the app re-frames.
+   ?county, ?year, ?type, ?variable, ?theme, ?kbd and ?drawer are unaffected.
+
    ── What this file does NOT do ─────────────────────────────────────────────
    The month-wheel legend, the county card's span chart, the on-demand data
    table and the branded PNG export are N-W4's, and they are wired through the
@@ -44,8 +55,8 @@ import {
   replaceUrlState, showToast, urlParams, viewport,
 } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 import {
-  COMPOSITE_BOUNDS, addFitControl, addNavigation, cameraParamsIfDefault,
-  createCompositeMap, fitDefault, installZoomFloor,
+  addFitControl, addNavigation, cameraParamsIfDefault, createCompositeMap,
+  fitDefault, installZoomFloor,
 } from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, loadCounties,
@@ -62,6 +73,7 @@ import {
   types, years,
 } from './data.js';
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
+import { PROJECTED_BOUNDS, projectCounties } from './projection.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -283,7 +295,7 @@ function pushState() {
   if (state.countyId) p.county = state.countyId;
   // Camera params are emitted only when the camera has been moved off the
   // default fit, so an untouched view keeps a clean URL.
-  if (map) Object.assign(p, cameraParamsIfDefault(map, { bounds: COMPOSITE_BOUNDS, fitOpts }));
+  if (map) Object.assign(p, cameraParamsIfDefault(map, { bounds: PROJECTED_BOUNDS, fitOpts }));
   if (state.theme !== 'light') p.theme = state.theme;
   if (!kbdEnabled) p.kbd = 'off';
   // The drawer is part of the VIEW on desktop, where closing it genuinely
@@ -439,7 +451,9 @@ function fillCard(id) {
  *
  * Desktop: a camera pan cannot do this — at the default framing the viewport
  * already spans the whole composite and the maxBounds cage clamps any pan
- * after ~6° of slack (measured: 91px of the 243 needed). So the card PUSHES
+ * after its one degree of slack (measured before the Albers change, when the
+ * cage pad was the proportionally identical 6° of a 58°-wide box: 91px of the
+ * 243 needed). So the card PUSHES
  * instead: `.card-pushes` narrows the #map canvas by the dock's width,
  * `map.resize()` reflows it, and then
  *   · at the default framing, an explicit fitDefault() re-frames the whole
@@ -495,7 +509,7 @@ function revealSelectedCounty() {
     els.mapFrame.classList.add('card-pushes');
     map.resize();
     if (atFloor) {
-      fitDefault(map, { bounds: COMPOSITE_BOUNDS, fitOpts });
+      fitDefault(map, { bounds: PROJECTED_BOUNDS, fitOpts });
       if (zoomFloor) zoomFloor.refresh();
       return;
     }
@@ -533,7 +547,12 @@ function selectCounty(id, { fly = false } = {}) {
       // an empty map. Centred is already clear of the dock (the frame's centre
       // sits well left of the card), so the flight needs no reveal; the
       // non-flying paths get revealSelectedCounty() below instead.
-      const camera = { center, zoom: Math.max(map.getZoom(), 5) };
+      // 7.5, not the 5 this was before Albers: every zoom in this app shifted
+      // when the rendered space did. The composite used to span 58.31° of
+      // longitude and now spans exactly 10 dummy degrees (js/projection.js),
+      // which is log2(58.31 / 10) ≈ 2.54 zoom levels tighter — so the old
+      // "at least county-legible" floor of 5 is 5 + 2.54 ≈ 7.5 here.
+      const camera = { center, zoom: Math.max(map.getZoom(), 7.5) };
       // Reduced motion means no ANIMATION, not no navigation: the county still
       // comes into view, it just arrives without the flight. Read live, per
       // WCAG 2.3.3 — the user can flip the OS setting mid-session.
@@ -600,7 +619,12 @@ function setYear(next) {
 
 async function swapVintage(want) {
   try {
-    const next = await loadCounties(want);
+    // projectCounties BEFORE anything touches `next` — the geometry has to be
+    // in the map's projected space before it reaches a GL source or a centroid
+    // (js/projection.js). Idempotent, which matters here: loadCounties() serves
+    // a cached object, so a slider dragged back and forth across 2015 hands the
+    // same already-projected vintage over again.
+    const next = projectCounties(await loadCounties(want));
     // The user may have dragged back across the line while this was in flight.
     if (vintageForYear(state.year) !== want) return;
     vintage = want;
@@ -810,7 +834,12 @@ async function boot() {
     // The ELEMENT, not a selector: MapLibre resolves a string container with
     // document.getElementById, so '#map' throws "Container '#map' not found."
     container: els.map,
-    bounds: COMPOSITE_BOUNDS,
+    bounds: PROJECTED_BOUNDS,
+    // The kit's default cage pad is 6°, sized for a composite that spanned 58.4°
+    // of longitude — a tenth of the box. PROJECTED_BOUNDS spans 10 dummy
+    // degrees, so 1° is that same tenth. Left at 6 the user could fling the
+    // composite most of a screen-width off the canvas.
+    maxBoundsPadDeg: 1,
     params,
   });
   map = created.map;
@@ -823,18 +852,18 @@ async function boot() {
   // navigation group in whichever corner it is told.
   addNavigation(map, { position: 'top-left' });
   addFitControl(map, {
-    bounds: COMPOSITE_BOUNDS,
+    bounds: PROJECTED_BOUNDS,
     fitOpts,
     position: 'top-left',
     onBeforeFit: () => { if (cardCtl && cardCtl.isOpen()) cardCtl.close(); },
   });
-  // COMPOSITE_BOUNDS, not counties.bounds, for the fit control, the zoom floor
+  // PROJECTED_BOUNDS, not counties.bounds, for the fit control, the zoom floor
   // AND the clean-URL default check — deliberately one framing for the whole
-  // session. The two vintages share a bbox to four decimal places, and a
-  // per-vintage framing would make "the default camera" mean something
-  // different either side of 2015, so the same URL would be clean in one year
-  // and carry ?lng&lat&zoom in another.
-  zoomFloor = installZoomFloor(map, { bounds: COMPOSITE_BOUNDS, fitOpts });
+  // session. It is the projection module's own hardcoded extent (the two
+  // vintages measure identically there), and a per-vintage framing would make
+  // "the default camera" mean something different either side of 2015, so the
+  // same URL would be clean in one year and carry ?lng&lat&zoom in another.
+  zoomFloor = installZoomFloor(map, { bounds: PROJECTED_BOUNDS, fitOpts });
 
   mapLoaded = new Promise((resolve) => map.once('load', resolve));
   map.on('moveend', () => { if (booted) pushState(); });
@@ -885,7 +914,10 @@ async function loadAndRender() {
       loadAndRender);
     return;
   }
-  counties = payloads[0];
+  // Into the map's projected space before anything else can read it: the GL
+  // sources, every centroid, the reveal push and the PNG export all assume the
+  // geometry has already been through js/projection.js.
+  counties = projectCounties(payloads[0]);
 
   applyPendingType();
   populateTypeSelect();
@@ -1131,7 +1163,7 @@ export function ngpContext() {
     getMap: () => map,
     getHandle: () => handle,
     getCounties: () => counties,
-    getBounds: () => COMPOSITE_BOUNDS,
+    getBounds: () => PROJECTED_BOUNDS,
     getFitOpts: () => fitOpts,
     // App actions.
     selectCounty,

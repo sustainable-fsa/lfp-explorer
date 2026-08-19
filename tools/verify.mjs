@@ -403,6 +403,37 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   check('boot vintage follows the program year (2026 → dd22)',
     boot.vintage === 'dd22', 'vintage is ' + boot.vintage);
 
+  /* ── The rendered space is the PROJECTED one ─────────────────────────────
+     MapLibre has no conic projection, so the app runs every county coordinate
+     through EPSG:5070 and rescales the result into a fixed 10 × 6.075 box of
+     dummy degrees centred on (0, 0) (js/projection.js). Nothing else in this
+     file would notice if that regressed: the choropleth, the card, the search
+     and the URL all work exactly the same on raw lng/lat, and the only symptom
+     would be a Mercator-stretched map nobody's assertion looks at. So assert
+     the thing that is true ONLY when the projected space is what is on screen —
+     the default fit frames that box and nothing like a continent's worth of
+     degrees. */
+  const framing = await page.evaluate(async () => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const proj = await import(new URL('js/projection.js', document.baseURI).href);
+    const b = app.ngpContext().getMap().getBounds();
+    return {
+      view: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
+      box: [proj.PROJECTED_BOUNDS[0][0], proj.PROJECTED_BOUNDS[0][1],
+        proj.PROJECTED_BOUNDS[1][0], proj.PROJECTED_BOUNDS[1][1]],
+    };
+  });
+  {
+    const [vw, vs, ve, vn] = framing.view;
+    const [bw, bs, be, bn] = framing.box;
+    const show = (a) => '[' + a.map((n) => n.toFixed(3)).join(', ') + ']';
+    check('the map renders the EPSG:5070 projected space: the default view '
+      + 'contains the whole dummy box and little more',
+    vw <= bw && vs <= bs && ve >= be && vn >= bn
+      && (ve - vw) < (be - bw) * 1.6 && (vn - vs) < (bn - bs) * 1.6,
+    `view ${show(framing.view)} against box ${show(framing.box)}`);
+  }
+
   /* ── 1a. Year slider → repaint ──────────────────────────────────────────
      "The slider moved and the map changed" is the app's core claim. Prove it
      on a county whose duration is KNOWN to differ between the two years, and
@@ -895,11 +926,16 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
     const moved = await page.waitForFunction(() => window.__ngpMoved === true,
       null, { timeout: 15000 }).then(() => true).catch(() => false);
     const after = await snapshot(page);
+    // The centre is in the app's PROJECTED space, not degrees: the composite
+    // spans 10 dummy units where it used to span 58.31° of longitude
+    // (js/projection.js), so every distance here is 5.83× smaller and the old
+    // `> 1°` threshold would pass on almost any flight. 0.15 is the same
+    // fraction of the composite width that 1° was.
     const dist = Math.hypot(after.center[0] - before.center[0],
       after.center[1] - before.center[1]);
     check('the camera flew to the county (moveend fired and the centre moved)',
-      moved && dist > 1,
-      `moveend=${moved}, centre moved ${dist.toFixed(3)}° `
+      moved && dist > 0.15,
+      `moveend=${moved}, centre moved ${dist.toFixed(3)} projected units `
       + `(${before.center.map((n) => n.toFixed(2))} → ${after.center.map((n) => n.toFixed(2))})`);
     check('the card is the searched county',
       (await page.locator('#card-title').textContent()).includes('Missoula'));

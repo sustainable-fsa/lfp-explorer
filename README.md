@@ -25,6 +25,12 @@ archive repo.
 - County boundaries are fetched at runtime from the boundary archives'
   own Pages (`fsa-counties-dd17` for program years ≤ 2014, `fsa-counties-dd22`
   for ≥ 2015).
+- The map is displayed in CONUS Albers Equal Area (EPSG:5070) with Alaska,
+  Hawaii, and Puerto Rico repositioned as insets, matching every other figure
+  the project publishes. MapLibre renders only Mercator, so `js/projection.js`
+  projects the fetched boundaries client-side and rescales them into a fixed
+  dummy lng/lat box — which is also what the `?lng`/`?lat`/`?zoom` camera
+  params are expressed in.
 - Help-modal copy lives in the sidecar [`help.md`](help.md).
 
 ## Data
