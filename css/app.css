@@ -78,6 +78,16 @@ main {
   inset: 0;
 }
 
+/* The docked card is normally an OVERLAY. When the selected county would sit
+   under it, app.js (revealSelectedCounty) stamps .card-pushes and the card
+   pushes instead: the canvas gives up the dock's width — the width mirrors
+   the kit's .sfsa-card.dock-right, keep them in lockstep — and map.resize()
+   reflows it. No transition: the canvas can only reflow at the resize call,
+   so animating the box would just show 200ms of letterboxing. */
+#map-frame.card-pushes #map {
+  right: min(360px, 34vw);
+}
+
 /* Boot progress, vintage swaps, and fetch failures. Centred at the top of the
    map, above the panels (--z-map-progress) but below the navbar. */
 #app-note {
@@ -205,8 +215,11 @@ main {
      env(safe-area-inset-*) and knows nothing about what an app docks on top of
      them. min(360px, 34vw) is the dock's own width from the kit's dock-right
      rule — mirrored here, and additive so the safe-area inset survives. :has()
-     keeps it to the open state; the closed card gets its corner back. */
-  #map-frame:has(#county-card:not([hidden])) .maplibregl-ctrl-bottom-right {
+     keeps it to the open state; the closed card gets its corner back.
+     :not(.card-pushes): when the card pushes instead of overlaying, the
+     canvas already ends at the card's edge and the attribution needs no
+     shove — padding it again would double-shift it. */
+  #map-frame:has(#county-card:not([hidden])):not(.card-pushes) .maplibregl-ctrl-bottom-right {
     padding-right: calc(min(360px, 34vw) + env(safe-area-inset-right));
   }
 }

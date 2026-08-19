@@ -45,7 +45,7 @@ import {
 } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 import {
   COMPOSITE_BOUNDS, addFitControl, addNavigation, cameraParamsIfDefault,
-  createCompositeMap, installZoomFloor,
+  createCompositeMap, fitDefault, installZoomFloor,
 } from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, loadCounties,
@@ -162,6 +162,7 @@ let fitOpts = null;
 let counties = null;          // the decoded vintage in use
 let handle = null;            // addCountyLayers() handle
 let zoomFloor = null;
+let cardPushed = false;       // the card is a column, not an overlay — see revealSelectedCounty()
 let vintage = null;           // 'dd17' | 'dd22'
 let vintageTimer = null;
 let searchCtl = null;
@@ -434,6 +435,79 @@ function fillCard(id) {
 }
 
 /**
+ * Keep the selected county out from under the detail surface.
+ *
+ * Desktop: a camera pan cannot do this — at the default framing the viewport
+ * already spans the whole composite and the maxBounds cage clamps any pan
+ * after ~6° of slack (measured: 91px of the 243 needed). So the card PUSHES
+ * instead: `.card-pushes` narrows the #map canvas by the dock's width,
+ * `map.resize()` reflows it, and then
+ *   · at the default framing, an explicit fitDefault() re-frames the whole
+ *     composite into the strip beside the card (narrowing LOWERS the fit
+ *     zoom, so the kit's zoom floor sees nothing "below" and will not do
+ *     this by itself);
+ *   · zoomed in, the framing is the user's — only the residual overlap is
+ *     panned away, which works there because a zoomed camera has cage slack.
+ * The push is one-way while the card is open (once pushed, nothing can be
+ * obscured, so it never un-pushes mid-selection and the map never jitters);
+ * closing the card removes the class and resizes, and the kit zoom floor's
+ * own resize handler springs the camera back to the full-width fit when the
+ * user was at the floor (map.js § "a sidebar toggle IS the user asking to
+ * re-fit"). Counties already in the clear move nothing and no push happens.
+ *
+ * Compact: the bottom sheet keeps the mesonet-style best-effort pan (ported
+ * from revealSelectedDot); at the fit floor the cage limits it, but a phone
+ * selection is a tap on a visible county, so the obscured case is rare.
+ *
+ * Card geometry is read from the LAYOUT box (offsetWidth/offsetHeight), which
+ * the dock-in transform animation does not touch, so this is stable even when
+ * it runs the frame the card opens.
+ */
+function revealSelectedCounty() {
+  if (!map || !counties || !state.countyId || !cardCtl || !cardCtl.isOpen()) return;
+  const feature = counties.index.get(state.countyId);
+  if (!feature) return;
+  const center = countyCentroid(feature);
+  if (!center) return;
+
+  const MARGIN = 32;
+  const p = map.project(center);            // px, relative to the #map canvas
+
+  if (viewport.isCompact()) {
+    // The sheet is fixed to the viewport bottom; express its top edge in map
+    // coordinates and pan up by the overlap — but never push the county out
+    // the top instead.
+    const mapRect = els.map.getBoundingClientRect();
+    const sheetTop = (window.innerHeight - els.card.offsetHeight) - mapRect.top;
+    let dy = p.y > sheetTop - MARGIN ? p.y - (sheetTop - MARGIN) : 0;
+    dy = Math.min(dy, Math.max(0, p.y - MARGIN));
+    if (dy) map.panBy([0, dy], { duration: reducedMotion() ? 0 : 350 });
+    return;
+  }
+
+  if (!cardPushed) {
+    const cardLeft = els.map.clientWidth - els.card.offsetWidth;
+    if (p.x <= cardLeft - MARGIN) return;   // in the clear — stay an overlay
+    // Read the floor BEFORE narrowing: both numbers are pre-push.
+    const floor = zoomFloor && zoomFloor.fitZoom();
+    const atFloor = Number.isFinite(floor) && map.getZoom() <= floor + 0.05;
+    cardPushed = true;
+    els.mapFrame.classList.add('card-pushes');
+    map.resize();
+    if (atFloor) {
+      fitDefault(map, { bounds: COMPOSITE_BOUNDS, fitOpts });
+      if (zoomFloor) zoomFloor.refresh();
+      return;
+    }
+  }
+  // Pushed (now or already) with a user framing: the county may sit in the
+  // strip the canvas just gave up — pan the residual back on-canvas.
+  const q = map.project(center);
+  const over = q.x - (els.map.clientWidth - MARGIN);
+  if (over > 0) map.panBy([over, 0], { duration: reducedMotion() ? 0 : 350 });
+}
+
+/**
  * Open a county: select it on the map, fill the card, and optionally fly to it.
  *
  * @param {string} id 5-character FSA county id
@@ -456,9 +530,9 @@ function selectCounty(id, { fly = false } = {}) {
       // obvious way to do it — but transform padding is STICKY: it outlives the
       // flight, the card's close, and every later fitBounds, so the fit control
       // would afterwards re-frame the whole country into the left two-thirds of
-      // an empty map. Doing it properly means clearing the padding when the
-      // card closes; until that is wired, the dock simply overlaps the right
-      // third of the map around the selected county.
+      // an empty map. Centred is already clear of the dock (the frame's centre
+      // sits well left of the card), so the flight needs no reveal; the
+      // non-flying paths get revealSelectedCounty() below instead.
       const camera = { center, zoom: Math.max(map.getZoom(), 5) };
       // Reduced motion means no ANIMATION, not no navigation: the county still
       // comes into view, it just arrives without the flight. Read live, per
@@ -466,6 +540,11 @@ function selectCounty(id, { fly = false } = {}) {
       if (reducedMotion()) map.jumpTo(camera);
       else map.flyTo({ ...camera, speed: 1.2 });
     }
+  } else {
+    // A map click or a re-render selection must not leave the county hidden
+    // under the surface that describes it. rAF: the card was unhidden this
+    // task; measure it after layout has caught up.
+    requestAnimationFrame(revealSelectedCounty);
   }
 
   notifyCountySelected(state.countyId);
@@ -872,6 +951,16 @@ async function loadAndRender() {
     onClose: () => {
       state.countyId = null;
       if (handle) handle.setSelected(null);
+      // Give the canvas its width back. The synchronous resize matters: the
+      // fit control closes the card via onBeforeFit, so its fit must compute
+      // against the restored width. The kit zoom floor's own resize handler
+      // then springs a floor-level camera back to the full-width fit.
+      if (cardPushed) {
+        cardPushed = false;
+        els.mapFrame.classList.remove('card-pushes');
+        if (map) map.resize();
+        if (zoomFloor) zoomFloor.refresh();
+      }
       notifyCountySelected(null);
       pushState();
     },

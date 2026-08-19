@@ -702,6 +702,97 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
         + 'map instead of taking a column from it)',
       dock.frame.width === frameBefore,
       `#map-frame was ${frameBefore}px, is now ${dock.frame.width}px`);
+
+      /* ── The reveal push ─────────────────────────────────────────────────
+         Selecting a county that sits UNDER the dock must not leave it hidden
+         behind its own readout. A camera pan cannot fix this at the default
+         framing (the maxBounds cage clamps it), so the app pushes instead:
+         .card-pushes narrows the canvas by the dock's width and, at the fit
+         floor, re-frames the whole composite beside the card
+         (js/app.js revealSelectedCounty). The probe finds a real victim at
+         the live camera rather than hardcoding one, selects it through the
+         seam exactly like a map click (no fly), and asserts the push, the
+         reveal, the close-restore, and that an unobscured county does NOT
+         push. */
+      const victim = await page.evaluate(async () => {
+        const app = await import(new URL('js/app.js', document.baseURI).href);
+        const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
+        const c = app.ngpContext();
+        const m = c.getMap();
+        const cardW = document.getElementById('county-card').offsetWidth;
+        const w = document.getElementById('map').clientWidth;
+        const h = document.getElementById('map').clientHeight;
+        for (const [id, f] of c.getCounties().index) {
+          const center = county.countyCentroid(f);
+          if (!center) continue;
+          const p = m.project(center);
+          // Well under the dock, and vertically inside the canvas.
+          if (p.x > w - cardW + 60 && p.y > 80 && p.y < h - 80) return id;
+        }
+        return null;
+      });
+      if (!victim) {
+        skip('the reveal pan brings an obscured county out from under the dock',
+          'no county centroid projects under the dock at this camera');
+      } else {
+        await page.evaluate(async (id) => {
+          const app = await import(new URL('js/app.js', document.baseURI).href);
+          app.ngpContext().selectCounty(id);   // no fly — the map-click path
+        }, victim);
+        await page.waitForTimeout(700);        // rAF + resize + re-fit + settle
+        const pushed = await page.evaluate(async (id) => {
+          const app = await import(new URL('js/app.js', document.baseURI).href);
+          const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
+          const c = app.ngpContext();
+          const f = c.getCounties().index.get(id);
+          const p = c.getMap().project(county.countyCentroid(f));
+          return {
+            pushes: document.getElementById('map-frame').classList.contains('card-pushes'),
+            mapW: document.getElementById('map').clientWidth,
+            frameW: document.getElementById('map-frame').clientWidth,
+            cardW: document.getElementById('county-card').offsetWidth,
+            x: Math.round(p.x),
+          };
+        }, victim);
+        check(`selecting an obscured county (${victim}) pushes the map: the `
+          + 'canvas gives up the dock\'s width',
+        pushed.pushes && Math.abs(pushed.mapW - (pushed.frameW - pushed.cardW)) <= 2,
+        `canvas ${pushed.mapW}px in a ${pushed.frameW}px frame, dock ${pushed.cardW}px`);
+        check('…and the re-fit brings its centroid onto the visible canvas',
+          pushed.x > 16 && pushed.x < pushed.mapW - 16,
+          `centroid x ${pushed.x} of ${pushed.mapW}`);
+
+        // Close-restore: Escape closes the card (the desktop drawer is not a
+        // layer), the push unwinds, and the kit zoom floor's resize handler
+        // springs the camera back to the full-width fit.
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(700);        // 200ms debounce + fit + settle
+        const restored = await page.evaluate(() => ({
+          pushes: document.getElementById('map-frame').classList.contains('card-pushes'),
+          mapW: document.getElementById('map').clientWidth,
+          frameW: document.getElementById('map-frame').clientWidth,
+        }));
+        check('closing the card un-pushes: the canvas gets its width back',
+          !restored.pushes && restored.mapW === restored.frameW,
+          `canvas ${restored.mapW}px in a ${restored.frameW}px frame`);
+
+        // Re-open the run's canonical county: it is in the clear, so the card
+        // must stay a pure overlay — no push, no camera motion.
+        await page.evaluate(async (id) => {
+          const app = await import(new URL('js/app.js', document.baseURI).href);
+          app.ngpContext().selectCounty(id);
+        }, CONFIG.county.id);
+        await page.waitForTimeout(500);
+        const clear = await page.evaluate(() => ({
+          pushes: document.getElementById('map-frame').classList.contains('card-pushes'),
+          mapW: document.getElementById('map').clientWidth,
+          frameW: document.getElementById('map-frame').clientWidth,
+          open: !document.getElementById('county-card').hidden,
+        }));
+        check('an unobscured county does NOT push — the dock stays an overlay',
+          clear.open && !clear.pushes && clear.mapW === clear.frameW,
+          `open=${clear.open}, pushes=${clear.pushes}, canvas ${clear.mapW}/${clear.frameW}`);
+      }
       clean('county click');
       await shot('06-card-open');
     }
