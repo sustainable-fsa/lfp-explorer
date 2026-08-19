@@ -59,6 +59,8 @@ Because the workspace root is what gets served, local dev (and
 `tools/verify.mjs`, which serves the same root itself) needs a sibling
 `fsa-normal-grazing-period` checkout with the committed JSON present — `git
 pull` it if the app boots with no data. The same relative path reaches it.
+(CI has no sibling checkout; `.github/workflows/audit.yaml` curls the
+published payload into that slot instead.)
 
 ### Developing against an unreleased kit
 

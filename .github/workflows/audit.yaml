@@ -2,15 +2,21 @@
 #
 # This repo has no data pipeline: the grazing-period data are built and
 # archived by sustainable-fsa/fsa-normal-grazing-period (whose AWS workflow
-# runs on a macOS runner and takes hours). This workflow reads nothing but
-# the checkout and must be cheap enough to run on every pull request.
+# runs on a macOS runner and takes hours), which commits the web payload to
+# its own root. This workflow reads nothing but the checkout — plus that one
+# payload, staged below — and must be cheap enough to run on every pull
+# request.
 #
 # WHAT THE NETWORK IS FOR. The app loads the house style kit by full pinned URL
-# (https://sustainable-fsa.com/style/v0.2.0/…) and fetches the two FSA county
-# boundary archives at runtime. Both are fetched LIVE here. That is deliberate:
-# those origins are part of the app's contract, and a run that stubbed them
-# would gate a different app. It also means a sustainable-fsa.com outage fails
-# this workflow, which is the correct signal.
+# (https://sustainable-fsa.com/style/v0.2.0/…), fetches the two FSA county
+# boundary archives at runtime, and fetches its data payload by RELATIVE path
+# (../fsa-normal-grazing-period/…), which in production is the archive repo's
+# same-origin GitHub Pages copy. All are fetched LIVE here — the payload is
+# curled into the sibling directory the relative path expects, since the
+# harnesses serve the parent of this checkout. That is deliberate: those
+# origins are part of the app's contract, and a run that stubbed them would
+# gate a different app. It also means a sustainable-fsa.com outage fails this
+# workflow, which is the correct signal.
 #
 # WHAT "THE MAP RENDERED" MEANS HERE. The render evidence is the app's own
 # data-loaded hook — `document.documentElement.dataset.ngpReady === '1'`, set
@@ -76,12 +82,25 @@ jobs:
       - name: Validate markup
         run: npx --prefix tools html-validate index.html
 
+      # The app fetches its payload at ../fsa-normal-grazing-period/…, which
+      # every server below resolves against the workspace root. Production has
+      # it as the archive repo's Pages copy; here it is curled — the published
+      # artifact itself, not a rebuild — into the sibling slot. A full checkout
+      # of that repo would drag its data archive along for one file.
+      - name: Stage the data payload at its sibling path
+        run: |
+          dest="$(dirname "$GITHUB_WORKSPACE")/fsa-normal-grazing-period"
+          mkdir -p "$dest"
+          curl -fsSL --retry 3 \
+            https://sustainable-fsa.com/fsa-normal-grazing-period/fsa-normal-grazing-period.json \
+            -o "$dest/fsa-normal-grazing-period.json"
+
       # The harnesses serve the WORKSPACE root — the parent of this checkout —
       # so the app sits at /lfp-explorer/ exactly as it deploys.
       # On a runner the checkout is at $GITHUB_WORKSPACE, whose basename is the
       # repository name, so the default (two levels up from tools/) is already
       # right and no argument is needed.
-      - name: Accessibility audit (axe · 2 themes × 2 viewports × 6 states)
+      - name: Accessibility audit (axe · 2 themes × 2 viewports × 7 states)
         run: node tools/a11y-audit.mjs
 
       - name: Behavioural verification
