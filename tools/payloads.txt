@@ -29,3 +29,19 @@ fsa-normal-grazing-period/fsa-normal-grazing-period.json
 
 # 1 · Grazing periods — nClimGrid climatology, fetched lazily on first toggle.
 nclimgrid-normal-grazing-period/nclimgrid-normal-grazing-period.json
+
+# 2 · Drought monitor — the weekly USDM, one worst-class series per county for
+# every week since 2000-01-04. Three answers to the same question, differing
+# only in what a "county" is; all three are FIPS-keyed and reach the FSA
+# composite through the crosswalk. All fetched lazily, on the switch or the
+# dataset toggle that asks for one.
+#
+# FSA's own FOIA'd LFP boundary statistics — this view's default.
+usdm-counties-fsa-lfp/usdm-counties-fsa-lfp.json
+# NDMC's published county statistics, as published (Connecticut is keyed as its
+# nine planning regions, which no FSA county covers — the app counts them out
+# loud rather than dropping them).
+usdm-counties-reported/usdm-counties-reported.json
+# Vintage-matched TIGER counties: the one non-rectangular set, where a county
+# absent from a week is absent in the data too.
+usdm-counties/usdm-counties.json

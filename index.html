@@ -79,16 +79,16 @@
   })();
   </script>
 
-  <title>Grazing Periods · Sustainable FSA</title>
-  <meta name="description" content="An interactive map of USDA Farm Service Agency normal grazing periods by county, pasture type, and program year, 2008–2026.">
+  <title>LFP Explorer · Sustainable FSA</title>
+  <meta name="description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
   <meta name="author" content="Sustainable FSA">
   <meta name="theme-color" content="#B7410E">
 
   <link rel="canonical" href="https://sustainable-fsa.com/lfp-explorer/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Sustainable FSA">
-  <meta property="og:title" content="Grazing Periods · Sustainable FSA">
-  <meta property="og:description" content="An interactive map of USDA Farm Service Agency normal grazing periods by county, pasture type, and program year, 2008–2026.">
+  <meta property="og:title" content="LFP Explorer · Sustainable FSA">
+  <meta property="og:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
   <meta property="og:url" content="https://sustainable-fsa.com/lfp-explorer/">
   <!-- Generated later in the build; referenced now so the card is complete the
        moment the file lands. -->
@@ -97,8 +97,8 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="A map of the United States with counties colored by the length of their FSA normal grazing period.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Grazing Periods · Sustainable FSA">
-  <meta name="twitter:description" content="An interactive map of USDA Farm Service Agency normal grazing periods by county, pasture type, and program year, 2008–2026.">
+  <meta name="twitter:title" content="LFP Explorer · Sustainable FSA">
+  <meta name="twitter:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
   <meta name="twitter:image" content="https://sustainable-fsa.com/lfp-explorer/brand/og-image.png">
 
   <!-- Favicons / app icons: kit-hosted and UNVERSIONED, per snippets/head.html
@@ -147,7 +147,7 @@
     <div class="nav-divider" aria-hidden="true"></div>
 
     <div class="brand">
-      <h1 class="brand-title">FSA Normal Grazing Periods</h1>
+      <h1 class="brand-title">LFP Explorer</h1>
       <span class="brand-subtitle">A Sustainable FSA project</span>
     </div>
 
@@ -233,6 +233,8 @@
           <div class="seg-btns" role="group" aria-labelledby="view-title">
             <button type="button" class="nav-btn seg-btn" id="btn-view-ngp"
                     data-view-btn="ngp" aria-pressed="true">1 · Grazing periods</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-view-usdm"
+                    data-view-btn="usdm" aria-pressed="false">2 · Drought monitor</button>
           </div>
           <p class="control-note">More LFP data families coming.</p>
         </section>
@@ -257,6 +259,34 @@
           <p class="control-note">
             nClimGrid climatology is what NAP-190's method yields from 1991–2020
             climate normals — a counterfactual, not FSA's numbers.
+          </p>
+        </section>
+
+        <!-- ══ Dataset — drought monitor ═════════════════════════════════════
+             Three answers to "which county?", not three drought monitors: the
+             USDM is one product, reported against three different county
+             layers. FSA LFP boundaries is the default because it is the
+             geometry the PROGRAM is administered on; the NDMC-reported set
+             keys Connecticut as its nine planning regions, which the FSA
+             crosswalk cannot reach, so Connecticut is honestly uncolored
+             there (and the live region counts the nine areas out loud).
+
+             Each payload is fetched on FIRST PRESS, never at boot — asserted
+             in tools/verify.mjs. -->
+        <section class="sfsa-drawer-section" id="usdm-dataset-seg" data-view="usdm" hidden>
+          <h2 class="sfsa-drawer-title" id="usdm-dataset-title">Dataset</h2>
+          <div class="seg-btns" role="group" aria-labelledby="usdm-dataset-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-usdm-fsa-lfp"
+                    data-dataset="fsa-lfp" aria-pressed="true">FSA LFP boundaries</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-usdm-reported"
+                    data-dataset="reported" aria-pressed="false">NDMC reported</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-usdm-census"
+                    data-dataset="census" aria-pressed="false">Census counties</button>
+          </div>
+          <p class="control-note">
+            FSA's own LFP boundary statistics, NDMC's published county
+            statistics, or vintage-matched Census counties. Same drought, three
+            county sets.
           </p>
         </section>
 
@@ -301,6 +331,45 @@
                change nothing. The sentence never varies, so it is authored here
                and the note is never an empty box. -->
           <p id="year-note" class="control-note" hidden>Climatology — one set of periods for all years.</p>
+        </section>
+
+        <!-- ══ Week — drought monitor ════════════════════════════════════════
+             A control INSIDE the year, not beside it: the year slider above
+             picks 2012 and this picks one of its 52 or 53 Tuesdays. One
+             1,389-step slider over the whole record would have a thumb a pixel
+             wide, and the year is shared state — a visitor who arrived from
+             the grazing-period map in 2012 should still be in 2012.
+
+             app.js re-authors min/max from the payload for the selected year
+             (the HTML values are the widest a year can be) and writes the
+             <output>, which reads "Jul 24, 2012 · week 30 of 52" — a date AND
+             a place in the year, because "week 30" is not a date and a date
+             alone does not say how far through the year it is. The two step
+             buttons walk the RECORD, so they cross the year boundary and
+             disable only at its two ends. -->
+        <section class="sfsa-drawer-section" id="week-section" data-view="usdm" hidden>
+          <h2 class="sfsa-drawer-title">Week</h2>
+          <div class="sfsa-range">
+            <!-- The eyebrow above is the visible title; this <label> is the
+                 slider's accessible NAME and so is CLIPPED, not removed. -->
+            <label class="control-label sr-only" for="week-range">Week of the year</label>
+            <input type="range" id="week-range" min="1" max="53" step="1" value="53">
+            <button type="button" class="nav-btn icon-only" id="btn-week-prev"
+                    aria-label="Previous week">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <polyline points="15 6 9 12 15 18"></polyline>
+              </svg>
+            </button>
+            <button type="button" class="nav-btn icon-only" id="btn-week-next"
+                    aria-label="Next week">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <polyline points="9 6 15 12 9 18"></polyline>
+              </svg>
+            </button>
+          </div>
+          <!-- On its own line, not squeezed in beside the thumb: the readout is
+               a date and two numbers, and 272px of drawer cannot hold both. -->
+          <output id="week-out" for="week-range" class="week-out"></output>
         </section>
 
         <section class="sfsa-drawer-section" data-view="ngp">

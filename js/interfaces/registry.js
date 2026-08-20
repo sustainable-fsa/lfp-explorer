@@ -20,14 +20,16 @@
    harness's probe table mirrors it — so adding an interface is a descriptor
    plus one line here, never a search for hardcoded slugs.
 
-   PR 1 ships one: grazing periods. The others (drought monitor, LFP
-   eligibility, disaster designations) land as their own descriptors, in
-   `order`, and the switcher grows by itself. Nothing here is a placeholder:
-   an unshipped interface has no entry and therefore no disabled teaser
-   button.
+   Two are shipped: grazing periods, then the drought monitor — the order the
+   Livestock Forage Program is administered in, which is also the order the
+   story reads in. The rest (LFP eligibility, disaster designations) land as
+   their own descriptors, in `order`, and the switcher grows by itself. Nothing
+   here is a placeholder: an unshipped interface has no entry and therefore no
+   disabled teaser button.
    ========================================================================== */
 
 import { NGP } from './ngp.js';
+import { USDM } from './usdm.js';
 
 /**
  * Every shipped interface, in switcher order. Frozen: the app reads this list
@@ -36,7 +38,7 @@ import { NGP } from './ngp.js';
  *
  * @type {ReadonlyArray<object>}
  */
-export const INTERFACES = Object.freeze([NGP]);
+export const INTERFACES = Object.freeze([NGP, USDM]);
 
 /** The interface a session with no `?view=` and no stored preference lands on.
     Its slug is NEVER emitted into the URL (clean-URL discipline, HOUSE-STYLE
@@ -75,10 +77,19 @@ export function interfaceOf(ctx) {
 
 /**
  * Read the app context into the `sel` object every descriptor leaf takes:
- * {year, type, variable, dataset, vintage}. One implementation, because the
- * poster, the data table and the map must describe the SAME selection, and
+ * {year, type, variable, dataset, vintage, week}. One implementation, because
+ * the poster, the data table and the map must describe the SAME selection, and
  * three modules each assembling it from getState() is three chances to forget
- * the dataset.
+ * the dataset — or, once a family had weeks, the week.
+ *
+ * The app's OWN selection() is the answer whenever the context offers it
+ * (`getSelection`), and that is the normal case: it is the very object the
+ * descriptor's other leaves are called with, so a poster and the map it was
+ * captured from cannot describe two different states. The assembly below is the
+ * fallback for a context that predates that accessor — or a harness that builds
+ * one by hand — and it cannot know anything app.js derives, so a family whose
+ * paint depends on such a field (the drought monitor's absolute week) will
+ * render as nothing rather than as something wrong.
  *
  * `getViewState()` is read defensively: it may hand back the whole
  * per-interface map or just the active interface's slice, and a context without
@@ -86,9 +97,10 @@ export function interfaceOf(ctx) {
  *
  * @param {object} ctx app.js's ngpContext()
  * @returns {{year: number, type: string, variable: string, dataset: string,
- *            vintage: string|null}}
+ *            vintage: string|null, week?: number|null}}
  */
 export function viewSelection(ctx) {
+  if (ctx && typeof ctx.getSelection === 'function') return ctx.getSelection();
   const state = ctx.getState();
   const iface = interfaceOf(ctx);
   const vs = (ctx.getViewState && ctx.getViewState()) || null;

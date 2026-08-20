@@ -169,18 +169,20 @@ main {
 
 /* kit-override: `.seg-btns` is a horizontal fused group and `.nav-btn` is
    `white-space: nowrap`, both sized for the short navbar labels the kit was
-   drawn for ("Start · End · Duration"). The two SCOPING groups — which data
-   family, which dataset — are named in words a reader can act on ("nClimGrid
-   climatology"), and two of those cannot share a 248px drawer row without
-   spilling out of their own borders. So these two groups stack instead, with
-   the fused radii and the shared border rotated a quarter turn; every other
-   .seg-btns in the app keeps the kit's geometry. min-height is deliberately
-   NOT set here, so the kit's own 40px touch target (theme §6) still wins on a
-   pointerless device. */
+   drawn for ("Start · End · Duration"). The SCOPING groups — which data family,
+   and which dataset within it — are named in words a reader can act on
+   ("nClimGrid climatology", "FSA LFP boundaries"), and two or three of those
+   cannot share a 248px drawer row without spilling out of their own borders. So
+   these groups stack instead, with the fused radii and the shared border
+   rotated a quarter turn; every other .seg-btns in the app keeps the kit's
+   geometry. min-height is deliberately NOT set here, so the kit's own 40px
+   touch target (theme §6) still wins on a pointerless device. */
 #view-seg .seg-btns,
-#ngp-dataset-seg .seg-btns { flex-direction: column; }
+#ngp-dataset-seg .seg-btns,
+#usdm-dataset-seg .seg-btns { flex-direction: column; }
 #view-seg .seg-btn,
-#ngp-dataset-seg .seg-btn {
+#ngp-dataset-seg .seg-btn,
+#usdm-dataset-seg .seg-btn {
   height: auto;
   padding: 6px 10px;
   border-right-width: 1px;
@@ -189,14 +191,36 @@ main {
   line-height: 1.3;
 }
 #view-seg .seg-btn:first-child,
-#ngp-dataset-seg .seg-btn:first-child {
+#ngp-dataset-seg .seg-btn:first-child,
+#usdm-dataset-seg .seg-btn:first-child {
   border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 #view-seg .seg-btn:last-child,
-#ngp-dataset-seg .seg-btn:last-child {
+#ngp-dataset-seg .seg-btn:last-child,
+#usdm-dataset-seg .seg-btn:last-child {
   border-radius: 0 0 var(--radius-md) var(--radius-md);
   border-bottom-width: 1px;
 }
+
+/* The week scrubber's readout. It sits BELOW its slider rather than beside it
+   (index.html says why), so it is a block of its own and not the kit's
+   `.sfsa-range > output` — same monospaced, tabular treatment, because "week 30
+   of 52" is a number that should not jump as the thumb moves. */
+.week-out {
+  display: block;
+  margin-top: 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* The two step buttons need NO rule of their own: they sit inside the kit's
+   `.sfsa-range` flex row, where the range is `flex: 1 1 0` (theme §5) and gives
+   way first, and `.nav-btn.icon-only` is already a 34px square that grows to
+   40px under `@media (hover: none)` (theme §6). This comment exists so the next
+   reader does not add a kit-override that the kit was already handling. */
 
 /* ── 4. Legend (in the drawer) ────────────────────────────────────────────
    The legend used to be a collapsible floating .sfsa-panel in the bottom-right
@@ -401,10 +425,12 @@ main {
 
 /* ── 9. Card span chart + table twin ─────────────────────────────────────── */
 
-.span-figure {
+.span-figure,
+.usdm-figure {
   margin: 0.35rem 0 0;
 }
-.span-figure svg {
+.span-figure svg,
+.usdm-figure svg {
   display: block;
   width: 100%;
   height: auto;

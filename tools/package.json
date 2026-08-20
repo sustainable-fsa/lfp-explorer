@@ -2,7 +2,7 @@
   "name": "fsa-normal-grazing-period-tools",
   "version": "0.0.0",
   "private": true,
-  "description": "Dev-only audit harness for the FSA Normal Grazing Periods web map. Nothing here ships: the app itself is a build-step-free static page with zero runtime dependencies, and these packages exist only to drive it in CI and locally.",
+  "description": "Dev-only audit harness for the LFP Explorer web map. Nothing here ships: the app itself is a build-step-free static page with zero runtime dependencies, and these packages exist only to drive it in CI and locally.",
   "license": "MIT",
   "type": "module",
   "scripts": {

@@ -4,13 +4,14 @@ The seed of the **Sustainable FSA Explorer** — a single-page web application
 visualizing the data assembled by the [Sustainable FSA
 project](https://sustainable-fsa.com). It is growing into a multi-interface
 explorer of the data used to administer the Livestock Forage Disaster
-Program; its first interface maps USDA Farm Service Agency **Normal Grazing
-Periods** (2008–2026, all FSA counties and pasture types, which previously
-lived in the
+Program. Shipped so far: **1 · Grazing periods** — USDA Farm Service Agency
+**Normal Grazing Periods** (2008–2026, all FSA counties and pasture types,
+previously the
 [fsa-normal-grazing-period](https://github.com/sustainable-fsa/fsa-normal-grazing-period)
-archive repo) alongside the
+dashboard) alongside the
 [nClimGrid climatology counterfactual](https://github.com/sustainable-fsa/nclimgrid-normal-grazing-period)
-— what NAP-190's method yields from 1991–2020 climate normals.
+— and **2 · Drought monitor** — the weekly worst U.S. Drought Monitor class
+per county, 2000 onward, under three county-aggregation conventions.
 
 **Live app:** <https://sustainable-fsa.com/lfp-explorer/>
 
@@ -59,6 +60,13 @@ a payload line lands in the same commit as the code that fetches it.
   climatology counterfactual, 4,846 records, Census-FIPS-keyed. Fetched
   lazily on first toggle, then joined to the FSA geometry through the
   crosswalk below.
+- `usdm-counties-fsa-lfp.json` / `usdm-counties-reported.json` /
+  `usdm-counties.json` (schema `usdm-max-class/1`, CC0) — the weekly worst
+  U.S. Drought Monitor class per county, 2000-01-04 onward, as one
+  fixed-width string per county; three county-aggregation archives
+  (FSA's FOIA'd LFP boundaries — the map default; NDMC's own published
+  stats; vintage-matched Census counties). All FIPS-keyed and crosswalked.
+  Fetched lazily on the Drought monitor interface.
 
 The one **data-shaped file this repo does commit** is
 `assets/fsa-fips-crosswalk.json` (schema `fsa-fips-crosswalk/1`) — the

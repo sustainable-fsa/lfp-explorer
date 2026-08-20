@@ -1,5 +1,5 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/legend-wheel.js
+   LFP Explorer · js/legend-wheel.js
    The cyclic month-wheel legend, and the wheel geometry the PNG export reuses.
 
    ES module, no build step. Imports nothing — not the kit, not data.js — so it

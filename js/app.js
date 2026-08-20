@@ -1,5 +1,5 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/app.js
+   LFP Explorer · js/app.js
    The application core: state, URL, map, the controls drawer, legend, county
    card.
 
@@ -29,12 +29,16 @@
    moveend, and a view that is entirely at defaults emits a CLEAN url with no
    query string at all.
 
-     ?view   interface slug (ngp) ?lng ?lat ?zoom  camera (all three or none)
-     ?dataset the active view's own dataset id (ngp: fsa | nclimgrid)
-     ?year   2008–2026            ?theme  light | high-contrast
+     ?view   interface slug (ngp | usdm)
+     ?dataset the active view's own dataset id (ngp: fsa | nclimgrid;
+             usdm: fsa-lfp | reported | census)
+     ?year   2000–2026, narrowed to the ACTIVE view's own domain
+     ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?variable start|end|duration ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
+     ?lng ?lat ?zoom  camera (all three or none)
+     ?theme  light | high-contrast
      ?drawer closed — desktop only, and only when closed (the drawer defaults
              open, and on compact it is an overlay that always boots closed, so
              a compact session never emits it)
@@ -44,7 +48,13 @@
    the app grew past one dataset still means exactly what it meant. ?type is
    NOT elided on a non-default dataset: "full-season" is a real choice inside
    the climatology's own three-season dictionary, and dropping it would make
-   the link mean "whatever that dataset defaults to next year".
+   the link mean "whatever that dataset defaults to next year". ?week is elided
+   at ITS default, which is the last week of the selected year — the freshest
+   map that year has, and for the current year the freshest there is.
+
+   Only the ACTIVE view's params are emitted: a drought-monitor link carries no
+   ?type, and a grazing-period link carries no ?week. Both are still remembered
+   for the session, so switching back is a return rather than a reset.
 
    ?lng AND ?lat ARE NOT LONGITUDE AND LATITUDE. The composite is projected
    into EPSG:5070 (CONUS Albers) in the browser before MapLibre ever sees it —
@@ -55,7 +65,8 @@
    reproduces exactly the view it was copied from; what they are not is
    portable across the projection change itself. Camera deep links minted
    against the pre-Albers map land somewhere arbitrary and the app re-frames.
-   ?county, ?year, ?type, ?variable, ?theme, ?kbd and ?drawer are unaffected.
+   ?county, ?year, ?week, ?type, ?variable, ?theme, ?kbd and ?drawer are
+   unaffected.
 
    ── What this file does NOT do ─────────────────────────────────────────────
    The month-wheel legend, the county card's span chart, the on-demand data
@@ -85,30 +96,45 @@ import {
 import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.2.0/ui/search.js';
 import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.2.0/ui/card.js';
 import { initDrawer } from 'https://sustainable-fsa.com/style/v0.2.0/ui/drawer.js';
-import { colorbar } from 'https://sustainable-fsa.com/style/v0.2.0/ui/legend.js';
+import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.2.0/ui/legend.js';
 import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.0/ui/help.js';
 
+/* js/data.js is the GRAZING-PERIOD family's facade, not the app's data layer
+   (see § Live state): the search index, the county gazetteer and the type
+   dictionary are read from it because they are FSA's own, and every other
+   family reads its own instance through `activeData`. */
 import {
   activeNgpDataset, allCountyIds, countyName, initData, setActiveNgpDataset,
-  typeFromSlug, typeSlug, types, years,
+  typeFromSlug, typeSlug, types,
 } from './data.js';
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
 import { PROJECTED_BOUNDS, projectCounties } from './projection.js';
-import { DEFAULT_VIEW, aliasType, viewFromSlug } from './interfaces/registry.js';
+import {
+  DEFAULT_VIEW, INTERFACES, aliasType, viewFromSlug,
+} from './interfaces/registry.js';
 import { loadDataset } from './decoders/common.js';
 import { loadCrosswalk } from './decoders/crosswalk.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
-/** Program-year bounds. They match index.html's slider and the frozen payload;
-    boot re-checks them against data.js years() once the data has landed. */
-const YEAR_MIN = 2008;
-const YEAR_MAX = 2026;
+/** The WIDEST program-year bounds any interface answers for — the union of the
+    registry's declared domains, and therefore the whitelist a `?year=` param is
+    read against before anything knows which family will show it.
+
+    Each interface's own narrower domain (`iface.years`) is what the slider is
+    authored to, and the shared year is clamped into it when a family comes on
+    screen — see applyYearDomain(). Grazing periods start in 2008; the drought
+    monitor starts in 2000; they share this slider. */
+const YEAR_MIN = INTERFACES.reduce((lo, i) => Math.min(lo, i.years.min), Infinity);
+const YEAR_MAX = INTERFACES.reduce((hi, i) => Math.max(hi, i.years.max), -Infinity);
 
 const DEFAULTS = Object.freeze({
   // The registry is ORDERED (the story's own order) and names its own default,
   // so the slug is not repeated here to drift out of date.
   view: DEFAULT_VIEW,
+  // The latest year any family carries — and, deliberately, the same number for
+  // every family, so `?year=` is elided at the default whichever one is on
+  // screen and a shared link from either says the same thing about time.
   year: YEAR_MAX,
   type: 'Native Pasture',
   variable: 'duration',
@@ -147,6 +173,13 @@ const FSA_ID_RE = /^[0-9]{5}$/;
     Dragging 2016 → 2010 crosses the 2015 line once, not six times. */
 const VINTAGE_DEBOUNCE_MS = 250;
 
+/** How long a scrubbed control must rest before the live region says what it
+    landed on. A dragged week slider repaints every frame — announcing every
+    frame would queue fifty sentences a screen reader then reads out one after
+    another, long after the thumb has stopped. The repaint is immediate either
+    way; only the SENTENCE waits. */
+const LIVE_REST_MS = 350;
+
 /* ── Element handles ─────────────────────────────────────────────────────── */
 
 const $ = (sel) => document.querySelector(sel);
@@ -163,6 +196,10 @@ const els = {
   year: $('#year-range'),
   yearOut: $('#year-out'),
   yearNote: $('#year-note'),
+  week: $('#week-range'),
+  weekOut: $('#week-out'),
+  weekPrev: $('#btn-week-prev'),
+  weekNext: $('#btn-week-next'),
   type: $('#type-select'),
   segs: Array.from(document.querySelectorAll('.seg-btn[data-variable]')),
   viewBtns: Array.from(document.querySelectorAll('.seg-btn[data-view-btn]')),
@@ -199,6 +236,7 @@ const els = {
     disables itself on error strands them there. */
 const dataControls = [
   els.year, els.type, ...els.segs, els.search,
+  els.week, els.weekPrev, els.weekNext,
   els.btnTable, els.btnExport, els.btnShare,
 ];
 
@@ -236,18 +274,49 @@ const viewState = {
     variable: DEFAULTS.variable,
     nclimgridType: null,
   },
+  /**
+   * The drought monitor: which of the three county sets is painted, and which
+   * week within the shared year.
+   *
+   * `week` is 1-based WITHIN the year and null until the payload can say how
+   * many weeks that year has (applyWeek). It is remembered for the session —
+   * an excursion to the grazing periods and back returns to the week the reader
+   * left — and it is NEVER persisted: a week is a selection, like the selected
+   * county, and a returning visitor wants the latest map rather than the one
+   * they happened to be reading last month.
+   */
+  usdm: {
+    dataset: 'fsa-lfp',
+    week: null,
+  },
 };
 
 let params = urlParams();
 let kbdEnabled = true;
 let pendingTypeSlug = null;     // held until the type dictionary exists
 let pendingDatasetId = null;    // held until the default dataset has painted
+let pendingViewId = null;       // held until the DEFAULT view has painted
+let pendingWeekParam = null;    // held until the week domain exists
+let pendingYear = null;         // held when the boot view cannot show it
 let pendingDrawerParam = null;  // 'open' | 'closed' | null, held until initDrawer
 
-/* The decoded dataset on screen is data.js's to hold (activeNgpDataset()) — one
-   source of truth, so the satellites that read the facade and the descriptor
-   that paints from the instance can never be looking at two different datasets.
-   What this file holds is the crosswalk, which only some datasets need. */
+/** The active family's program-year range: which years the slider offers, and
+    the whitelist setYear() enforces. Re-authored from the payload every time a
+    family comes on screen (applyYearDomain); seeded from the boot view's
+    declared domain in readInitialState, because `?year=` is read before any
+    payload exists. */
+let yearDomain = { min: YEAR_MIN, max: YEAR_MAX };
+
+/* The decoded dataset on screen. It is held HERE, and mirrored into js/data.js
+   (setActiveNgpDataset) for the grazing-period family only — that facade is
+   `fsa-ngp-web/1`'s, by name and by surface: getYearType, getCountySeries,
+   types. A drought-monitor instance answers none of those, so binding it there
+   would break every consumer of the facade to serve one that does not want it.
+   Every descriptor leaf is handed `activeData` explicitly instead, and the
+   facade keeps meaning exactly what it has always meant.
+
+   The crosswalk sits beside it, fetched only when a dataset needs it. */
+let activeData = null;        // the instance the ACTIVE view is painting from
 let crosswalk = null;         // FSA ⇄ FIPS, fetched only when a dataset needs it
 let viewSeq = 1;              // monotonic; every fetch-involving switch bumps it
 
@@ -265,6 +334,7 @@ let drawerCtl = null;
 let cardCtl = null;
 let tableCtl = null;          // initTableView handle — invalidated on any switch
 let bar = null;               // kit colorbar handle for #legend-bar
+let chips = null;             // kit swatches handle for #legend-swatches
 let live = null;
 let booted = false;
 
@@ -336,6 +406,16 @@ function defaultDatasetId(view) {
   return viewFromSlug(view).datasets[0].id;
 }
 
+/** Is this instance one js/data.js's facade can speak for? The facade IS the
+    `fsa-ngp-web/1` surface — getYearType, getCountySeries, types — and a
+    decoder for another schema answers none of it. Asked of the INSTANCE rather
+    than of the view slug: the question is what it can do, not what it is
+    called. */
+function isNgpShaped(instance) {
+  return !!instance && typeof instance.getYearType === 'function'
+    && typeof instance.types === 'function';
+}
+
 /**
  * The `sel` argument every descriptor leaf takes: everything needed to paint or
  * describe the current view, in one plain object. Rebuilt per call — it is a
@@ -352,6 +432,10 @@ function selection() {
     variable: state.variable,
     dataset: vs.dataset,
     vintage,
+    // Absolute index into a weekly payload's series, for the families that have
+    // one; null for the families that do not, so a leaf can tell "no week" from
+    // "week zero" (which is a real week — 2000-01-04).
+    week: currentInterface().controls.week ? absoluteWeek() : null,
   };
 }
 
@@ -388,24 +472,51 @@ function readInitialState() {
   // it rides the URL so a user who needs it can bookmark it.
   kbdEnabled = params.get('kbd') !== 'off';
 
-  // The view first: the registry IS the whitelist, and the dataset whitelist
-  // below is the chosen view's own list, so the order is not optional.
+  // The view first: the registry IS the whitelist, and every whitelist below
+  // is the chosen view's own, so the order is not optional.
+  //
+  // A non-default view is PARKED rather than adopted, exactly like a non-default
+  // dataset: boot draws the default family from the one payload it fetches, and
+  // the requested family then arrives as an ordinary switch at the end of
+  // loadAndRender — the same code path, including its failure handling, that a
+  // click on the switcher runs.
   const rawView = String(params.get('view') ?? lsGet(LS.view) ?? '').toLowerCase();
-  const view = viewFromSlug(rawView);
-  if (view) state.view = view.id;   // the descriptor's own id, never the input
+  const iface = viewFromSlug(rawView) || viewFromSlug(state.view);
+  if (iface.id !== state.view) pendingViewId = iface.id;   // the descriptor's id
 
-  const iface = currentInterface();
-  const rawDataset = String(params.get('dataset') ?? lsGet(LS.dataset(state.view)) ?? '')
+  const rawDataset = String(params.get('dataset') ?? lsGet(LS.dataset(iface.id)) ?? '')
     .toLowerCase();
   if (iface.datasets.some((d) => d.id === rawDataset)
-      && rawDataset !== defaultDatasetId(state.view)) {
-    pendingDatasetId = rawDataset;
+      && rawDataset !== defaultDatasetId(iface.id)) {
+    // For the BOOT view this is a toggle to run once the default has painted;
+    // for a parked view it is simply what that family will come up showing.
+    if (pendingViewId) viewState[iface.id].dataset = rawDataset;
+    else pendingDatasetId = rawDataset;
   }
 
   const rawYear = params.get('year') ?? lsGet(LS.year);
-  // Number() on a PROGRAM YEAR, never on a county id.
+  // Number() on a PROGRAM YEAR, never on a county id. Validated against the
+  // REQUESTED family's domain: 2004 is a real year of the drought record and no
+  // year at all for grazing periods, so which one is asked for decides.
   const year = Number(rawYear);
-  if (Number.isInteger(year) && year >= YEAR_MIN && year <= YEAR_MAX) state.year = year;
+  if (Number.isInteger(year) && year >= iface.years.min && year <= iface.years.max) {
+    state.year = year;
+  }
+
+  // The slider the boot render authors is the BOOT view's. When the requested
+  // year is outside it, the boot render clamps and the parked view adopts the
+  // real one when its payload lands (applyYearDomain).
+  yearDomain = { ...currentInterface().years };
+  if (state.year < yearDomain.min || state.year > yearDomain.max) {
+    pendingYear = state.year;
+    state.year = Math.min(yearDomain.max, Math.max(yearDomain.min, state.year));
+  }
+
+  // 1-based week WITHIN the selected year, for a family that has weeks. Its
+  // upper bound is the year's own length in the payload, so like `?type=` the
+  // raw value is parked until the data can say (applyWeek).
+  const rawWeek = params.get('week');
+  pendingWeekParam = rawWeek == null ? null : String(rawWeek);
 
   const rawVar = (params.get('variable') ?? lsGet(LS.variable) ?? '').toLowerCase();
   if (Object.prototype.hasOwnProperty.call(VARIABLES, rawVar)) state.variable = rawVar;
@@ -469,11 +580,24 @@ function pushState() {
   // interface emits the same clean URL it always has. Only the ACTIVE view's
   // params are ever emitted: switching away drops the other family's.
   if (state.view !== DEFAULTS.view) p.view = state.view;
+  const iface = currentInterface();
   const vs = activeViewState();
   if (vs.dataset !== defaultDatasetId(state.view)) p.dataset = vs.dataset;
   if (state.year !== DEFAULTS.year) p.year = String(state.year);
-  if (state.type !== DEFAULTS.type) p.type = typeSlug(state.type);
-  if (state.variable !== DEFAULTS.variable) p.variable = state.variable;
+  // `type` and `variable` belong to a family that HAS those controls. They are
+  // shared state (a switch away and back returns to them), but a drought map
+  // carrying ?type=cool-season would describe a control that is not on screen
+  // and mean nothing to anyone who opened the link.
+  if (iface.controls.type && state.type !== DEFAULTS.type) p.type = typeSlug(state.type);
+  if (iface.controls.variable && state.variable !== DEFAULTS.variable) {
+    p.variable = state.variable;
+  }
+  if (iface.controls.week) {
+    // 1-based within the selected year, elided at its default (the year's last
+    // week — which for the current year is the last week the record holds).
+    const week = weekParam();
+    if (week) p.week = week;
+  }
   if (state.countyId) p.county = state.countyId;
   // Camera params are emitted only when the camera has been moved off the
   // default fit, so an untouched view keeps a clean URL.
@@ -491,15 +615,21 @@ function pushState() {
 }
 
 function persist() {
+  const iface = currentInterface();
   const vs = activeViewState();
   lsSet(LS.year, String(state.year));
-  // Per dataset: the two dictionaries do not share names, and a season slug
-  // stored under `sfsa-ngp-type` would read as an unknown pasture type on the
-  // next boot and quietly fall back to the default.
-  lsSet(typeLsKey(vs.dataset), typeSlug(state.type));
-  lsSet(LS.variable, state.variable);
+  // Per dataset: two dictionaries do not share names, and a season slug stored
+  // under `sfsa-ngp-type` would read as an unknown pasture type on the next
+  // boot and quietly fall back to the default. A family with no type control at
+  // all writes nothing here — the type on screen is the OTHER family's, and
+  // storing it against this one's dataset key would be a lie about both.
+  if (iface.controls.type) lsSet(typeLsKey(vs.dataset), typeSlug(state.type));
+  if (iface.controls.variable) lsSet(LS.variable, state.variable);
   lsSet(LS.view, state.view);
   lsSet(LS.dataset(state.view), vs.dataset);
+  // The WEEK is deliberately absent: it is a selection, not a preference — the
+  // same reason `?county=` is never stored. It rides the URL and the session's
+  // per-view memory, and a new session opens on the latest week.
 }
 
 /* ── Painting ────────────────────────────────────────────────────────────── */
@@ -518,9 +648,10 @@ function persist() {
  * behind it.
  */
 function recolor() {
-  const data = activeNgpDataset();
+  const data = activeData;
   if (!handle || !data) return;
-  const { colors, unmatchedFips } = currentInterface().colorsFor(data, crosswalk, selection());
+  const { colors, unmatchedFips, stats } = currentInterface()
+    .colorsFor(data, crosswalk, selection());
 
   // Ids with data but nothing to draw them on are REPORTED, not swallowed, and
   // there are two kinds: an FSA id with no polygon in this vintage (the island
@@ -529,19 +660,76 @@ function recolor() {
   // that lies.
   const unmatched = handle.recolor(colors);
   const missingFips = unmatchedFips ? unmatchedFips.length : 0;
-  announceRender(colors.size - unmatched.length, unmatched.length + missingFips);
+  announceRender(colors.size - unmatched.length, unmatched.length + missingFips, stats);
 
   // The card is a readout of the same selection as the map.
   if (state.countyId) fillCard(state.countyId);
 }
 
-/** The always-on half of the a11y twin: a short summary of what the canvas is
-    showing right now (HOUSE-STYLE §5.2), in the active interface's own words.
-    The on-demand table is the other half, and it is N-W4's. */
-function announceRender(shown, missing) {
+/**
+ * The always-on half of the a11y twin: a short summary of what the canvas is
+ * showing right now (HOUSE-STYLE §5.2), in the active interface's own words.
+ * The on-demand table is the other half.
+ *
+ * `stats` is whatever the descriptor's own colorsFor() counted on its way
+ * through the data — the numbers a join produces and nothing outside it can
+ * recover (how many counties were classed, how many were absent, how many
+ * source rows landed nowhere). Handed straight back to the descriptor that
+ * produced it; this file never reads it.
+ *
+ * A one-shot `noticeText` rides in front of the sentence when the app has just
+ * done something to the reader's selection on their behalf — clamping a year
+ * into the arriving family's domain. It is announced ONCE, with the render it
+ * belongs to, because a second announcement in the same breath is one the
+ * screen reader drops.
+ */
+function announceRender(shown, missing, stats) {
   if (!live) return;
-  live.announce(currentInterface()
-    .liveSentence(selection(), shown, allCountyIds().length, missing));
+  const total = activeData ? activeData.allCountyIds().length : 0;
+  let sentence = currentInterface()
+    .liveSentence(selection(), shown, total, missing, stats);
+  if (notice) sentence = notice + ' ' + sentence;
+  if (liveResting) {
+    // A scrub or a transition is in flight: hold the newest sentence and say it
+    // when things stop moving. Held, not dropped — the reader still gets a
+    // summary of where they landed, and the notice is still on the front of it,
+    // because `notice` is cleared only where it is actually SPOKEN. A dataset
+    // switch recolors twice (the clamp, then the arriving payload) and the
+    // second sentence must not quietly drop the first one's explanation.
+    liveHeld = sentence;
+    return;
+  }
+  live.announce(sentence);
+  notice = null;
+}
+
+/** Set by the one place that changes a shared selection without being asked to
+    (clampYear). Consumed by the next announceRender. */
+let notice = null;
+
+/* The scrub-quiet state for the live region. See LIVE_REST_MS. */
+let liveResting = false;
+let liveHeld = null;
+let liveTimer = null;
+
+/**
+ * Hold the live region until the control being scrubbed has rested.
+ *
+ * Called by the control, not by announceRender: only the control knows that
+ * what is happening is one continuous gesture rather than a sequence of
+ * separate answers.
+ */
+function deferAnnounce() {
+  liveResting = true;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => {
+    liveResting = false;
+    if (liveHeld && live) {
+      live.announce(liveHeld);
+      notice = null;   // spoken at last — see announceRender
+    }
+    liveHeld = null;
+  }, LIVE_REST_MS);
 }
 
 /* ── Legend ──────────────────────────────────────────────────────────────────
@@ -567,6 +755,15 @@ function syncLegend() {
   els.legendBar.hidden = kind !== 'bar';
   els.legendSwatches.hidden = kind !== 'swatches';
   els.legendKey.textContent = legend.key(sel);
+  if (kind === 'swatches' && typeof legend.items === 'function') {
+    // Built on FIRST USE, not at boot: the categories are the descriptor's, and
+    // at boot there may not be a descriptor with any. The kit's swatches()
+    // replaces the container's contents, so building it late costs nothing.
+    const items = legend.items(sel);
+    const noData = { color: NO_DATA(), label: legend.noDataLabel(sel) };
+    if (!chips) chips = swatches(els.legendSwatches, items, { noData });
+    else chips.update(items, { noData });
+  }
   if (bar && kind === 'bar') {
     // The chip's LABEL is the descriptor's (the absence means something
     // different in each dataset); its color is the theme's, resolved live.
@@ -625,15 +822,13 @@ function fillCard(id) {
   const sel = { ...selection(), hasGeometry: !!(counties && counties.index.has(id)) };
   const dl = els.cardRows;
   dl.replaceChildren();
-  for (const row of currentInterface().cardRows(activeNgpDataset(), crosswalk, sel, id)) {
+  for (const row of currentInterface().cardRows(activeData, crosswalk, sel, id)) {
     addRow(dl, row.term, row.value, row.isNote);
   }
 
-  // PR 1: the card's all-years span chart is written against a real time
-  // series, and a CLIMATOLOGY has one nominal year — a chart of one bar says
-  // nothing and a table of one row says less. Hidden until the descriptor owns
-  // the card's figure too (then this becomes cardBody delegation).
-  els.cardContent.hidden = !!activeDataset().nominalYears;
+  // The card's PICTURE is the descriptor's too, and js/card-content.js draws it
+  // off the #card-rows rewrite above — which is why nothing here has to tell it
+  // that the readout moved.
 }
 
 /**
@@ -801,13 +996,100 @@ function syncYearControl() {
   els.yearNote.hidden = !nominal;
 }
 
+/**
+ * Re-author the year slider's range from the payload that has just arrived, and
+ * pull the shared year into it.
+ *
+ * The slider's range is authored in the HTML and the payload is the authority —
+ * that much is unchanged from the day the app had one dataset. What is new is
+ * that the answer MOVES: grazing periods run 2008–2026 and the drought monitor
+ * runs 2000–2026, they share one slider, and the year is shared state that
+ * survives the switch between them. So the domain follows the data, and a year
+ * outside it CLAMPS to the nearest end rather than snapping to a default — the
+ * reader asked for 2004, and 2008 is the closest this family can answer.
+ *
+ * A nominal-year dataset (a climatology) re-authors nothing: its payload
+ * carries one year, which is not a domain, and its slider is disabled anyway.
+ *
+ * @param {object} instance the arrived decoder instance
+ */
+function applyYearDomain(instance) {
+  if (!instance || typeof instance.years !== 'function') return;
+  if (activeDataset().nominalYears) return;
+
+  const list = instance.years();
+  if (!list.length) return;
+  const first = list[0];
+  const last = list[list.length - 1];
+  if (first < YEAR_MIN || last > YEAR_MAX) {
+    console.warn('[ngp] the ' + activeDataset().id + ' payload carries ' + first
+      + '–' + last + ', outside this app\'s ' + YEAR_MIN + '–' + YEAR_MAX
+      + ' whitelist; ?year= outside that range will not be honoured.');
+  }
+  yearDomain = { min: first, max: last };
+  els.year.min = String(first);
+  els.year.max = String(last);
+
+  // A year the SHARED slider could not hold at boot, because the family that
+  // booted does not cover it. This one might: `?view=usdm&year=2004` boots on
+  // grazing periods at 2008 and lands here on 2004.
+  if (pendingYear != null) {
+    const want = pendingYear;
+    pendingYear = null;
+    if (want >= first && want <= last) {
+      setYear(want);
+      return;
+    }
+  }
+  clampYear();
+}
+
+/**
+ * Bring the shared year inside the active domain, saying so when it moves.
+ *
+ * Announced, not silent: the reader is looking at 2004 and about to be shown
+ * 2008, and a map that changed year without a word is a map they will misread.
+ * The sentence rides in front of the next render summary (announceRender), so
+ * it is one announcement rather than two racing ones.
+ */
+function clampYear() {
+  const want = Math.min(yearDomain.max, Math.max(yearDomain.min, state.year));
+  if (want === state.year) return;
+  notice = state.year + ' is outside ' + currentInterface().label + '\'s '
+    + yearDomain.min + '–' + yearDomain.max + ' range; showing ' + want + '.';
+  if (!booted) {
+    // Boot: there is no layer handle to repaint, no card to refill and no URL
+    // to rewrite from a half-read view. Set the year and let loadAndRender's
+    // own sequence carry it — including the boundary vintage, which it
+    // re-checks against what it fetched.
+    state.year = want;
+    els.year.value = String(want);
+    els.yearOut.textContent = String(want);
+    vintage = vintageForYear(want);
+    return;
+  }
+  // Hold the live region across the rest of this transition. Clamping happens
+  // in the middle of a dataset switch, which recolors twice — once for the new
+  // year here, once for the arriving payload — and only the LAST sentence is
+  // heard. Holding it means the reader gets one announcement, and it is the one
+  // that explains why the year moved.
+  deferAnnounce();
+  // Through setYear, so the boundary vintage, the URL, the stored preference
+  // and the <output> all follow exactly as they do for a dragged thumb.
+  setYear(want);
+}
+
 function setYear(next) {
   const year = Number(next);
-  if (!Number.isInteger(year) || year < YEAR_MIN || year > YEAR_MAX) return;
+  if (!Number.isInteger(year) || year < yearDomain.min || year > yearDomain.max) return;
   if (year === state.year) return;
   state.year = year;
   els.year.value = String(year);
   els.yearOut.textContent = String(year);
+  // Before the URL and before the paint: a week is a position INSIDE the year,
+  // so the year moving can shorten it (52 weeks against 53), and both the link
+  // and the map have to describe the week that is actually selected.
+  if (currentInterface().controls.week) syncWeekControl();
   persist();
   pushState();
 
@@ -854,6 +1136,160 @@ async function swapVintage(want) {
   }
 }
 
+/* ── The week scrubber ───────────────────────────────────────────────────────
+   A family whose data is WEEKLY needs a second time control, and it is a
+   control inside the year rather than beside it: the year slider picks 2012 and
+   this picks one of that year's 52 or 53 Tuesdays. Two reasons it is not one
+   1,389-step slider over the whole record: a thumb one pixel wide would be
+   unusable, and the year is SHARED STATE — the reader who arrived from the
+   grazing-period map in 2012 should still be in 2012.
+
+   What the app stores is therefore the week WITHIN the year (1-based), and what
+   the data is read at is the absolute index into the payload's series. The two
+   conversions are weekBounds() and absoluteWeek(), and everything else below is
+   in the app's own units.
+
+   The default is the year's LAST week — for the current year, the last week the
+   record holds — so an untouched view shows the most recent map there is, and
+   `?week=` is elided there like every other default. */
+
+/** The active instance IF it carries weeks. Asked of the instance, not of the
+    view: what makes a week scrubbable is a decoder that can answer weekRange(). */
+function weekData() {
+  return activeData && typeof activeData.weekRange === 'function' ? activeData : null;
+}
+
+/** The selected year's slice of the record: absolute first and last week index,
+    and how many weeks that is. Null when the active data has no weeks, or the
+    year is outside what it carries. */
+function weekBounds() {
+  const data = weekData();
+  if (!data) return null;
+  const range = data.weekRange(state.year);
+  if (!range) return null;
+  return { j0: range[0], j1: range[1], count: range[1] - range[0] + 1 };
+}
+
+/** The selected week as an absolute index into the payload's series — what
+    every descriptor leaf reads. Null for a family without weeks. */
+function absoluteWeek() {
+  const b = weekBounds();
+  if (!b) return null;
+  const week = activeViewState().week;
+  return b.j0 + (week == null ? b.count : week) - 1;
+}
+
+/** `?week=`, or null at its default. */
+function weekParam() {
+  const b = weekBounds();
+  if (!b) return null;
+  const week = activeViewState().week;
+  if (week == null || week === b.count) return null;
+  return String(week);
+}
+
+/**
+ * Re-author the week control for the year and dataset now on screen, clamping
+ * the remembered week into the year's own length.
+ *
+ * A week is a POSITION IN THE YEAR, so it survives a year change rather than
+ * resetting: 2012's week 30 is late July, and so is 2013's. A year with 52
+ * weeks clamps a remembered 53 to 52 — which is still its last week, so a
+ * reader who never touched this control keeps seeing the year's latest map.
+ */
+function syncWeekControl() {
+  const b = weekBounds();
+  if (!b || !els.week) return;
+  const vs = activeViewState();
+  vs.week = vs.week == null ? b.count : Math.min(Math.max(1, vs.week), b.count);
+  // Written only when they change: re-authoring min/max on a slider mid-drag
+  // is how a dragged thumb starts jumping.
+  if (els.week.min !== '1') els.week.min = '1';
+  if (els.week.max !== String(b.count)) els.week.max = String(b.count);
+  els.week.value = String(vs.week);
+  syncWeekOut();
+}
+
+/** The readout under the thumb, and whether stepping is possible from here.
+    Separate from syncWeekControl because this is the half that runs on every
+    frame of a drag. */
+function syncWeekOut() {
+  const data = weekData();
+  const b = weekBounds();
+  if (!data || !b || !els.weekOut) return;
+  const j = b.j0 + activeViewState().week - 1;
+  els.weekOut.textContent = data.weekLabel(j) + ' · week '
+    + activeViewState().week + ' of ' + b.count;
+  // The steppers walk the RECORD, not the year, so they stop only at its ends.
+  if (els.weekPrev) els.weekPrev.disabled = j <= 0;
+  if (els.weekNext) els.weekNext.disabled = j >= data.latestWeek();
+}
+
+/**
+ * Show another week of the selected year.
+ *
+ * @param {number|string} next 1-based week within the year
+ */
+function setWeek(next) {
+  const b = weekBounds();
+  if (!b) return;
+  const week = Number(next);
+  if (!Number.isInteger(week) || week < 1 || week > b.count) return;
+  const vs = activeViewState();
+  if (vs.week === week) return;
+  vs.week = week;
+  syncWeekOut();
+  pushState();
+  recolor();
+}
+
+/**
+ * Step one week through the RECORD, crossing the year boundary when it has to.
+ *
+ * "Previous week" means the week before this one, and at week 1 of 2013 that is
+ * week 52 of 2012 — so the year slider follows. Stopping dead at each year's
+ * edge would make the two controls fight each other; the buttons disable only
+ * at the two ends of the record, where there is genuinely no next week.
+ *
+ * @param {number} delta −1 | +1
+ */
+function stepWeek(delta) {
+  const data = weekData();
+  const b = weekBounds();
+  if (!data || !b) return;
+  const j = absoluteWeek() + delta;
+  if (j < 0 || j > data.latestWeek()) return;
+  const pos = data.weekOfYear(j);
+  if (!pos) return;
+  if (pos.year === state.year) {
+    setWeek(pos.index);
+    return;
+  }
+  // Set the week FIRST: setYear re-authors this control for the year it lands
+  // on, and it must clamp the week the reader is going to, not the one they
+  // are leaving.
+  activeViewState().week = pos.index;
+  setYear(pos.year);
+}
+
+/**
+ * Resolve a parked `?week=` against the payload that has just arrived.
+ *
+ * Only the URL param needs the descriptor: it is the one value that was read
+ * before anything knew how many weeks the year has. A remembered week (the
+ * reader was here earlier in the session) and the default are both clamps, and
+ * syncWeekControl does those.
+ */
+function applyWeek(instance) {
+  const parked = pendingWeekParam;
+  pendingWeekParam = null;
+  const resolved = currentInterface().applyPending(instance, {
+    week: parked, year: state.year,
+  });
+  if (Number.isInteger(resolved)) activeViewState().week = resolved;
+  syncWeekControl();
+}
+
 function setType(next) {
   if (next === state.type) return;
   state.type = next;
@@ -869,7 +1305,10 @@ function setType(next) {
 function setVariable(next) {
   if (!Object.prototype.hasOwnProperty.call(VARIABLES, next)) return;
   state.variable = next;
-  activeViewState().variable = next;
+  // Remembered only by a family that HAS a colour-by control. Writing it into a
+  // family that does not would put a field in its remembered state that means
+  // nothing there — and the state a switch restores is compared field for field.
+  if (currentInterface().controls.variable) activeViewState().variable = next;
   // aria-pressed IS the styling source of truth (HOUSE-STYLE §5.7): the CSS
   // keys off it, so the accessible state cannot drift from the visual one.
   for (const btn of els.segs) {
@@ -912,6 +1351,11 @@ function syncSections() {
   for (const section of document.querySelectorAll('.sfsa-drawer-section[data-view]')) {
     section.hidden = section.dataset.view !== state.view;
   }
+  // The map's accessible name follows the active family too — index.html
+  // authors the NGP boot value, and every switch restates it from the
+  // descriptor so a screen reader is never told a drought map is a
+  // grazing-period map.
+  els.map.setAttribute('aria-label', currentInterface().mapLabel);
 }
 
 /** aria-pressed IS the styling source of truth for both segmented groups
@@ -923,10 +1367,17 @@ function syncViewButtons() {
   }
 }
 
+/** Exactly ONE dataset button in the page reads as pressed — the active
+    family's active dataset. The other families' buttons are in hidden sections,
+    but a pressed button in a hidden section is still a pressed button to
+    anything reading the accessibility tree (and to the audit harness, which
+    counts them), so they are cleared rather than left as they were. */
 function syncDatasetButtons() {
+  const ids = new Set(currentInterface().datasets.map((d) => d.id));
   const active = activeViewState().dataset;
   for (const btn of els.datasetBtns) {
-    btn.setAttribute('aria-pressed', String(btn.getAttribute('data-dataset') === active));
+    const id = btn.getAttribute('data-dataset');
+    btn.setAttribute('aria-pressed', String(ids.has(id) && id === active));
   }
 }
 
@@ -948,10 +1399,16 @@ async function bumpViewSeq() {
 /**
  * Switch the data family on screen.
  *
- * PR 1 ships one interface, so nothing below the guards can run yet: the branch
- * is authored now so the second descriptor lands as data plus a drawer section
- * rather than as surgery on this file. What it does NOT do is reset the shared
- * state or re-fit the camera.
+ * What it does NOT do is reset the shared state or re-fit the camera: the
+ * county, the camera, the year and the theme are the VISITOR's, not the
+ * family's, and comparing two readings of the same county in the same year is
+ * the app's reason to exist. The year is the one that can fail to survive —
+ * two families do not cover the same span — and it is clamped and announced
+ * rather than silently moved (applyYearDomain → clampYear).
+ *
+ * Everything the arriving family owns is settled by applyDataset() once its
+ * payload is really in hand: its year domain, its type dictionary, its week,
+ * its legend body, its card and its table.
  *
  * @param {string} next an interface slug
  */
@@ -960,7 +1417,12 @@ function setView(next) {
   if (!iface) return;              // not a shipped family — a stale link, ignore
   if (iface.id === state.view) return;
 
-  rememberType(activeViewState().dataset, state.type);   // the outgoing family's
+  // The outgoing family's own selections, so switching back is a return rather
+  // than a reset. The type only when it HAS one — otherwise the name on screen
+  // belongs to some other family and storing it here would corrupt both.
+  if (currentInterface().controls.type) {
+    rememberType(activeViewState().dataset, state.type);
+  }
   state.view = iface.id;
   syncSections();
   syncViewButtons();
@@ -993,7 +1455,7 @@ function setDataset(next) {
   const vs = activeViewState();
   if (!ds || ds.id === vs.dataset) return;
 
-  rememberType(vs.dataset, state.type);   // so toggling back restores it
+  if (iface.controls.type) rememberType(vs.dataset, state.type);   // toggling back restores it
   vs.dataset = ds.id;
   syncDatasetButtons();
   pushState();
@@ -1018,6 +1480,7 @@ function setDataset(next) {
  */
 async function applyDataset(ds) {
   const wanted = ds.id;
+  const iface = currentInterface();
   note('Loading ' + ds.label + '…');
 
   let instance;
@@ -1044,14 +1507,23 @@ async function applyDataset(ds) {
     return;
   }
 
-  // The facade re-points at the new instance, so every satellite that imports
-  // ./data.js (the card chart, the table, the export) — and this file's own
-  // paint path — reads the dataset on screen without knowing a toggle happened.
-  setActiveNgpDataset(instance);
+  activeData = instance;
+  // The grazing-period facade re-points too, when what arrived is one of its
+  // own: js/data.js is `fsa-ngp-web/1`'s surface (see § Live state), and the
+  // audit harness reads the app's numbers through it.
+  if (isNgpShaped(instance)) setActiveNgpDataset(instance);
 
-  state.type = resolveTypeFor(ds, instance);
-  rememberType(ds.id, state.type);
-  populateTypeSelect();
+  // The year domain is the PAYLOAD's, so it is re-authored here rather than at
+  // boot — a family that starts in 2000 and one that starts in 2008 share this
+  // slider, and the shared year is clamped into whichever is on screen.
+  applyYearDomain(instance);
+
+  if (iface.controls.type) {
+    state.type = resolveTypeFor(ds, instance);
+    rememberType(ds.id, state.type);
+    populateTypeSelect();
+  }
+  if (iface.controls.week) applyWeek(instance);
   syncYearControl();
   persist();
   pushState();
@@ -1210,6 +1682,23 @@ function wireControls() {
     });
   });
 
+  // The week scrubber, on the same rAF throttle as the year — one repaint per
+  // frame, the <output> updated immediately so the date under the thumb never
+  // lags the thumb, and the live region held until the gesture rests.
+  let weekRaf = 0;
+  if (els.week) {
+    els.week.addEventListener('input', () => {
+      deferAnnounce();
+      if (weekRaf) return;
+      weekRaf = requestAnimationFrame(() => {
+        weekRaf = 0;
+        setWeek(els.week.value);
+      });
+    });
+  }
+  if (els.weekPrev) els.weekPrev.addEventListener('click', () => stepWeek(-1));
+  if (els.weekNext) els.weekNext.addEventListener('click', () => stepWeek(1));
+
   els.type.addEventListener('change', () => setType(els.type.value));
 
   for (const btn of els.segs) {
@@ -1360,6 +1849,7 @@ async function loadAndRender() {
   // sources, every centroid, the reveal push and the PNG export all assume the
   // geometry has already been through js/projection.js.
   counties = projectCounties(payloads[0]);
+  activeData = activeNgpDataset();
 
   // A slug parked for a dataset that is not the one booting is not this
   // dictionary's to resolve: the toggle at the end of this function consumes it
@@ -1368,20 +1858,14 @@ async function loadAndRender() {
   populateTypeSelect();
 
   // The slider's range is authored in the HTML; the payload is the authority.
-  const yearList = years();
-  const first = yearList[0];
-  const last = yearList[yearList.length - 1];
-  if (String(first) !== els.year.min || String(last) !== els.year.max) {
-    console.warn('[ngp] slider range ' + els.year.min + '–' + els.year.max
-      + ' does not match the data (' + first + '–' + last + '); using the data.');
-    els.year.min = String(first);
-    els.year.max = String(last);
-    if (state.year < first || state.year > last) {
-      state.year = last;
-      els.year.value = String(last);
-      els.yearOut.textContent = String(last);
-      vintage = vintageForYear(state.year);
-    }
+  const fetchedFor = vintage;
+  applyYearDomain(activeData);
+  if (vintage !== fetchedFor) {
+    // The clamp above crossed the 2015 line, and the boundaries in hand are the
+    // ones the pre-clamp year asked for. Cached either way (boot fetched one and
+    // the idle prefetch at the end of this function warms the other), so this is
+    // a re-read and not a second download in the common case.
+    counties = projectCounties(await loadCounties(state.year));
   }
 
   await mapLoaded;
@@ -1452,7 +1936,7 @@ async function loadAndRender() {
         sub: id,
         // The value line is the active interface's: the same number the card
         // shows, in the same words, for whatever it is painting.
-        val: currentInterface().tooltip(activeNgpDataset(), crosswalk, selection(), id),
+        val: currentInterface().tooltip(activeData, crosswalk, selection(), id),
       };
     },
     onClick: (id) => selectCounty(id),
@@ -1483,12 +1967,20 @@ async function loadAndRender() {
   initTableSeam();
   initExportSeam();
 
-  // A stored or deep-linked non-default dataset arrives LAST, as an ordinary
-  // toggle: boot fetches exactly one payload (the LCP guarantee tools/verify.mjs
-  // asserts against the browser's own resource timing), and the swap then runs
-  // the very code path a click runs — including its failure handling, which a
-  // second boot-time fetch would have had to reimplement.
-  if (pendingDatasetId) {
+  // A stored or deep-linked non-default view or dataset arrives LAST, as an
+  // ordinary switch: boot fetches exactly one payload (the LCP guarantee
+  // tools/verify.mjs asserts against the browser's own resource timing), and the
+  // switch then runs the very code path a click runs — including its failure
+  // handling, which a second boot-time fetch would have had to reimplement.
+  //
+  // The view goes first and the dataset is its own business: a parked view
+  // already carries the requested dataset in its remembered state
+  // (readInitialState), so setView brings up both in one transition.
+  if (pendingViewId) {
+    const wanted = pendingViewId;
+    pendingViewId = null;
+    setView(wanted);
+  } else if (pendingDatasetId) {
     const wanted = pendingDatasetId;
     pendingDatasetId = null;
     setDataset(wanted);
@@ -1513,7 +2005,9 @@ async function loadAndRender() {
 
    FILES N-W4 ADDS
      js/legend-wheel.js  the cyclic month-wheel legend  → renders into #legend-wheel
-     js/card-content.js  the all-years span chart + table → renders into #card-content
+     js/card-content.js  the card body's lifecycle       → renders into #card-content
+                         (WHAT it draws is the active interface's cardBody:
+                          the grazing-period span chart, the drought heatmap)
      js/table-view.js    the on-demand data table        → renders into #table-modal-body
      js/export.js        branded PNG export              → wraps the kit's ui/export.js
 
@@ -1650,7 +2144,7 @@ export function ngpContext() {
     getInterface: currentInterface,
     getViewState: () => ({ ...activeViewState() }),
     getSelection: selection,
-    getData: activeNgpDataset,
+    getData: () => activeData,
     getCrosswalk: () => crosswalk,
     // Map internals.
     getMap: () => map,
