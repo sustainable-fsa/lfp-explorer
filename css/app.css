@@ -7,16 +7,17 @@
    not know how many panes the map row has").
 
    Loaded AFTER the theme, so anything here that touches a kit selector wins
-   without !important. There are exactly two such rules, each tagged
-   `kit-override:` with its reason (the map attribution's dock clearance in §5
-   and the data-table modal's width in §10). Everything else is either an
-   app-owned id (#map, #map-frame, #county-card) or a control the kit ships no
-   component for (a <select>).
+   without !important. There are exactly three such places, each tagged
+   `kit-override:` with its reason (the drawer's stacked segmented groups in §3,
+   the map attribution's dock clearance in §5, and the data-table modal's width
+   in §10). Everything else is either an app-owned id (#map, #map-frame,
+   #county-card), an app-owned class (.control-note) or a control the kit ships
+   no component for (a <select>).
 
    Contents:
      1. Page shell            5. County card (docked)
      2. Map + status pill     6. Footer
-     3. Drawer control sizing 7. Compact
+     3. Drawer controls       7. Compact
      4. Legend (in the drawer)
    ========================================================================== */
 
@@ -120,7 +121,7 @@ main {
 /* No text label to pad around when the pill is only a sentence. */
 #app-note:not(:has(button)) { padding-right: 0.85rem; }
 
-/* ── 3. Drawer control sizing ─────────────────────────────────────────────
+/* ── 3. Drawer controls ───────────────────────────────────────────────────
    The kit ships no <select> component, so the pasture-type menu is styled
    here to match the kit's search input: same height, border, radius, and
    type scale. Not an override — there is nothing to override.
@@ -153,6 +154,48 @@ main {
 #drawer #type-select {
   width: 100%;
   max-width: none;
+}
+
+/* A caption under a control: what the switcher does not offer yet, and why the
+   year slider is disabled on a climatology. Same muted small type as
+   #legend-key (§4) — a note about a control, not a second label for it, so it
+   never carries the control's accessible name. */
+.control-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* kit-override: `.seg-btns` is a horizontal fused group and `.nav-btn` is
+   `white-space: nowrap`, both sized for the short navbar labels the kit was
+   drawn for ("Start · End · Duration"). The two SCOPING groups — which data
+   family, which dataset — are named in words a reader can act on ("nClimGrid
+   climatology"), and two of those cannot share a 248px drawer row without
+   spilling out of their own borders. So these two groups stack instead, with
+   the fused radii and the shared border rotated a quarter turn; every other
+   .seg-btns in the app keeps the kit's geometry. min-height is deliberately
+   NOT set here, so the kit's own 40px touch target (theme §6) still wins on a
+   pointerless device. */
+#view-seg .seg-btns,
+#ngp-dataset-seg .seg-btns { flex-direction: column; }
+#view-seg .seg-btn,
+#ngp-dataset-seg .seg-btn {
+  height: auto;
+  padding: 6px 10px;
+  border-right-width: 1px;
+  border-bottom-width: 0;
+  white-space: normal;
+  line-height: 1.3;
+}
+#view-seg .seg-btn:first-child,
+#ngp-dataset-seg .seg-btn:first-child {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+#view-seg .seg-btn:last-child,
+#ngp-dataset-seg .seg-btn:last-child {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  border-bottom-width: 1px;
 }
 
 /* ── 4. Legend (in the drawer) ────────────────────────────────────────────
@@ -336,7 +379,7 @@ main {
    features draw are DATA colors (the two ramps, the no-data fill), and those
    are set in JS from assets/colors*.json and the --no-data token, never here.
 
-   One of the two kit-overrides this file's header counts lives down here: the
+   One of the three kit-overrides this file's header counts lives down here: the
    #table-modal width in §10, tagged the same way and for the same kind of
    reason as the attribution clearance in §5.
 

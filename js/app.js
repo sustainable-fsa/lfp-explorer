@@ -9,6 +9,17 @@
    (window.maplibregl, window.topojson) — index.html loads them as classic
    scripts, which is why an ES module here is always second.
 
+   ── Interfaces ─────────────────────────────────────────────────────────────
+   This file paints no dataset of its own. Each data family the app can show is
+   an INTERFACE DESCRIPTOR (js/interfaces/*.js, collected in
+   js/interfaces/registry.js): a declarative core (id, label, datasets[]) plus
+   the function-valued leaves that own everything only that family can know —
+   colorsFor(), legend.kind()/legend.key(), tooltip(), cardRows(),
+   liveSentence(), table.caption(), export.*. app.js owns the machinery around
+   them: which view and dataset are active, the fetch, the controls, the map,
+   and the readiness markers. Adding a family is a descriptor plus a drawer
+   section, not surgery here — which is the whole point of the split.
+
    ── State model ────────────────────────────────────────────────────────────
    The URL is the primary state (HOUSE-STYLE §4). Read once at boot with
    precedence URL > localStorage(sfsa-ngp-*) > defaults, every value validated
@@ -18,13 +29,22 @@
    moveend, and a view that is entirely at defaults emits a CLEAN url with no
    query string at all.
 
-     ?year   2008–2026            ?lng ?lat ?zoom  camera (all three or none)
-     ?type   pasture-type slug    ?theme  light | high-contrast
+     ?view   interface slug (ngp) ?lng ?lat ?zoom  camera (all three or none)
+     ?dataset the active view's own dataset id (ngp: fsa | nclimgrid)
+     ?year   2008–2026            ?theme  light | high-contrast
+     ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?variable start|end|duration ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
      ?drawer closed — desktop only, and only when closed (the drawer defaults
              open, and on compact it is an overlay that always boots closed, so
              a compact session never emits it)
+
+   ?view and ?dataset are elided at their defaults (the first interface in the
+   registry, and that interface's first dataset), so every URL minted before
+   the app grew past one dataset still means exactly what it meant. ?type is
+   NOT elided on a non-default dataset: "full-season" is a real choice inside
+   the climatology's own three-season dictionary, and dropping it would make
+   the link mean "whatever that dataset defaults to next year".
 
    ?lng AND ?lat ARE NOT LONGITUDE AND LATITUDE. The composite is projected
    into EPSG:5070 (CONUS Albers) in the browser before MapLibre ever sees it —
@@ -69,11 +89,14 @@ import { colorbar } from 'https://sustainable-fsa.com/style/v0.2.0/ui/legend.js'
 import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.0/ui/help.js';
 
 import {
-  allCountyIds, countyName, getYearType, initData, typeFromSlug, typeSlug,
-  types, years,
+  activeNgpDataset, allCountyIds, countyName, initData, setActiveNgpDataset,
+  typeFromSlug, typeSlug, types, years,
 } from './data.js';
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
 import { PROJECTED_BOUNDS, projectCounties } from './projection.js';
+import { DEFAULT_VIEW, aliasType, viewFromSlug } from './interfaces/registry.js';
+import { loadDataset } from './decoders/common.js';
+import { loadCrosswalk } from './decoders/crosswalk.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -83,6 +106,9 @@ const YEAR_MIN = 2008;
 const YEAR_MAX = 2026;
 
 const DEFAULTS = Object.freeze({
+  // The registry is ORDERED (the story's own order) and names its own default,
+  // so the slug is not repeated here to drift out of date.
+  view: DEFAULT_VIEW,
   year: YEAR_MAX,
   type: 'Native Pasture',
   variable: 'duration',
@@ -90,10 +116,24 @@ const DEFAULTS = Object.freeze({
 
 /** localStorage keys. Everything app-owned is `sfsa-ngp-*` (kit AGENTS.md);
     the theme is the kit's own `sfsa-theme`, deliberately shared org-wide, and
-    this app never writes it directly — initThemeToggle does. */
+    this app never writes it directly — initThemeToggle does.
+
+    The namespace is `sfsa-ngp-*` for every interface, not just grazing periods:
+    renaming it would orphan the preferences of everyone who has ever used this
+    app. Two of the keys are per-interface / per-dataset and are built by the
+    two functions below, so they stay collected here rather than being spelled
+    out at their call sites. */
 const LS = Object.freeze({
+  view: 'sfsa-ngp-view',
+  /** The remembered dataset of ONE interface. Per-interface so a stored value
+      cannot leak across views, where the same id means something else. */
+  dataset: (view) => 'sfsa-ngp-dataset-' + view,
   year: 'sfsa-ngp-year',
+  /** `sfsa-ngp-type` keeps its original meaning — the OFFICIAL payload's
+      pasture type — and every other dataset gets a key of its own, because one
+      slug means different things to different dictionaries. */
   type: 'sfsa-ngp-type',
+  typeFor: (dataset) => 'sfsa-ngp-type-' + dataset,
   variable: 'sfsa-ngp-variable',
   drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
@@ -122,8 +162,11 @@ const els = {
   btnDrawer: $('#btn-drawer'),
   year: $('#year-range'),
   yearOut: $('#year-out'),
+  yearNote: $('#year-note'),
   type: $('#type-select'),
   segs: Array.from(document.querySelectorAll('.seg-btn[data-variable]')),
+  viewBtns: Array.from(document.querySelectorAll('.seg-btn[data-view-btn]')),
+  datasetBtns: Array.from(document.querySelectorAll('.seg-btn[data-dataset]')),
   search: $('#county-search'),
   results: $('#county-results'),
   btnTable: $('#btn-table'),
@@ -133,6 +176,7 @@ const els = {
   btnInfo: $('#btn-info'),
   legendWheel: $('#legend-wheel'),
   legendBar: $('#legend-bar'),
+  legendSwatches: $('#legend-swatches'),
   legendKey: $('#legend-key'),
   card: $('#county-card'),
   cardTitle: $('#card-title'),
@@ -147,7 +191,12 @@ const els = {
 /** Controls that mean nothing until the data has loaded. Disabled through boot
     and re-enabled together; the theme, help and drawer buttons are deliberately
     not in this list, because they work with or without data — an empty drawer
-    you cannot open is worse than an empty drawer. */
+    you cannot open is worse than an empty drawer.
+
+    The interface switcher and the dataset toggles are NOT in this list either,
+    and for a sharper reason: switching away from a family or a dataset whose
+    payload failed to load is the user's way out of the failure. A control that
+    disables itself on error strands them there. */
 const dataControls = [
   els.year, els.type, ...els.segs, els.search,
   els.btnTable, els.btnExport, els.btnShare,
@@ -155,7 +204,12 @@ const dataControls = [
 
 /* ── Live state ──────────────────────────────────────────────────────────── */
 
+/** What every interface shares: which family is on screen, where in time and
+    space we are, which county is open, and the theme. A switch between
+    interfaces changes NONE of this — comparing two datasets on the same county
+    in the same year is the app's reason to exist. */
 const state = {
+  view: DEFAULTS.view,
   year: DEFAULTS.year,
   type: DEFAULTS.type,
   variable: DEFAULTS.variable,
@@ -163,10 +217,39 @@ const state = {
   theme: getTheme(),
 };
 
+/**
+ * What each interface remembers for itself, so switching away and back is a
+ * return rather than a reset.
+ *
+ * `type` and `nclimgridType` are two named fields rather than one map because
+ * they mean different things: `type` is a name from the OFFICIAL payload's
+ * sixteen-entry dictionary (and the one `sfsa-ngp-type` has always stored),
+ * `nclimgridType` is one of the climatology's three seasons, seeded from the
+ * official name through the registry's TYPE_ALIASES the first time the toggle
+ * is pressed. `variable` is written here and read by the second interface,
+ * which has a colour-by list of its own.
+ */
+const viewState = {
+  ngp: {
+    dataset: 'fsa',
+    type: DEFAULTS.type,
+    variable: DEFAULTS.variable,
+    nclimgridType: null,
+  },
+};
+
 let params = urlParams();
 let kbdEnabled = true;
 let pendingTypeSlug = null;     // held until the type dictionary exists
+let pendingDatasetId = null;    // held until the default dataset has painted
 let pendingDrawerParam = null;  // 'open' | 'closed' | null, held until initDrawer
+
+/* The decoded dataset on screen is data.js's to hold (activeNgpDataset()) — one
+   source of truth, so the satellites that read the facade and the descriptor
+   that paints from the instance can never be looking at two different datasets.
+   What this file holds is the crosswalk, which only some datasets need. */
+let crosswalk = null;         // FSA ⇄ FIPS, fetched only when a dataset needs it
+let viewSeq = 1;              // monotonic; every fetch-involving switch bumps it
 
 let map = null;
 let mapLoaded = null;         // resolves on the map's own 'load' event
@@ -180,6 +263,7 @@ let vintageTimer = null;
 let searchCtl = null;
 let drawerCtl = null;
 let cardCtl = null;
+let tableCtl = null;          // initTableView handle — invalidated on any switch
 let bar = null;               // kit colorbar handle for #legend-bar
 let live = null;
 let booted = false;
@@ -224,16 +308,78 @@ function failNote(text, retry) {
   showToast(text, 5000);
 }
 
+/* ── The active interface ────────────────────────────────────────────────────
+   The handful of accessors every other function in this file reads the world
+   through. They are functions rather than captured references because the
+   answer changes mid-session (a view switch, a dataset toggle) and a stale
+   descriptor would paint one family's data with another's scale. */
+
+/** The descriptor for the family on screen. */
+function currentInterface() {
+  return viewFromSlug(state.view);
+}
+
+/** The active interface's own remembered state (dataset, types, variable). */
+function activeViewState() {
+  return viewState[state.view];
+}
+
+/** The dataset descriptor on screen: url, schema, keySpace, expectations. */
+function activeDataset() {
+  const vs = activeViewState();
+  return currentInterface().datasets.find((d) => d.id === vs.dataset);
+}
+
+/** The id of the dataset a view shows when nothing has asked for another one —
+    its first, which is also the one whose absence from the URL is the default. */
+function defaultDatasetId(view) {
+  return viewFromSlug(view).datasets[0].id;
+}
+
+/**
+ * The `sel` argument every descriptor leaf takes: everything needed to paint or
+ * describe the current view, in one plain object. Rebuilt per call — it is a
+ * snapshot, never a live handle, so a leaf cannot mutate the app's state.
+ *
+ * @returns {{year: number, type: string, variable: string, dataset: string,
+ *            vintage: string|null}}
+ */
+function selection() {
+  const vs = activeViewState();
+  return {
+    year: state.year,
+    type: state.type,
+    variable: state.variable,
+    dataset: vs.dataset,
+    vintage,
+  };
+}
+
+/** The remembered pasture type for one dataset of the grazing-periods view.
+    PR 1 has exactly two dataset dictionaries to keep apart; the second
+    interface generalises this into its own descriptor. */
+function rememberedType(datasetId) {
+  return datasetId === 'nclimgrid' ? viewState.ngp.nclimgridType : viewState.ngp.type;
+}
+
+function rememberType(datasetId, name) {
+  if (datasetId === 'nclimgrid') viewState.ngp.nclimgridType = name;
+  else viewState.ngp.type = name;
+}
+
 /* ── URL + persistence ───────────────────────────────────────────────────── */
 
 /**
  * Read the boot state: URL param > localStorage > default, each validated.
  *
- * Two values cannot be finished here. The pasture type's dictionary of valid
+ * Three values cannot be finished here. The pasture type's dictionary of valid
  * names arrives with the payload, so its slug is parked in `pendingTypeSlug`
- * and resolved in applyPendingType(); the drawer's open/closed state belongs to
- * a controller that does not exist until wireControls(), so it is parked in
- * `pendingDrawerParam` and handed over as initDrawer's `startOpen`.
+ * and resolved in applyPendingType() (or, for a dataset that is not the boot
+ * one, in resolveTypeFor()); a non-default dataset is parked in
+ * `pendingDatasetId` and applied as a toggle once the default has painted, so
+ * boot still fetches exactly one payload; and the drawer's open/closed state
+ * belongs to a controller that does not exist until wireControls(), so it is
+ * parked in `pendingDrawerParam` and handed over as initDrawer's `startOpen`.
  */
 function readInitialState() {
   params = urlParams();
@@ -241,6 +387,20 @@ function readInitialState() {
   // ?kbd=off is an accessibility opt-out (WCAG 2.1.4) and is NOT persisted:
   // it rides the URL so a user who needs it can bookmark it.
   kbdEnabled = params.get('kbd') !== 'off';
+
+  // The view first: the registry IS the whitelist, and the dataset whitelist
+  // below is the chosen view's own list, so the order is not optional.
+  const rawView = String(params.get('view') ?? lsGet(LS.view) ?? '').toLowerCase();
+  const view = viewFromSlug(rawView);
+  if (view) state.view = view.id;   // the descriptor's own id, never the input
+
+  const iface = currentInterface();
+  const rawDataset = String(params.get('dataset') ?? lsGet(LS.dataset(state.view)) ?? '')
+    .toLowerCase();
+  if (iface.datasets.some((d) => d.id === rawDataset)
+      && rawDataset !== defaultDatasetId(state.view)) {
+    pendingDatasetId = rawDataset;
+  }
 
   const rawYear = params.get('year') ?? lsGet(LS.year);
   // Number() on a PROGRAM YEAR, never on a county id.
@@ -250,7 +410,11 @@ function readInitialState() {
   const rawVar = (params.get('variable') ?? lsGet(LS.variable) ?? '').toLowerCase();
   if (Object.prototype.hasOwnProperty.call(VARIABLES, rawVar)) state.variable = rawVar;
 
-  const rawType = params.get('type') ?? lsGet(LS.type);
+  // A type slug means whatever the ACTIVE DATASET's dictionary says it means,
+  // so it is read from that dataset's own stored key and resolved against that
+  // dataset's own list — never against the one that happens to boot first.
+  const wantDataset = pendingDatasetId || defaultDatasetId(state.view);
+  const rawType = params.get('type') ?? lsGet(typeLsKey(wantDataset));
   pendingTypeSlug = rawType == null ? null : String(rawType).toLowerCase();
 
   // A selection is not a preference: it comes from the URL only.
@@ -263,6 +427,16 @@ function readInitialState() {
   pendingDrawerParam = (rawDrawer === 'open' || rawDrawer === 'closed') ? rawDrawer : null;
 
   state.theme = getTheme();   // already validated + stamped by the anti-flash boot
+
+  // The active family's own memory starts where the shared state does; from
+  // here setVariable/setType write to both.
+  activeViewState().variable = state.variable;
+}
+
+/** Where one dataset's remembered type lives. The first dataset of a view keeps
+    the historical `sfsa-ngp-type`; every other one gets a key of its own. */
+function typeLsKey(datasetId) {
+  return datasetId === defaultDatasetId(state.view) ? LS.type : LS.typeFor(datasetId);
 }
 
 /** Resolve `pendingTypeSlug` against the real dictionary. Anything unknown —
@@ -276,6 +450,7 @@ function applyPendingType() {
       + ' — falling back to ' + JSON.stringify(DEFAULTS.type));
   }
   pendingTypeSlug = null;
+  rememberType(activeViewState().dataset, state.type);
 }
 
 /**
@@ -289,6 +464,13 @@ function applyPendingType() {
  */
 function pushState() {
   const p = {};
+  // The two scoping params come first because they scope every one below them —
+  // and both are elided at their defaults, so an all-defaults view of the first
+  // interface emits the same clean URL it always has. Only the ACTIVE view's
+  // params are ever emitted: switching away drops the other family's.
+  if (state.view !== DEFAULTS.view) p.view = state.view;
+  const vs = activeViewState();
+  if (vs.dataset !== defaultDatasetId(state.view)) p.dataset = vs.dataset;
   if (state.year !== DEFAULTS.year) p.year = String(state.year);
   if (state.type !== DEFAULTS.type) p.type = typeSlug(state.type);
   if (state.variable !== DEFAULTS.variable) p.variable = state.variable;
@@ -309,84 +491,88 @@ function pushState() {
 }
 
 function persist() {
+  const vs = activeViewState();
   lsSet(LS.year, String(state.year));
-  lsSet(LS.type, typeSlug(state.type));
+  // Per dataset: the two dictionaries do not share names, and a season slug
+  // stored under `sfsa-ngp-type` would read as an unknown pasture type on the
+  // next boot and quietly fall back to the default.
+  lsSet(typeLsKey(vs.dataset), typeSlug(state.type));
   lsSet(LS.variable, state.variable);
+  lsSet(LS.view, state.view);
+  lsSet(LS.dataset(state.view), vs.dataset);
 }
 
 /* ── Painting ────────────────────────────────────────────────────────────── */
 
 /**
- * Repaint the choropleth for the current (year, type, variable).
+ * Repaint the choropleth for the current selection.
+ *
+ * The colors are the active interface's to decide — a descriptor's colorsFor()
+ * knows its own key space, and a FIPS-keyed dataset joins through the crosswalk
+ * on its way here. What this function owns is the paint call and the honesty of
+ * the sentence that follows it.
  *
  * The kit coalesces the actual feature-state writes to one flush per animation
  * frame, so calling this from a dragged slider is cheap on the GL side; the
- * cost here is one Map of ~3,000 colors, and data.js memoizes the lookup
+ * cost here is one Map of ~3,000 colors, and the decoder memoizes the lookup
  * behind it.
  */
 function recolor() {
-  if (!handle) return;
-  const spec = VARIABLES[state.variable];
-  const recs = getYearType(state.year, state.type);
+  const data = activeNgpDataset();
+  if (!handle || !data) return;
+  const { colors, unmatchedFips } = currentInterface().colorsFor(data, crosswalk, selection());
 
-  const colors = new Map();
-  for (const [id, rec] of recs) colors.set(id, spec.scale(rec[spec.field]));
-
-  // Ids with data but no polygon in this vintage are REPORTED, not swallowed:
-  // the island territories are in neither boundary archive, and anything else
-  // showing up here would be a broken join.
+  // Ids with data but nothing to draw them on are REPORTED, not swallowed, and
+  // there are two kinds: an FSA id with no polygon in this vintage (the island
+  // territories are in neither boundary archive) and a FIPS id the crosswalk
+  // cannot land on any FSA county. A summary that hides either is a summary
+  // that lies.
   const unmatched = handle.recolor(colors);
-  announceRender(colors.size - unmatched.length, unmatched.length);
+  const missingFips = unmatchedFips ? unmatchedFips.length : 0;
+  announceRender(colors.size - unmatched.length, unmatched.length + missingFips);
 
-  // The card is a readout of the same (year, type) as the map.
+  // The card is a readout of the same selection as the map.
   if (state.countyId) fillCard(state.countyId);
 }
 
 /** The always-on half of the a11y twin: a short summary of what the canvas is
-    showing right now (HOUSE-STYLE §5.2). The on-demand table is the other
-    half, and it is N-W4's. */
-function announceRender(shown, missingGeometry) {
+    showing right now (HOUSE-STYLE §5.2), in the active interface's own words.
+    The on-demand table is the other half, and it is N-W4's. */
+function announceRender(shown, missing) {
   if (!live) return;
-  const total = allCountyIds().length;
-  const label = VARIABLES[state.variable].label.toLowerCase();
-  let msg = state.year + ' ' + state.type + ': ' + shown.toLocaleString('en-US')
-    + ' of ' + total.toLocaleString('en-US') + ' counties shown, colored by ' + label + '.';
-  if (missingGeometry > 0) {
-    msg += ' ' + missingGeometry.toLocaleString('en-US')
-      + ' more have data but no county boundary to draw.';
-  }
-  live.announce(msg);
+  live.announce(currentInterface()
+    .liveSentence(selection(), shown, allCountyIds().length, missing));
 }
 
 /* ── Legend ──────────────────────────────────────────────────────────────────
    The legend is the last section of the controls drawer, not a collapsible
    floating panel any more, so there is no collapse state to own here — only
-   which of the two bodies (wheel or bar) is showing. */
+   which of the three bodies (wheel, bar or swatches) is showing, and that
+   answer belongs to the active interface's descriptor.
 
-/** Plain-language meaning of the active ramp. This is the redundancy channel
-    that makes the map legible in grayscale, to a CVD reader, and to a screen
-    reader — it is not decoration, and it is never optional. */
-function legendKeyText() {
-  if (state.variable === 'duration') {
-    return 'Dark counties graze for a few weeks; light counties graze most of '
-      + 'the year. Counties with no reported period are gray.';
-  }
-  const which = state.variable === 'start' ? 'begins' : 'ends';
-  return 'Color is the point in the calendar where the grazing period ' + which
-    + ', read against the months around the wheel. The scale wraps, so late '
-    + 'December and early January are neighboring colors. Counties with no '
-    + 'reported period are gray.';
-}
+   The prose key is the redundancy channel that makes the map legible in
+   grayscale, to a CVD reader, and to a screen reader. It is not decoration and
+   it is never optional — which is why it lives with the data it describes
+   (descriptor.legend.key) rather than in a switch statement here. */
 
-/** Swap the legend body between the cyclic wheel (start/end) and the linear
-    colorbar (duration), and refresh the text key. */
+/** Show the one legend body the active interface's scale calls for — the cyclic
+    wheel, the linear colorbar, or the discrete swatches — and refresh the text
+    key. Exactly one is ever unhidden: two visible bodies would be two legends
+    for one map. */
 function syncLegend() {
-  const cyclic = VARIABLES[state.variable].cyclic;
-  els.legendWheel.hidden = !cyclic;
-  els.legendBar.hidden = cyclic;
-  els.legendKey.textContent = legendKeyText();
-  if (bar && !cyclic) {
-    bar.update(undefined, { noData: { color: NO_DATA(), label: 'No reported grazing period' } });
+  const legend = currentInterface().legend;
+  const sel = selection();
+  const kind = legend.kind(sel);
+  els.legendWheel.hidden = kind !== 'wheel';
+  els.legendBar.hidden = kind !== 'bar';
+  els.legendSwatches.hidden = kind !== 'swatches';
+  els.legendKey.textContent = legend.key(sel);
+  if (bar && kind === 'bar') {
+    // The chip's LABEL is the descriptor's (the absence means something
+    // different in each dataset); its color is the theme's, resolved live.
+    bar.update(undefined, {
+      noData: { color: NO_DATA(), label: legend.noDataLabel(sel) },
+    });
   }
   notifyLegend();   // N-W4 seam: the wheel repaints for the new variable
 }
@@ -398,7 +584,10 @@ function buildLegend() {
       { at: 0.5, label: '26 wk' },
       { at: 1, label: '52 wk' },
     ],
-    noData: { color: NO_DATA(), label: 'No reported grazing period' },
+    noData: {
+      color: NO_DATA(),
+      label: currentInterface().legend.noDataLabel(selection()),
+    },
   });
   syncLegend();
 }
@@ -415,35 +604,36 @@ function addRow(dl, term, value, isNote) {
 }
 
 /**
- * Fill the card for one county at the CURRENT year/type/variable. Three cases,
- * and all three are stated in words rather than implied by an empty box:
- * a reported period, a county with no period this year, and a county that is
- * in the data but has no polygon in either boundary archive.
+ * Fill the card for one county at the current selection.
+ *
+ * The ROWS are the active interface's (descriptor.cardRows): what a reported
+ * period, a missing one, or a crosswalked reduction should say is a fact about
+ * the dataset, not about this file. The mechanics stay here unchanged —
+ * replaceChildren() then one <dt>/<dd> pair per row — because card-content.js
+ * watches #card-rows for exactly that mutation to know the readout moved.
+ *
+ * Two things this file still owns, because the descriptor cannot know them:
+ * the county's NAME (the geometry's own gazetteer first, so a crosswalked
+ * dataset that has never heard of an FSA id still names it) and whether there
+ * is a polygon to draw it on at all — `hasGeometry` rides `sel` for that, and
+ * the descriptor turns it into the row that says so.
  */
 function fillCard(id) {
-  const nm = countyName(id);
-  const geo = counties && counties.index.has(id);
+  const nm = (counties && counties.names.get(id)) || countyName(id);
   els.cardTitle.textContent = nm ? nm.county + ', ' + nm.state : id;
 
+  const sel = { ...selection(), hasGeometry: !!(counties && counties.index.has(id)) };
   const dl = els.cardRows;
   dl.replaceChildren();
-  addRow(dl, 'FSA county code', id);
-  addRow(dl, 'Pasture type', state.type);
+  for (const row of currentInterface().cardRows(activeNgpDataset(), crosswalk, sel, id)) {
+    addRow(dl, row.term, row.value, row.isNote);
+  }
 
-  const rec = getYearType(state.year, state.type).get(id);
-  if (rec) {
-    addRow(dl, 'Season start', rec.startLabel);
-    addRow(dl, 'Season end', rec.endLabel);
-    addRow(dl, 'Duration', rec.duration_weeks + (rec.duration_weeks === 1 ? ' week' : ' weeks'));
-  } else {
-    addRow(dl, state.year + ' grazing period',
-      'No data for ' + state.type + ' in ' + state.year + '.', true);
-  }
-  if (!geo) {
-    addRow(dl, 'Boundary',
-      'No boundary available to display — this county is not in the '
-      + (vintage || 'current') + ' FSA boundary archive.', true);
-  }
+  // PR 1: the card's all-years span chart is written against a real time
+  // series, and a CLIMATOLOGY has one nominal year — a chart of one bar says
+  // nothing and a table of one row says less. Hidden until the descriptor owns
+  // the card's figure too (then this becomes cardBody delegation).
+  els.cardContent.hidden = !!activeDataset().nominalYears;
 }
 
 /**
@@ -591,6 +781,24 @@ function buildSearchItems() {
 
 function setControlsEnabled(on) {
   for (const el of dataControls) if (el) el.disabled = !on;
+  // The year slider has a second reason to stay disabled that has nothing to do
+  // with the load: a climatology dataset has no years to slide through.
+  if (on) syncYearControl();
+}
+
+/**
+ * The year slider only means something for a dataset with years in it. A
+ * climatology is ONE set of periods standing for every program year, so the
+ * slider is disabled and the note beside it says why — a thumb that moves and
+ * changes nothing is worse than a thumb that does not move.
+ *
+ * `state.year` is deliberately left alone: switching back to a real time series
+ * has to land on the year the user left, not on a default.
+ */
+function syncYearControl() {
+  const nominal = !!activeDataset().nominalYears;
+  els.year.disabled = nominal;
+  els.yearNote.hidden = !nominal;
 }
 
 function setYear(next) {
@@ -650,6 +858,9 @@ function setType(next) {
   if (next === state.type) return;
   state.type = next;
   els.type.value = next;
+  // Remembered against the dataset it belongs to, so a toggle away and back
+  // returns to this choice rather than re-seeding from the other dictionary.
+  rememberType(activeViewState().dataset, next);
   persist();
   pushState();
   recolor();
@@ -658,6 +869,7 @@ function setType(next) {
 function setVariable(next) {
   if (!Object.prototype.hasOwnProperty.call(VARIABLES, next)) return;
   state.variable = next;
+  activeViewState().variable = next;
   // aria-pressed IS the styling source of truth (HOUSE-STYLE §5.7): the CSS
   // keys off it, so the accessible state cannot drift from the visual one.
   for (const btn of els.segs) {
@@ -679,6 +891,219 @@ function populateTypeSelect() {
   }
   els.type.replaceChildren(frag);
   els.type.value = state.type;
+}
+
+/* ── Views and datasets ──────────────────────────────────────────────────────
+   Switching what the map shows is one mechanism used two ways: a VIEW switch
+   changes the data family (and with it which drawer sections apply), a DATASET
+   toggle changes which reading of that family is painted. Both keep the shared
+   state — camera, county, year, theme — because comparing two datasets on the
+   same county in the same year is the app's reason to exist.
+
+   Both are lazy: a payload is fetched the first time it is asked for and never
+   at boot, so the default view pays for exactly one file. Both re-check INTENT
+   after their await rather than aborting a request that is already in flight —
+   the swapVintage() pattern, and for the same reason: the second press is the
+   user changing their mind, not a race to cancel. */
+
+/** Hide every drawer section that belongs to another family. Sections with no
+    `data-view` — search, year, legend — are shared and never touched. */
+function syncSections() {
+  for (const section of document.querySelectorAll('.sfsa-drawer-section[data-view]')) {
+    section.hidden = section.dataset.view !== state.view;
+  }
+}
+
+/** aria-pressed IS the styling source of truth for both segmented groups
+    (HOUSE-STYLE §5.7), so the accessible state cannot drift from the visual. */
+function syncViewButtons() {
+  for (const btn of els.viewBtns) {
+    btn.setAttribute('aria-pressed',
+      String(btn.getAttribute('data-view-btn') === state.view));
+  }
+}
+
+function syncDatasetButtons() {
+  const active = activeViewState().dataset;
+  for (const btn of els.datasetBtns) {
+    btn.setAttribute('aria-pressed', String(btn.getAttribute('data-dataset') === active));
+  }
+}
+
+/**
+ * Bump the transition counter, after the paint it describes has actually
+ * reached GL. The kit coalesces feature-state writes to one flush per animation
+ * frame, so a counter incremented in the same task as recolor() would tell a
+ * harness "done" while the old colors were still on screen.
+ */
+async function bumpViewSeq() {
+  await new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') { resolve(); return; }
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+  viewSeq += 1;
+  document.documentElement.dataset.ngpViewSeq = String(viewSeq);
+}
+
+/**
+ * Switch the data family on screen.
+ *
+ * PR 1 ships one interface, so nothing below the guards can run yet: the branch
+ * is authored now so the second descriptor lands as data plus a drawer section
+ * rather than as surgery on this file. What it does NOT do is reset the shared
+ * state or re-fit the camera.
+ *
+ * @param {string} next an interface slug
+ */
+function setView(next) {
+  const iface = viewFromSlug(String(next ?? '').toLowerCase());
+  if (!iface) return;              // not a shipped family — a stale link, ignore
+  if (iface.id === state.view) return;
+
+  rememberType(activeViewState().dataset, state.type);   // the outgoing family's
+  state.view = iface.id;
+  syncSections();
+  syncViewButtons();
+  syncDatasetButtons();
+  syncYearControl();
+  // The URL follows the intent immediately; localStorage follows the RESULT
+  // (applyDataset persists once the payload is really on screen), so a family
+  // whose payload is missing does not become the stored preference.
+  pushState();
+  // The family's own dataset — remembered from earlier in the session, or its
+  // default — is what has to be on screen now.
+  applyDataset(activeDataset()).catch((err) => {
+    console.error('[ngp] view switch failed', err);
+  });
+}
+
+/**
+ * Toggle which dataset of the active family is painted.
+ *
+ * Synchronous up to the point where a payload might have to be fetched: the
+ * INTENT is recorded, mirrored into the buttons and the URL, and only then
+ * awaited. That order is what makes a double press behave — the second call
+ * passes its own guard and its own intent is the one applyDataset() honours.
+ *
+ * @param {string} next a dataset id of the active interface
+ */
+function setDataset(next) {
+  const iface = currentInterface();
+  const ds = iface.datasets.find((d) => d.id === next);
+  const vs = activeViewState();
+  if (!ds || ds.id === vs.dataset) return;
+
+  rememberType(vs.dataset, state.type);   // so toggling back restores it
+  vs.dataset = ds.id;
+  syncDatasetButtons();
+  pushState();
+  applyDataset(ds).catch((err) => {
+    console.error('[ngp] dataset toggle failed', err);
+  });
+}
+
+/**
+ * Fetch (or take from cache) one dataset and bring it on screen.
+ *
+ * The fetch is idempotent — decoders/common.js keys its promise cache by URL —
+ * so this is a network round trip once and a repaint every time after.
+ *
+ * On failure the map is repainted to NOTHING rather than left as it was: the
+ * legend key already describes the dataset the user asked for, and stale paint
+ * under the wrong key is a map that lies. An empty payload is the kit's own
+ * documented way to say that (county.js § recolor: an id absent from the map
+ * falls through to --no-data), and the Retry button re-enters here.
+ *
+ * @param {object} ds a dataset descriptor from the active interface
+ */
+async function applyDataset(ds) {
+  const wanted = ds.id;
+  note('Loading ' + ds.label + '…');
+
+  let instance;
+  try {
+    const [inst, xw] = await Promise.all([
+      loadDataset(ds),
+      // Only a FIPS-keyed dataset needs the crosswalk, and only once per
+      // session — an FSA-keyed one joins straight onto the geometry.
+      ds.keySpace === 'fips' ? loadCrosswalk() : null,
+    ]);
+    // The user may have toggled again while this was in flight; the last press
+    // wins, and this one is now history.
+    if (activeViewState().dataset !== wanted) return;
+    instance = inst;
+    if (xw) crosswalk = xw;
+  } catch (err) {
+    console.error('[ngp] ' + ds.id + ' failed to load', err);
+    if (activeViewState().dataset !== wanted) return;
+    document.documentElement.dataset.ngpViewError = '1';
+    if (handle) handle.recolor(new Map());
+    syncLegend();
+    failNote('Could not load ' + ds.label + '.',
+      () => { applyDataset(ds).catch(() => {}); });
+    return;
+  }
+
+  // The facade re-points at the new instance, so every satellite that imports
+  // ./data.js (the card chart, the table, the export) — and this file's own
+  // paint path — reads the dataset on screen without knowing a toggle happened.
+  setActiveNgpDataset(instance);
+
+  state.type = resolveTypeFor(ds, instance);
+  rememberType(ds.id, state.type);
+  populateTypeSelect();
+  syncYearControl();
+  persist();
+  pushState();
+
+  recolor();      // paints, refills the card, and announces through the descriptor
+  syncLegend();
+  if (tableCtl) tableCtl.invalidate();
+  clearNote();
+  delete document.documentElement.dataset.ngpViewError;
+  document.documentElement.dataset.ngpView = state.view;
+  notifyViewChange();
+  await bumpViewSeq();
+}
+
+/**
+ * Which type this dataset should show, in the order that respects what the user
+ * asked for most recently:
+ *
+ *   1. a parked `?type=` (or stored) slug, resolved against THIS dataset's own
+ *      dictionary — the descriptor owns that resolution, because one slug can
+ *      mean different things to two dictionaries;
+ *   2. the type this dataset was last showing in this session;
+ *   3. the type the outgoing dataset was showing, if this dictionary has that
+ *      name too (preserve-if-present);
+ *   4. its equivalent under the registry's TYPE_ALIASES — "Native Pasture" and
+ *      "Full Season" are the same forage regime under two naming conventions;
+ *   5. whatever the descriptor calls this dataset's default.
+ *
+ * Every candidate is checked against the dictionary that actually arrived: a
+ * type can be retired from a payload between two sessions, and a map blanked by
+ * a stale preference looks like a broken app.
+ */
+function resolveTypeFor(ds, instance) {
+  const iface = currentInterface();
+  const known = new Set(instance.types());
+  const parked = pendingTypeSlug;
+  pendingTypeSlug = null;
+
+  if (parked) {
+    // The descriptor resolves the slug against the dictionary that arrived (and
+    // warns for itself when it cannot); it answers with this dataset's default
+    // rather than null, so an unknown slug still lands somewhere paintable.
+    const asked = iface.applyPending(instance, parked);
+    if (known.has(asked)) return asked;
+  }
+
+  const remembered = rememberedType(ds.id);
+  if (known.has(remembered)) return remembered;
+  if (known.has(state.type)) return state.type;
+  const alias = aliasType(state.type, instance.types());
+  if (alias) return alias;
+  return iface.applyPending(instance, null);
 }
 
 async function share() {
@@ -791,6 +1216,14 @@ function wireControls() {
     btn.addEventListener('click', () => setVariable(btn.dataset.variable));
   }
 
+  for (const btn of els.viewBtns) {
+    btn.addEventListener('click', () => setView(btn.getAttribute('data-view-btn')));
+  }
+
+  for (const btn of els.datasetBtns) {
+    btn.addEventListener('click', () => setDataset(btn.getAttribute('data-dataset')));
+  }
+
   els.btnShare.addEventListener('click', share);
 
   initThemeToggle({
@@ -826,6 +1259,12 @@ async function boot() {
   for (const btn of els.segs) {
     btn.setAttribute('aria-pressed', String(btn.dataset.variable === state.variable));
   }
+  // The drawer reflects the family and dataset that are about to PAINT, which
+  // for a deep-linked non-default dataset is still the default one: the toggle
+  // lands after the first payload is on screen (see the end of loadAndRender).
+  syncSections();
+  syncViewButtons();
+  syncDatasetButtons();
 
   live = createLiveRegion();
   vintage = vintageForYear(state.year);
@@ -906,6 +1345,9 @@ async function loadAndRender() {
 
   let payloads;
   try {
+    // initData() decodes the FIRST dataset of the default interface and binds it
+    // as the facade's active instance — the one fetch boot makes, exactly as
+    // before the app grew a dataset toggle.
     payloads = await Promise.all([loadCounties(state.year), initData(), loadRamps()]);
   } catch (err) {
     console.error('[ngp] boot failed', err);
@@ -919,7 +1361,10 @@ async function loadAndRender() {
   // geometry has already been through js/projection.js.
   counties = projectCounties(payloads[0]);
 
-  applyPendingType();
+  // A slug parked for a dataset that is not the one booting is not this
+  // dictionary's to resolve: the toggle at the end of this function consumes it
+  // against the dictionary it was written against.
+  if (!pendingDatasetId) applyPendingType();
   populateTypeSelect();
 
   // The slider's range is authored in the HTML; the payload is the authority.
@@ -1002,13 +1447,12 @@ async function loadAndRender() {
     element: els.tooltip,
     render(feature, id) {
       const nm = counties.names.get(id) || countyName(id);
-      const rec = getYearType(state.year, state.type).get(id);
       return {
         name: nm ? nm.county + ', ' + nm.state : id,
         sub: id,
-        val: rec
-          ? tooltipValue(rec)
-          : 'No data for ' + state.type + ' in ' + state.year,
+        // The value line is the active interface's: the same number the card
+        // shows, in the same words, for whatever it is painting.
+        val: currentInterface().tooltip(activeNgpDataset(), crosswalk, selection(), id),
       };
     },
     onClick: (id) => selectCounty(id),
@@ -1020,8 +1464,15 @@ async function loadAndRender() {
   booted = true;
   pushState();
   // A boot marker for the export/screenshot jobs and the audit harness: the
-  // map is drawn, the data is joined, and the controls are live.
+  // map is drawn, the data is joined, and the controls are live. Stamped ONCE,
+  // ever — it means "this app booted", not "this app is idle".
   document.documentElement.dataset.ngpReady = '1';
+  // The interface markers are the moving half of the same contract: which
+  // family is on screen, and a counter a harness can wait on across any
+  // transition that involves a fetch. Both are CSP-safe function predicates on
+  // the other side (no eval, no polling a global).
+  document.documentElement.dataset.ngpView = state.view;
+  document.documentElement.dataset.ngpViewSeq = String(viewSeq);
 
   if (state.countyId) {
     // A deep link that also carries a camera has already framed the view — do
@@ -1032,6 +1483,17 @@ async function loadAndRender() {
   initTableSeam();
   initExportSeam();
 
+  // A stored or deep-linked non-default dataset arrives LAST, as an ordinary
+  // toggle: boot fetches exactly one payload (the LCP guarantee tools/verify.mjs
+  // asserts against the browser's own resource timing), and the swap then runs
+  // the very code path a click runs — including its failure handling, which a
+  // second boot-time fetch would have had to reimplement.
+  if (pendingDatasetId) {
+    const wanted = pendingDatasetId;
+    pendingDatasetId = null;
+    setDataset(wanted);
+  }
+
   // Warm the other boundary vintage while the browser is idle, so the first
   // slide across 2015 does not stall on a 2 MB fetch.
   const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1500));
@@ -1039,15 +1501,6 @@ async function loadAndRender() {
     loadCounties(vintage === 'dd17' ? 'dd22' : 'dd17')
       .catch((err) => console.warn('[ngp] prefetch of the other vintage failed', err));
   });
-}
-
-/** The tooltip's value line: the same number the card shows, for the active
-    variable. The tooltip is aria-hidden decoration — this content reaches AT
-    through the live region and the card. */
-function tooltipValue(rec) {
-  if (state.variable === 'start') return 'Starts ' + rec.startLabel;
-  if (state.variable === 'end') return 'Ends ' + rec.endLabel;
-  return rec.duration_weeks + (rec.duration_weeks === 1 ? ' week' : ' weeks');
 }
 
 /* ============================================================================
@@ -1078,8 +1531,13 @@ function tooltipValue(rec) {
      onCountySelected(fn)  fn(id | null) on every open AND on close
      onLegendChange(fn)    fn({variable, cyclic, ramps}) whenever the legend
                            body should be repainted (variable or theme change)
-     Both return an unsubscribe function and fire nothing retroactively; call
-     the feature's own render once after subscribing if it needs a first paint.
+     onViewChange(fn)      fn({view, dataset, iface}) after a view switch or a
+                           dataset toggle has landed — the signal that what the
+                           map is showing is a different dataset, not a
+                           different slice of the same one
+     All three return an unsubscribe function and fire nothing retroactively;
+     call the feature's own render once after subscribing if it needs a first
+     paint.
 
    WIRING — LANDED. All four modules exist and are wired in the two functions
    at the bottom of this block, which loadAndRender() already calls by name:
@@ -1101,6 +1559,7 @@ import { initExport } from './export.js';
 
 const countySubs = new Set();
 const legendSubs = new Set();
+const viewSubs = new Set();
 
 /**
  * Subscribe to county selection. Fires with the 5-character FSA id on open and
@@ -1125,6 +1584,20 @@ export function onLegendChange(fn) {
   return () => legendSubs.delete(fn);
 }
 
+/**
+ * Subscribe to "the map is showing a different dataset now": a view switch or a
+ * dataset toggle, fired once the new payload is painted. Not fired for a year,
+ * type or variable change — those are the same dataset, and the features that
+ * care about them already watch #card-rows or re-read state on open.
+ *
+ * @param {(info: {view: string, dataset: string, iface: object}) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function onViewChange(fn) {
+  viewSubs.add(fn);
+  return () => viewSubs.delete(fn);
+}
+
 function notifyCountySelected(id) {
   for (const fn of countySubs) {
     try { fn(id); } catch (err) { console.error('[ngp] county subscriber failed', err); }
@@ -1146,6 +1619,18 @@ function notifyLegend() {
   }
 }
 
+function notifyViewChange() {
+  if (!viewSubs.size) return;
+  const info = {
+    view: state.view,
+    dataset: activeViewState().dataset,
+    iface: currentInterface(),
+  };
+  for (const fn of viewSubs) {
+    try { fn(info); } catch (err) { console.error('[ngp] view subscriber failed', err); }
+  }
+}
+
 /**
  * Everything a feature module needs, as one frozen snapshot of accessors. The
  * getters are functions, not values, because `map`, `handle` and `counties`
@@ -1159,6 +1644,14 @@ export function ngpContext() {
     // Live state — a copy, so a feature cannot mutate the app's state object.
     getState: () => ({ ...state }),
     getVintage: () => vintage,
+    // The active interface and what it is showing. getSelection() is the same
+    // `sel` object the descriptor's own leaves are called with, assembled once
+    // here so a feature never has to reassemble it (and never gets it wrong).
+    getInterface: currentInterface,
+    getViewState: () => ({ ...activeViewState() }),
+    getSelection: selection,
+    getData: activeNgpDataset,
+    getCrosswalk: () => crosswalk,
     // Map internals.
     getMap: () => map,
     getHandle: () => handle,
@@ -1170,6 +1663,8 @@ export function ngpContext() {
     setYear,
     setType,
     setVariable,
+    setView,
+    setDataset,
     announce: (text) => { if (live) live.announce(text); },
     toast: showToast,
     note,
@@ -1177,9 +1672,11 @@ export function ngpContext() {
     // Subscriptions.
     onCountySelected,
     onLegendChange,
+    onViewChange,
     // Elements the features own.
     els: {
       legendWheel: els.legendWheel,
+      legendSwatches: els.legendSwatches,
       cardContent: els.cardContent,
       tableModal: els.tableModal,
     },
@@ -1209,7 +1706,10 @@ function initTableSeam() {
   // year/type changes this file fires no event for — see card-content.js.
   initCardContent({ container: els.cardContent, ctx });
 
-  initTableView({
+  // The handle is kept: a dataset toggle changes what the table should hold
+  // without changing the (year, type) it was built for, so the switch has to
+  // tell it the markup is stale (invalidate()).
+  tableCtl = initTableView({
     button: els.btnTable,
     dialog: els.tableModal,
     captionEl: $('#table-modal-caption'),

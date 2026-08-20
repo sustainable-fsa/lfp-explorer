@@ -1,18 +1,28 @@
 ## ---------------------------------------------------------------------------
 ## Browser assets for the web map.
 ##
-## One producer, a pure function of nothing at all, so it can be sourced and
-## exercised on its own — no AWS credentials, no S3 client, no FOIA workbooks:
+## Two producers, both sourceable and exercisable on their own — no AWS
+## credentials, no S3 client, no FOIA workbooks:
 ##
 ##   build_color_ramps() the two color ramps the map colors with
+##   build_crosswalk()   the FSA <-> FIPS county crosswalk the FIPS-keyed
+##                       payloads are joined onto the FSA geometry with
 ##
-## The map's data payload is NOT built here. The `fsa-ngp-web/1` JSON the front
-## end reads is generated and committed by the archive repo's own processing
-## script on every archive update
-## (sustainable-fsa/fsa-normal-grazing-period → `fsa-normal-grazing-period.json`
-## at that repo's root), and the app fetches it at runtime from that repo's
-## GitHub Pages. This repo ships no copy of it, and there is no manual refresh
-## step to run here.
+## build_color_ramps() is a pure function of nothing at all. build_crosswalk()
+## is NOT: it reads the two sibling boundary archives' geoparquet
+## (../fsa-counties-dd17, ../fsa-counties-dd22), so it only runs in a checkout
+## of the whole sustainable-fsa workspace. That is deliberate — those parquets
+## are the same files the boundary TopoJSON is built from, so a crosswalk built
+## from them cannot drift from the polygons it keys. Its OUTPUT is committed,
+## so nobody needs the siblings to run the app.
+##
+## The map's data payloads are NOT built here. The `fsa-ngp-web/1` JSON the
+## front end reads is generated and committed by each archive repo's own
+## processing script on every archive update
+## (sustainable-fsa/fsa-normal-grazing-period -> `fsa-normal-grazing-period.json`
+## at that repo's root; likewise nclimgrid-normal-grazing-period), and the app
+## fetches it at runtime from that repo's GitHub Pages. This repo ships no copy
+## of any of them, and there is no manual refresh step to run here.
 ##
 ## Everything is namespace-qualified; sourcing this file attaches no packages.
 ## ---------------------------------------------------------------------------
@@ -56,4 +66,96 @@ build_color_ramps <- function(dir = "assets") {
                        auto_unbox = TRUE)
 
   invisible(file.path(dir, c("colors.json", "colors-duration.json")))
+}
+
+
+## The FSA <-> FIPS county crosswalk, as `assets/fsa-fips-crosswalk.json`
+## (schema `fsa-fips-crosswalk/1`).
+##
+## FSA administers its programs on its own county geography, and several of the
+## payloads this app draws (the nClimGrid climatology, the drought monitor, the
+## disaster designations) are keyed by Census FIPS instead. Most codes are the
+## same string in both systems, which is exactly what makes the difference
+## dangerous: a join that is 97% right looks right. The two disagreements that
+## matter are one FIPS county split across two FSA offices (the value
+## replicates onto both polygons) and one FSA office administering many FIPS
+## counties (the values collide, and the front end reduces them per dataset --
+## see js/decoders/crosswalk.js).
+##
+## Source of truth: `FSA_STCOU` x `FIPS_C` from the two boundary archives'
+## geoparquet -- the same files their TopoJSON is built from. The tables differ
+## between vintages (dd17 has 3,247 pairs, dd22 3,245), so BOTH ship and the
+## front end joins per the vintage on screen.
+##
+## Shape, deliberately: two parallel arrays of 5-character strings per vintage,
+## sorted by (FSA, FIPS). Smaller over the wire than an object of arrays, both
+## directions cost one indexing pass in the browser, and the sort makes a diff
+## of the artifact readable when a boundary vintage is corrected. Written as
+## ONE line: it is machine input, and a 6,500-element pretty-print is 130 KB of
+## reviewer noise.
+build_crosswalk <- function(dir = "assets",
+                            sources = c(dd17 = "../fsa-counties-dd17/fsa-counties-dd17.parquet",
+                                        dd22 = "../fsa-counties-dd22/fsa-counties-dd22.parquet"),
+                            expected = c(dd17 = 3247L, dd22 = 3245L)) {
+
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+
+  missing <- sources[!file.exists(sources)]
+  if (length(missing)) {
+    stop("build_crosswalk() needs the sibling boundary archives; not found: ",
+         paste(missing, collapse = ", "),
+         call. = FALSE)
+  }
+
+  vintages <-
+    lapply(sources, function(path) {
+
+      pairs <-
+        arrow::open_dataset(path) |>
+        dplyr::select(fsa = FSA_STCOU, fips = FIPS_C) |>
+        dplyr::collect() |>
+        dplyr::mutate(fsa = as.character(fsa), fips = as.character(fips)) |>
+        dplyr::distinct()
+
+      ## Both keys are five digits, everywhere, always. A four-character code
+      ## here would be a dropped leading zero -- eight whole states -- and the
+      ## front end would join it to nothing without complaining.
+      stopifnot(
+        !anyNA(pairs$fsa), !anyNA(pairs$fips),
+        all(grepl("^[0-9]{5}$", pairs$fsa)),
+        all(grepl("^[0-9]{5}$", pairs$fips))
+      )
+
+      ## method = "radix" sorts in C order rather than the session's collation
+      ## locale: the artifact must be byte-identical wherever it is rebuilt.
+      pairs <- pairs[order(pairs$fsa, pairs$fips, method = "radix"), ]
+
+      list(n = jsonlite::unbox(nrow(pairs)), fsa = pairs$fsa, fips = pairs$fips)
+    })
+
+  ## The counts are a contract with the front end's integrity check, so a
+  ## boundary correction upstream has to be acknowledged here rather than
+  ## silently changing the artifact.
+  got <- vapply(vintages, function(v) as.integer(v$n), integer(1))
+  if (!is.null(expected)) {
+    for (v in names(expected)) {
+      if (!identical(got[[v]], expected[[v]])) {
+        stop("build_crosswalk(): ", v, " has ", got[[v]], " distinct (FSA, FIPS) ",
+             "pairs, expected ", expected[[v]],
+             ". If the boundary archive changed, update `expected` and say so ",
+             "in the commit.", call. = FALSE)
+      }
+    }
+  }
+
+  payload <-
+    c(list(schema = jsonlite::unbox("fsa-fips-crosswalk/1"),
+           license = jsonlite::unbox("CC0-1.0"),
+           source = jsonlite::unbox("fsa-counties-dd17/dd22 geoparquet, FSA_STCOU × FIPS_C")),
+      vintages)
+
+  out <- file.path(dir, "fsa-fips-crosswalk.json")
+  writeLines(jsonlite::toJSON(payload, digits = NA), out)
+
+  invisible(out)
 }

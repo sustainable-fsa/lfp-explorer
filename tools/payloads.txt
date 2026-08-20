@@ -1,0 +1,31 @@
+# The data payloads this app fetches at runtime — the staging manifest.
+#
+# This repo ships no data. Every payload is fetched by RELATIVE sibling path
+# (../<repo>/<file>) which production resolves to that archive repo's
+# same-origin GitHub Pages copy, and which the harnesses resolve against the
+# workspace root they serve. One line per published artifact, as
+# <repo-dir>/<file> — the path is the same on sustainable-fsa.com and in the
+# workspace, which is the whole point of the convention.
+#
+# CI (.github/workflows/audit.yaml) loops this file and curls each artifact
+# into its sibling slot; `curl -f` fails the step on a missing one, which is
+# the correct signal — those origins are part of the app's contract. Locally,
+# mirror it from the repo root when a sibling checkout is absent:
+#
+#   while IFS= read -r p; do
+#     case "$p" in ''|\#*) continue ;; esac
+#     mkdir -p "../$(dirname "$p")"
+#     [ -f "../$p" ] || curl -fsSL "https://sustainable-fsa.com/$p" -o "../$p"
+#   done < tools/payloads.txt
+#
+# THE RULE: a line lands in the SAME commit that makes the app fetch it, so
+# staging can never lag the app. Blank lines and #-comments are ignored.
+#
+# The FIPS↔FSA crosswalk is deliberately absent: it is a committed repo asset
+# (assets/fsa-fips-crosswalk.json), served by the checkout itself.
+
+# 1 · Grazing periods — the boot payload, and the only fetch on the boot path.
+fsa-normal-grazing-period/fsa-normal-grazing-period.json
+
+# 1 · Grazing periods — nClimGrid climatology, fetched lazily on first toggle.
+nclimgrid-normal-grazing-period/nclimgrid-normal-grazing-period.json

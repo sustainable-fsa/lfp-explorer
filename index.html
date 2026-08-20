@@ -210,11 +210,56 @@
        the kit's (.sfsa-drawer, theme §5/§6); ui/drawer.js owns the ARIA, the
        compact focus moves, and Escape.
 
-       All five sections are authored here and live in the drawer at EVERY
-       size — there is no reflow-into-the-navbar layout to keep in sync. -->
+       Every section is authored here and lives in the drawer at EVERY size —
+       there is no reflow-into-the-navbar layout to keep in sync. Sections that
+       belong to ONE data family carry `data-view="<slug>"`; app.js hides the
+       ones that are not the active family's (syncSections). Sections with no
+       such attribute — search, year, legend — are shared by every family. -->
   <main id="main" tabindex="-1">
     <aside id="drawer" class="sfsa-drawer" aria-label="Map controls">
       <div class="sfsa-drawer-scroll">
+        <!-- ══ What to show ═════════════════════════════════════════════════
+             FIRST section in the drawer, because it scopes everything below
+             it: one segmented button per SHIPPED data family, in the order the
+             Livestock Forage Program is administered. Families that are not
+             here yet get no button — a disabled teaser is a promise the app
+             cannot keep — and the muted caption says so in words instead.
+             app.js owns aria-pressed (which IS the styling source of truth,
+             HOUSE-STYLE §5.7). These buttons are deliberately NOT in app.js's
+             dataControls: switching away from a family whose payload failed
+             must always work. -->
+        <section class="sfsa-drawer-section" id="view-seg">
+          <h2 class="sfsa-drawer-title" id="view-title">What to show</h2>
+          <div class="seg-btns" role="group" aria-labelledby="view-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-view-ngp"
+                    data-view-btn="ngp" aria-pressed="true">1 · Grazing periods</button>
+          </div>
+          <p class="control-note">More LFP data families coming.</p>
+        </section>
+
+        <!-- ══ Dataset — grazing periods ════════════════════════════════════
+             Two datasets of the SAME quantity: the dates FSA reported, and the
+             dates NAP-190's own method yields from climate normals. They share
+             the map, the legend and the card and differ only in the paint, so
+             this is a segmented toggle rather than a second view.
+
+             The climatology payload is fetched on FIRST PRESS, never at boot —
+             the default view must not pay for a dataset it is not showing
+             (asserted in tools/verify.mjs). -->
+        <section class="sfsa-drawer-section" id="ngp-dataset-seg" data-view="ngp">
+          <h2 class="sfsa-drawer-title" id="ngp-dataset-title">Dataset</h2>
+          <div class="seg-btns" role="group" aria-labelledby="ngp-dataset-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-ngp-official"
+                    data-dataset="fsa" aria-pressed="true">FSA official (FOIA)</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-ngp-nclimgrid"
+                    data-dataset="nclimgrid" aria-pressed="false">nClimGrid climatology</button>
+          </div>
+          <p class="control-note">
+            nClimGrid climatology is what NAP-190's method yields from 1991–2020
+            climate normals — a counterfactual, not FSA's numbers.
+          </p>
+        </section>
+
         <section class="sfsa-drawer-section">
           <h2 class="sfsa-drawer-title">Find a county</h2>
           <!-- Combobox shell exactly as theme §5 documents it, MINUS
@@ -250,9 +295,15 @@
             <input type="range" id="year-range" min="2008" max="2026" step="1" value="2026">
             <output id="year-out" for="year-range">2026</output>
           </div>
+          <!-- Unhidden by app.js when the active dataset is a CLIMATOLOGY: one
+               set of periods stands for every program year, so the slider above
+               is disabled and this says why rather than letting a moved thumb
+               change nothing. The sentence never varies, so it is authored here
+               and the note is never an empty box. -->
+          <p id="year-note" class="control-note" hidden>Climatology — one set of periods for all years.</p>
         </section>
 
-        <section class="sfsa-drawer-section">
+        <section class="sfsa-drawer-section" data-view="ngp">
           <h2 class="sfsa-drawer-title">Pasture type</h2>
           <label class="control-label sr-only" for="type-select">Pasture type</label>
           <!-- One static placeholder; app.js replaces the whole list from the
@@ -262,7 +313,7 @@
           </select>
         </section>
 
-        <section class="sfsa-drawer-section">
+        <section class="sfsa-drawer-section" data-view="ngp">
           <h2 class="sfsa-drawer-title" id="variable-title">Color by</h2>
           <!-- aria-labelledby rather than a second copy of the words: the group
                and its eyebrow cannot drift apart. -->
@@ -279,14 +330,19 @@
              legend you have to expand is a legend that goes unread. -->
         <section class="sfsa-drawer-section" aria-labelledby="legend-title">
           <h2 class="sfsa-drawer-title" id="legend-title">Legend</h2>
-          <!-- Two mutually exclusive legend bodies, swapped by app.js with the
-               color-by variable: the month wheel for the cyclic date scales,
-               the colorbar for duration. #legend-wheel is filled by N-W4's
-               js/legend-wheel.js; the placeholder holds its space until then. -->
+          <!-- Three mutually exclusive legend bodies, and app.js unhides
+               EXACTLY ONE of them (syncLegend) — the active interface's
+               descriptor says which: the month wheel for the cyclic date
+               scales, the colorbar for duration, the swatch chips for a
+               discrete scale. #legend-wheel is filled by N-W4's
+               js/legend-wheel.js; the placeholder holds its space until then.
+               #legend-swatches is authored and wired now; the first interface
+               that paints categories rather than a continuous scale fills it. -->
           <div id="legend-wheel" hidden>
             <p class="legend-placeholder">Month wheel legend loading…</p>
           </div>
           <div id="legend-bar"></div>
+          <div id="legend-swatches" hidden></div>
           <!-- The always-present TEXT channel: what the colors mean, in a
                sentence, for readers for whom the colors mean nothing. -->
           <p id="legend-key" class="sfsa-legend-key"></p>

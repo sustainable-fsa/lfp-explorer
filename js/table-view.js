@@ -18,12 +18,16 @@
    Three thousand rows is ~19,000 elements. Building them at boot would cost
    every visitor the price of a feature most will not open; rebuilding them on
    every year-slider frame would cost it hundreds of times. So the table is
-   built when the dialog opens, and only if the (year, type) it was built for
-   has changed since — reopening an unchanged view reuses the markup.
+   built when the dialog opens, and only if the (dataset, year, type) it was
+   built for has changed since — reopening an unchanged view reuses the markup.
+   The DATASET is part of that key because two datasets answer the same
+   (year, type) with different rows; leaving it out would show a reader the
+   previous dataset's numbers under the new dataset's caption.
    ========================================================================== */
 
 import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
 import { countyName, getYearType } from './data.js';
+import { interfaceOf, viewSelection } from './interfaces/registry.js';
 
 /** Above this, a rebuild is worth warning the user about — measured on the
     PREVIOUS build, because the only honest estimate of how long this device
@@ -74,6 +78,13 @@ export function tableRows(year, type) {
   return rows;
 }
 
+/* The columns of a grazing-period table. Still a constant, not a descriptor
+   leaf: PR 1 has one interface, and every dataset in it answers with the same
+   six fields. When a second interface arrives (a drought class is not a start
+   date) these move onto the descriptor beside its caption. The code column's
+   label is resolved per dataset at build time: the climatology's rows are in
+   its own key space (Census FIPS), and captioning them "FSA code" would be a
+   false claim about eight states' worth of leading-zero identifiers. */
 const COLUMNS = Object.freeze([
   'County', 'State', 'FSA code', 'Start', 'End', 'Duration (weeks)',
 ]);
@@ -81,9 +92,11 @@ const COLUMNS = Object.freeze([
 /**
  * @param {Array<object>} rows from tableRows()
  * @param {string} caption the sentence that names this table
+ * @param {string} codeLabel header for the county-code column — 'FSA code' or
+ *   'FIPS code', following the active dataset's key space
  * @returns {DocumentFragment}
  */
-function buildTable(rows, caption) {
+function buildTable(rows, caption, codeLabel) {
   const frag = document.createDocumentFragment();
   const table = el('table', { class: 'data-table' });
 
@@ -94,7 +107,9 @@ function buildTable(rows, caption) {
 
   const thead = el('thead');
   const hrow = el('tr');
-  for (const label of COLUMNS) hrow.appendChild(el('th', { scope: 'col' }, label));
+  for (const label of COLUMNS) {
+    hrow.appendChild(el('th', { scope: 'col' }, label === 'FSA code' ? codeLabel : label));
+  }
   thead.appendChild(hrow);
   table.appendChild(thead);
 
@@ -143,17 +158,27 @@ export function initTableView({ button, dialog, captionEl, bodyEl, ctx } = {}) {
   // button, native Esc, focus back to the opener) stays the kit's.
   const modal = initInfoModal({ dialog });
 
-  let builtFor = null;      // `${year}|${type}` the current markup was built for
+  let builtFor = null;      // the selection key the current markup was built for
   let lastBuildMs = 0;
 
+  /** What makes one built table different from another: the dataset, the
+      program year and the type. */
+  function keyOf(sel) {
+    return sel.dataset + '|' + sel.year + '|' + sel.type;
+  }
+
   function build() {
-    const { year, type } = ctx.getState();
-    const rows = tableRows(year, type);
-    const caption = type + ', ' + year + ' — ' + rows.length.toLocaleString('en-US')
-      + (rows.length === 1 ? ' county reporting' : ' counties reporting');
+    const sel = viewSelection(ctx);
+    // Rows come from the ACTIVE dataset, in its own key space — the table is
+    // the map's data, not a summary of it. The caption is the descriptor's, so
+    // the dialog subtitle, the sr-only <caption> and the scroll region's name
+    // all name the same thing the legend and the live region do.
+    const rows = tableRows(sel.year, sel.type);
+    const caption = interfaceOf(ctx).table.caption(sel, rows.length);
+    const codeLabel = ctx.getData().keySpace === 'fips' ? 'FIPS code' : 'FSA code';
 
     const started = (typeof performance === 'object') ? performance.now() : 0;
-    bodyEl.replaceChildren(buildTable(rows, caption));
+    bodyEl.replaceChildren(buildTable(rows, caption, codeLabel));
     lastBuildMs = started ? performance.now() - started : 0;
 
     // The body scrolls (css/app.css §10), and a scrollable region has to be
@@ -165,15 +190,14 @@ export function initTableView({ button, dialog, captionEl, bodyEl, ctx } = {}) {
     bodyEl.setAttribute('aria-label', caption);
 
     if (captionEl) captionEl.textContent = caption;
-    builtFor = year + '|' + type;
+    builtFor = keyOf(sel);
     return caption;
   }
 
   async function open() {
-    const { year, type } = ctx.getState();
     let caption = captionEl ? captionEl.textContent : '';
 
-    if (builtFor !== year + '|' + type) {
+    if (builtFor !== keyOf(viewSelection(ctx))) {
       // Only warn when this device has already proved it is slow enough to
       // need warning: a pill that appears and vanishes inside one frame is
       // worse than no pill.
@@ -200,8 +224,10 @@ export function initTableView({ button, dialog, captionEl, bodyEl, ctx } = {}) {
   return {
     open,
     close: modal.close,
-    /** Force the next open to rebuild (nothing calls this today; it is the
-        hook for a future filter that changes what the table should show). */
+    /** Force the next open to rebuild. app.js calls it after a dataset or
+        interface switch: the selection key would often catch that by itself,
+        but not always (two datasets can share a type name), and a stale table
+        under a fresh caption is the one failure this modal must not have. */
     invalidate() { builtFor = null; },
   };
 }

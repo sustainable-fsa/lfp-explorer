@@ -33,8 +33,9 @@ import { captureCompositeMap, composeBranded } from 'https://sustainable-fsa.com
 import { addCountyLayers } from 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
 import { resolveToken } from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
 
-import { getYearType, typeSlug } from './data.js';
+import { activeNgpDataset, typeSlug } from './data.js';
 import { NO_DATA, VARIABLES, ramps } from './color.js';
+import { interfaceOf, viewSelection } from './interfaces/registry.js';
 import {
   MONTH_LABELS, MONTH_STARTS, WHEEL_DAYS, monthMidAngle, wheelAngle, wheelPoint,
 } from './legend-wheel.js';
@@ -44,9 +45,6 @@ import {
 /** The themes `?export=` will accept. Same whitelist as the kit's THEMES; a
     typo must fall through to "do nothing", never to a default export. */
 const EXPORT_THEMES = Object.freeze(['light', 'high-contrast']);
-
-const CREDIT = 'Sustainable FSA · USDA FSA data via FOIA · DOI 10.5281/zenodo.15252842 '
-  + '· Montana Climate Office · sustainable-fsa.com/lfp-explorer';
 
 const TITLE = 'FSA Normal Grazing Periods';
 
@@ -70,19 +68,36 @@ const BAR_H = 22;
 /** The app context, captured at init — features never import app.js back. */
 let appCtx = null;
 
+/* ── What is being exported ──────────────────────────────────────────────────
+   Everything that varies between interfaces and datasets — the filename stem,
+   the subtitle, the credit, the legend's no-data label, and which counties get
+   which color — is read off the INTERFACE DESCRIPTOR at click time, never
+   captured at init. A reader who toggles datasets and then exports gets the
+   dataset they are looking at.
+
+   Both accessors (js/interfaces/registry.js) fall back: an older context — or a
+   harness that builds one by hand — yields the default descriptor, its default
+   dataset and the facade's active instance, which is exactly today's behaviour.
+   The official poster's bytes do not move. */
+
 /* ── Filename ────────────────────────────────────────────────────────────── */
 
 /**
  * The download name. Sortable, greppable, and unambiguous about which of the
- * sixteen pasture types it holds.
+ * sixteen pasture types (or three climatological seasons) it holds.
  *
- * @param {number} year
- * @param {string} type pasture type name
+ * The stem comes from the descriptor — `fsa-ngp_<year>` for FSA's own
+ * determinations, `fsa-ngp-nclimgrid` for the climatology, which has no year —
+ * and the tail is the same everywhere, because the type and the color-by
+ * variable are what a reader is trying to tell two posters apart by.
+ *
+ * @param {string} part the descriptor's export.filenamePart(sel)
+ * @param {string} type pasture type / season name
  * @param {string} variable start | end | duration
  * @returns {string}
  */
-export function exportFilename(year, type, variable) {
-  return 'fsa-ngp_' + year + '_' + typeSlug(type) + '_' + variable + '.png';
+export function exportFilename(part, type, variable) {
+  return part + '_' + typeSlug(type) + '_' + variable + '.png';
 }
 
 /* ── Legend painters ─────────────────────────────────────────────────────── */
@@ -97,8 +112,10 @@ function tokens() {
 
 /** The "no data" chip, drawn wherever it is asked for. Outlined, because a
     light gray square on a white poster is otherwise not a square at all, and
-    always labelled — color is never the only channel (HOUSE-STYLE §6). */
-function drawNoDataChip(ctx2d, x, midY, c) {
+    always labelled — color is never the only channel (HOUSE-STYLE §6). The
+    label is the descriptor's, because what "no data" MEANS is dataset-specific:
+    FSA reported no period, or the method yields no season here. */
+function drawNoDataChip(ctx2d, x, midY, c, label) {
   ctx2d.fillStyle = NO_DATA();
   ctx2d.fillRect(x, midY - CHIP / 2, CHIP, CHIP);
   ctx2d.strokeStyle = c.border;
@@ -107,11 +124,11 @@ function drawNoDataChip(ctx2d, x, midY, c) {
   ctx2d.font = FONT_BODY;
   ctx2d.textBaseline = 'middle';
   ctx2d.fillStyle = c.text;
-  ctx2d.fillText('No reported grazing period', x + CHIP + 12, midY);
+  ctx2d.fillText(label, x + CHIP + 12, midY);
 }
 
 /** Duration: the same 53 stops the map is painted from, as a bar. */
-function drawDurationLegend(ctx2d, rect) {
+function drawDurationLegend(ctx2d, rect, noDataLabel) {
   const c = tokens();
   const ramp = ramps().duration;
   const barX = rect.x;
@@ -141,12 +158,12 @@ function drawDurationLegend(ctx2d, rect) {
   }
   ctx2d.textAlign = 'left';
 
-  drawNoDataChip(ctx2d, barX + BAR_W + 64, barY + BAR_H / 2, c);
+  drawNoDataChip(ctx2d, barX + BAR_W + 64, barY + BAR_H / 2, c, noDataLabel);
 }
 
 /** Start / end: the month wheel, in canvas arcs, from the same angle math the
     DOM wheel uses. */
-function drawWheelLegend(ctx2d, rect, variable) {
+function drawWheelLegend(ctx2d, rect, variable, noDataLabel) {
   const c = tokens();
   const ramp = ramps().cyclic;
   const cx = rect.x + WHEEL_R_LABEL + 8;
@@ -204,36 +221,44 @@ function drawWheelLegend(ctx2d, rect, variable) {
   ctx2d.fillText(lines[1], textX, cy + 12);
 
   const widest = Math.max(...lines.map((s) => ctx2d.measureText(s).width));
-  drawNoDataChip(ctx2d, textX + widest + 48, cy, c);
+  drawNoDataChip(ctx2d, textX + widest + 48, cy, c, noDataLabel);
 }
 
 /**
- * The drawLegend callback for the active variable.
- * @param {string} variable
+ * The drawLegend callback for the active selection. Which body to draw is the
+ * descriptor's call (`legend.kind`), so the poster and the drawer can never
+ * disagree about whether this variable is cyclic.
+ *
+ * @param {object} iface the interface descriptor
+ * @param {object} sel the selection from selectionOf()
  * @returns {(ctx2d: CanvasRenderingContext2D, rect: object) => void}
  */
-function legendPainter(variable) {
+function legendPainter(iface, sel) {
+  const kind = iface.legend && iface.legend.kind
+    ? iface.legend.kind(sel)
+    : ((VARIABLES[sel.variable] && VARIABLES[sel.variable].cyclic) ? 'wheel' : 'bar');
+  const noDataLabel = (iface.legend && iface.legend.noDataLabel)
+    ? iface.legend.noDataLabel(sel)
+    : 'No reported grazing period';
+
   return (ctx2d, rect) => {
-    if (VARIABLES[variable] && VARIABLES[variable].cyclic) {
-      drawWheelLegend(ctx2d, rect, variable);
-    } else {
-      drawDurationLegend(ctx2d, rect);
-    }
+    if (kind === 'wheel') drawWheelLegend(ctx2d, rect, sel.variable, noDataLabel);
+    else drawDurationLegend(ctx2d, rect, noDataLabel);
   };
 }
 
 /* ── The export ──────────────────────────────────────────────────────────── */
 
-/** The same Map<id, color> app.js paints the live map with, rebuilt here so the
-    off-screen map is colored from the data rather than from the GL state of a
-    map that is about to be thrown away. */
-function colorsFor(state) {
-  const spec = VARIABLES[state.variable];
-  const colors = new Map();
-  for (const [id, rec] of getYearType(state.year, state.type)) {
-    colors.set(id, spec.scale(rec[spec.field]));
-  }
-  return colors;
+/** The same Map<fsaId, color> app.js paints the live map with, rebuilt here so
+    the off-screen map is colored from the data rather than from the GL state of
+    a map that is about to be thrown away. Through the descriptor, so a
+    FIPS-keyed dataset reaches the poster over the same crosswalk join the
+    screen used — a poster painted with unjoined keys would be a map of the
+    counties whose two codes happen to match. */
+function colorsFor(ctx, iface, sel) {
+  const data = (ctx.getData && ctx.getData()) || activeNgpDataset();
+  const xw = (ctx.getCrosswalk && ctx.getCrosswalk()) || null;
+  return iface.colorsFor(data, xw, sel).colors;
 }
 
 function download(blob, filename) {
@@ -259,13 +284,13 @@ function download(blob, filename) {
 export async function runExport(ctx = appCtx) {
   if (!ctx) throw new Error('[ngp/export] runExport() before initExport().');
 
-  const state = ctx.getState();
   const counties = ctx.getCounties();
   if (!counties) throw new Error('[ngp/export] the county boundaries are not loaded.');
 
-  const spec = VARIABLES[state.variable];
-  const colors = colorsFor(state);
-  const filename = exportFilename(state.year, state.type, state.variable);
+  const iface = interfaceOf(ctx);
+  const sel = viewSelection(ctx);
+  const colors = colorsFor(ctx, iface, sel);
+  const filename = exportFilename(iface.export.filenamePart(sel), sel.type, sel.variable);
 
   // Load every face the legend painters draw with BEFORE composeBranded: a
   // canvas does not wait for a font the way the DOM does, and a missed load is
@@ -289,9 +314,9 @@ export async function runExport(ctx = appCtx) {
   try {
     const blob = await composeBranded(canvas, {
       title: TITLE,
-      subtitle: state.type + ' · ' + state.year + ' · ' + spec.label,
-      credit: CREDIT,
-      drawLegend: legendPainter(state.variable),
+      subtitle: iface.export.subtitle(sel),
+      credit: iface.export.credit(sel),
+      drawLegend: legendPainter(iface, sel),
       theme: getTheme(),
     });
     download(blob, filename);

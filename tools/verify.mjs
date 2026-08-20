@@ -15,8 +15,10 @@
    ── Adapted from sustainable-fsa/style tools/consumer-verify.mjs ───────────
    That file is a SKELETON with an empty `appAsserts` array and a standing note
    that a run with it empty "proves nothing about what your app is FOR". This
-   is that array, filled: ~150 assertions across eighteen sections, each one
-   about something this county choropleth is actually for.
+   is that array, filled: every section below is about something this county
+   choropleth is actually for. The run prints its own passed/failed/skipped
+   count at the end — that is the count, and it is the only place one is
+   maintained. Nothing here is numbered by hand.
 
    Deltas from the skeleton, and why:
 
@@ -45,66 +47,68 @@
 
      · RENDER EVIDENCE IS `ngpReady`, and that flag means the payload joined
        and the first choropleth paint ran. It is NOT evidence of painted tiles.
-       Nothing in CI should read it that way.
+       Nothing in CI should read it that way. It is a BOOT stamp only:
+       transitions after boot (a view switch, a dataset toggle) are sequenced
+       by `data-ngp-view-seq`, which the app bumps after the transition's
+       recolor and feature-state flush. See tools/config.mjs § MARKERS.
+
+     · EVERY FACT ABOUT THE APP THAT THE a11y HARNESS ALSO NEEDS lives in
+       tools/config.mjs, including the per-view probe table this file's
+       interface sections read. Verify-only knobs stay in CONFIG below.
 
    Screenshots of every state land in verify-out/ (gitignored).
    ========================================================================== */
-import { createServer } from 'node:http';
 import { mkdir, readFile, rm } from 'node:fs/promises';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import {
+  CROSSWALK, DEFAULT_INTERFACE, INTERFACES, INIT_LS, PAGE_PATH, READY_MS,
+  THEMES, VIEWPORTS, renderEvidence, serveWorkspace, workspaceRoot,
+} from './config.mjs';
 
 /* ══════════════════════════════════════════════════════════════════════════
    CONFIG
+   The shared half comes from tools/config.mjs, which a11y-audit.mjs imports
+   too — page path, themes, viewports, localStorage seeds, the ngpReady
+   predicate and its timeout, the probe table, the server. It is re-exposed on
+   CONFIG rather than used directly so this file still reads as one block of
+   settings, and so a reader who changes a shared number is sent to the file
+   that owns it. Everything below the shared block is verify-only.
    ══════════════════════════════════════════════════════════════════════════ */
 const CONFIG = {
   /** Workspace root: tools/ → repo → workspace. Override with argv[1]. */
-  root: resolve(process.argv[2]
-    || join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
+  root: workspaceRoot(process.argv[2]),
 
-  /** The app, as a server path — a SUBDIRECTORY, which is how it deploys. */
-  pagePath: '/lfp-explorer/',
+  /** Shared with a11y-audit — see tools/config.mjs. */
+  pagePath: PAGE_PATH,
+  themes: THEMES,
+  viewports: VIEWPORTS,
+  initLocalStorage: INIT_LS,
+  renderEvidence,
+  readyMs: READY_MS,
 
-  /** The kit ships exactly these two. */
-  themes: ['light', 'high-contrast'],
-
-  viewports: {
-    wide: { width: 1440, height: 900 },
-    compact: { width: 375, height: 720 },
-  },
-
-  /** Seeded before load. The first-visit help auto-open fires 350ms after the
-      help fetch resolves and would land on top of whichever step is running
-      then; it is exercised deliberately in its own assertion instead.
-
-      `sfsa-ngp-drawer` pins the desktop control drawer OPEN, which is also the
-      app's default — the seed states the assumption rather than changing it, so
-      every section below starts from one known layout instead of from whatever
-      a previous session happened to leave behind. It is deliberately seeded for
-      the COMPACT run too: the phone force-closes the drawer regardless of what
-      is stored, and §6 asserts exactly that. */
-  initLocalStorage: { 'sfsa-ngp-seen-intro': '1', 'sfsa-ngp-drawer': 'open' },
-
-  /** RENDER EVIDENCE. A FUNCTION, never a string: a string predicate is
-      eval'd in-page and the meta CSP has no 'unsafe-eval'. */
-  renderEvidence: () => document.documentElement.dataset.ngpReady === '1',
-
-  /** ngpReady waits this long: a 5 MB local payload plus a ~2 MB boundary
-      archive over the network. Generous, because the failure it catches is
-      "never", not "slow". */
-  readyMs: 60000,
+  /** The per-view probe table. PR 1 holds one entry, `ngp`; the interface
+      section template at the bottom of this file consumes the rest as they
+      land. */
+  interfaces: INTERFACES,
 
   /** Extra settle after the evidence fires: the font swap, the legend, the
       map's final frames. */
   settleMs: 2000,
+
+  /** How long a dataset or view transition may take: the payload fetch, the
+      crosswalk fetch, the join, the recolor and the two-rAF flush. Longer than
+      a synchronous repaint's 400ms and shorter than the boot budget — the
+      failure it catches is a transition that never completes. */
+  switchMs: 30000,
 
   screenshotDir: resolve(join(dirname(fileURLToPath(import.meta.url)), '..', 'verify-out')),
 
   /** The county every state-dependent assertion uses. Missoula County, MT:
       data in every program year, and a polygon in BOTH boundary vintages, so
       no assertion below depends on which side of 2015 the slider sits. */
-  county: { id: '30063', name: 'Missoula' },
+  county: INTERFACES.ngp.county,
 
   /** The source id the kit's addCountyLayers creates. Feature state lives
       here, and feature state is how a repaint is proved. */
@@ -112,40 +116,15 @@ const CONFIG = {
 };
 /* ══════════════════════════════════════════════════════════════════════════ */
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.webmanifest': 'application/manifest+json',
-  '.topojson': 'application/json; charset=utf-8',
-  '.geojson': 'application/geo+json',
-  '.md': 'text/markdown; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-};
+/** The pinned kit build, imported IN-PAGE by three probes below (a county
+    centroid is the kit's arithmetic, not this file's). One constant so a
+    version bump or a dev-state sweep has exactly one site to hit here —
+    README § Developing against an unreleased kit lists this file alongside
+    index.html and js/. It is passed INTO page.evaluate as an argument: a
+    string built in-page from an outer-scope binding would not exist. */
+const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
 
-const ROOT = CONFIG.root;
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    if (p.endsWith('/')) p += 'index.html';
-    const f = normalize(join(ROOT, p));
-    if (!f.startsWith(ROOT)) { res.writeHead(403).end(); return; }
-    // Read BEFORE writing headers — the other order commits a 200 and only
-    // then finds the file missing, and the catch dies with
-    // ERR_HTTP_HEADERS_SENT on an already-sent response.
-    const body = await readFile(f);
-    res.writeHead(200, {
-      'content-type': MIME[extname(f)] || 'application/octet-stream',
-      'access-control-allow-origin': '*',
-    });
-    res.end(body);
-  } catch { res.writeHead(404).end('not found'); }
-});
+const server = serveWorkspace(CONFIG.root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}${CONFIG.pagePath}`;
 
@@ -257,16 +236,109 @@ async function open({
    a module fetch, so it is `script-src 'self'`; nothing here builds a function
    from a string, which the CSP would (correctly) block. */
 
-/** State + vintage + geometry count, in one round trip. */
+/** State + vintage + geometry count, in one round trip.
+ *
+ * `state.dataset` is a CONVENIENCE the app does not carry: the active view's
+ * dataset lives in the per-view `viewState`, not in shared state, because two
+ * views remember their own. It is folded in here so every assertion that
+ * compares "the view" can compare one flat object. Both shapes `getViewState()`
+ * may hand back are accepted — the whole per-view map, or just the active
+ * view's slice — so this probe does not have to be edited if that seam is
+ * tightened later. */
 const snapshot = (page) => page.evaluate(async () => {
   const app = await import(new URL('js/app.js', document.baseURI).href);
   const c = app.ngpContext();
+  const state = c.getState();
+  const vs = typeof c.getViewState === 'function' ? c.getViewState() : null;
+  const slice = vs && (typeof vs.dataset === 'string' ? vs : vs[state.view]);
   return {
-    state: c.getState(),
+    state: { ...state, dataset: (slice && slice.dataset) || null },
+    viewState: slice || null,
     vintage: c.getVintage(),
     geometryCount: c.getCounties() ? c.getCounties().index.size : 0,
     center: c.getMap().getCenter().toArray(),
     zoom: c.getMap().getZoom(),
+    markers: { ...document.documentElement.dataset },
+  };
+});
+
+/**
+ * Click a control and say whether it was there to click.
+ *
+ * Used for the view and dataset seg buttons only. Everywhere else in this file
+ * a bare `.click()` is right: a missing #btn-table is a broken app and a
+ * Playwright timeout is a fine way to say so. These buttons are different —
+ * they are the newest markup in the page, they are what a half-landed refactor
+ * omits, and a run that aborted on the first one would report nothing about
+ * the twenty assertions after it. A false here fails ONE named check with a
+ * reason, and the checks that depended on the click fail with their own
+ * evidence instead of a stack trace.
+ */
+const clickControl = (page, sel) => page.locator(sel)
+  .click({ timeout: 5000 }).then(() => true).catch(() => false);
+
+/** The transition sequence marker as a number, or 0 if the app never stamped
+    one. Every wait on it is a function predicate over this value. */
+const viewSeq = (page) => page.evaluate(
+  () => Number(document.documentElement.dataset.ngpViewSeq || 0));
+
+/**
+ * Wait for a view or dataset transition to finish, by the app's own marker:
+ * `data-ngp-view-seq` is bumped only AFTER the transition has recolored and
+ * flushed feature state (two rAFs), so a signature read after this resolves is
+ * never the previous paint. Returns false on timeout rather than throwing —
+ * the caller turns that into a named failure instead of a stack trace.
+ */
+const awaitViewSeq = async (page, prev, ms = CONFIG.switchMs) => {
+  const bumped = await page.waitForFunction(
+    (before) => Number(document.documentElement.dataset.ngpViewSeq || 0) > before,
+    prev, { timeout: ms }).then(() => true).catch(() => false);
+  await settleFrames(page);
+  return bumped;
+};
+
+/** Every resource URL the page has fetched so far, as basenames. The lazy-boot
+    assertion is about which payloads are NOT in here. */
+const resourceNames = (page) => page.evaluate(
+  () => performance.getEntriesByType('resource').map((e) => e.name));
+
+/**
+ * Everything the drawer says about the active view and dataset, in one round
+ * trip: which seg buttons are pressed, what the type dictionary currently
+ * offers, whether the year control is live, and which legend body is showing.
+ *
+ * `aria-pressed` is read rather than a class, because aria-pressed is what the
+ * kit styles a seg button from (HOUSE-STYLE): if the attribute is wrong the
+ * button LOOKS wrong, so there is no second source of truth to check against.
+ */
+const viewControls = (page) => page.evaluate(() => {
+  const el = (id) => document.getElementById(id);
+  const pressed = (sel) => Array.from(document.querySelectorAll(sel))
+    .filter((b) => b.getAttribute('aria-pressed') === 'true');
+  const note = el('year-note');
+  const text = (n) => (n ? (n.textContent || '').trim() : null);
+  const visible = (n) => !!(n && !n.hidden && n.getClientRects().length > 0);
+  const bodyState = (id) => { const n = el(id); return n ? !n.hidden : null; };
+  return {
+    views: pressed('[data-view-btn]').map((b) => b.dataset.viewBtn),
+    viewBtns: document.querySelectorAll('[data-view-btn]').length,
+    datasets: pressed('[data-dataset]').map((b) => b.dataset.dataset),
+    datasetBtns: document.querySelectorAll('[data-dataset]').length,
+    types: Array.from(document.querySelectorAll('#type-select option'))
+      .map((o) => o.value),
+    type: el('type-select') ? el('type-select').value : null,
+    year: el('year-range') ? el('year-range').value : null,
+    yearDisabled: el('year-range') ? el('year-range').disabled : null,
+    noteShown: visible(note),
+    noteText: text(note),
+    legend: {
+      wheel: bodyState('legend-wheel'),
+      bar: bodyState('legend-bar'),
+      swatches: bodyState('legend-swatches'),
+      key: text(el('legend-key')),
+    },
+    sections: Array.from(document.querySelectorAll('.sfsa-drawer-scroll [data-view]'))
+      .map((s) => ({ id: s.id, view: s.dataset.view, hidden: s.hidden })),
   };
 });
 
@@ -394,14 +466,50 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   await shot('01-boot');
 
   const boot = await snapshot(page);
-  check('boot state is the documented default (2026 · Native Pasture · duration)',
-    boot.state.year === 2026 && boot.state.type === 'Native Pasture'
-      && boot.state.variable === 'duration',
-    JSON.stringify(boot.state));
+  check('boot state is the documented default (grazing periods · FSA official · '
+    + '2026 · Native Pasture · duration)',
+  boot.state.view === 'ngp' && boot.state.dataset === 'fsa'
+    && boot.state.year === 2026 && boot.state.type === 'Native Pasture'
+    && boot.state.variable === 'duration',
+  JSON.stringify(boot.state));
   check('an all-defaults view emits a CLEAN url (no query string)',
     new URL(page.url()).search === '', 'search is ' + new URL(page.url()).search);
+  /* The two newest params get their own assertion rather than riding on the
+     one above: `?view=` and `?dataset=` are the ones a refactor is most likely
+     to start emitting unconditionally, and "the whole search string is empty"
+     names the symptom without naming the cause. */
+  check('the defaults emit NEITHER ?view NOR ?dataset — the app boots on its '
+    + 'first view and that view\'s first dataset, and says nothing about it',
+  !new URL(page.url()).searchParams.has('view')
+    && !new URL(page.url()).searchParams.has('dataset'), page.url());
   check('boot vintage follows the program year (2026 → dd22)',
     boot.vintage === 'dd22', 'vintage is ' + boot.vintage);
+
+  /* ── The boot path fetches ONE payload ──────────────────────────────────
+     This is the guarantee Lighthouse cannot express: the app now knows about
+     more than one dataset, and the LCP it is measured on is the one where
+     exactly one of them has been fetched. Everything else — the nClimGrid
+     climatology, the FIPS↔FSA crosswalk — is lazy, fetched on the toggle that
+     needs it. A speculative prefetch added "for smoothness" would fail here,
+     and would also cost the best-practices score a console error if it 404'd.
+     Resource entries, not request interception: this is what the page's own
+     performance timeline says it went and got. */
+  {
+    const NGP = CONFIG.interfaces.ngp;
+    const fetched = await resourceNames(page);
+    const has = (needle) => fetched.filter((n) => n.includes(needle));
+    const official = has(NGP.datasets.fsa.payload);
+    const lazy = [
+      ...has(NGP.datasets.nclimgrid.payload),
+      ...has(CROSSWALK.path.split('/').pop()),
+    ];
+    check('the boot path fetched the FSA official grazing-period payload',
+      official.length > 0, `${fetched.length} resources, none named `
+      + JSON.stringify(NGP.datasets.fsa.payload));
+    check('…and NOTHING ELSE: every other dataset and the crosswalk stay lazy '
+      + 'until something asks for them (the LCP guarantee)',
+    lazy.length === 0, lazy.join(' | '));
+  }
 
   /* ── The rendered space is the PROJECTED one ─────────────────────────────
      MapLibre has no conic projection, so the app runs every county coordinate
@@ -634,13 +742,12 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
      centre would be a click on whatever the projection happens to put there. */
   section('▸ County click → detail card');
   {
-    const pt = await page.evaluate(async (id) => {
+    const pt = await page.evaluate(async ([id, kitUrl]) => {
       const app = await import(new URL('js/app.js', document.baseURI).href);
       // Kit import in the SAME form the app uses, so the harness never mixes
-      // two kit builds in one page. Swept together with index.html and js/ on
-      // any version bump or dev-state sweep (README § Developing against an
-      // unreleased kit).
-      const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
+      // two kit builds in one page. The URL is KIT_COUNTY_URL, passed in — see
+      // its definition for the sweep note.
+      const county = await import(kitUrl);
       const c = app.ngpContext();
       const feature = c.getCounties().index.get(id);
       if (!feature) return null;
@@ -649,7 +756,7 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
       const p = c.getMap().project(center);
       const box = document.getElementById('map').getBoundingClientRect();
       return { x: Math.round(box.x + p.x), y: Math.round(box.y + p.y) };
-    }, CONFIG.county.id);
+    }, [CONFIG.county.id, KIT_COUNTY_URL]);
 
     if (!pt) {
       skip('county click opens the card', `no polygon for ${CONFIG.county.id}`);
@@ -745,9 +852,9 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
          seam exactly like a map click (no fly), and asserts the push, the
          reveal, the close-restore, and that an unobscured county does NOT
          push. */
-      const victim = await page.evaluate(async () => {
+      const victim = await page.evaluate(async (kitUrl) => {
         const app = await import(new URL('js/app.js', document.baseURI).href);
-        const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
+        const county = await import(kitUrl);
         const c = app.ngpContext();
         const m = c.getMap();
         const cardW = document.getElementById('county-card').offsetWidth;
@@ -761,7 +868,7 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
           if (p.x > w - cardW + 60 && p.y > 80 && p.y < h - 80) return id;
         }
         return null;
-      });
+      }, KIT_COUNTY_URL);
       if (!victim) {
         skip('the reveal pan brings an obscured county out from under the dock',
           'no county centroid projects under the dock at this camera');
@@ -771,9 +878,9 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
           app.ngpContext().selectCounty(id);   // no fly — the map-click path
         }, victim);
         await page.waitForTimeout(700);        // rAF + resize + re-fit + settle
-        const pushed = await page.evaluate(async (id) => {
+        const pushed = await page.evaluate(async ([id, kitUrl]) => {
           const app = await import(new URL('js/app.js', document.baseURI).href);
-          const county = await import('https://sustainable-fsa.com/style/v0.2.0/county/county.js');
+          const county = await import(kitUrl);
           const c = app.ngpContext();
           const f = c.getCounties().index.get(id);
           const p = c.getMap().project(county.countyCentroid(f));
@@ -784,7 +891,7 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
             cardW: document.getElementById('county-card').offsetWidth,
             x: Math.round(p.x),
           };
-        }, victim);
+        }, [victim, KIT_COUNTY_URL]);
         check(`selecting an obscured county (${victim}) pushes the map: the `
           + 'canvas gives up the dock\'s width',
         pushed.pushes && Math.abs(pushed.mapW - (pushed.frameW - pushed.cardW)) <= 2,
@@ -1061,11 +1168,20 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
       !new URL(copied).searchParams.has('variable')
         && (mine.state.year !== 2026) === new URL(copied).searchParams.has('year'),
       copied);
+    // The main run is on the default view, on its default dataset, so neither
+    // slug belongs in a shared link from here. Asserted separately from the
+    // reproduction below because the two failures are different bugs: a
+    // stray param is a leak, a missing one is a lost view.
+    check('a link shared from the default view carries no ?view or ?dataset',
+      !new URL(copied).searchParams.has('view')
+        && !new URL(copied).searchParams.has('dataset'), copied);
     const trip = await open({ query: new URL(copied).search });
     const theirs = await snapshot(trip.page);
-    check('the copied URL really reproduces the view (year, type, variable, '
-      + 'county and camera all survive a reload)',
-    theirs.state.year === mine.state.year
+    check('the copied URL really reproduces the view (view, dataset, year, type, '
+      + 'variable, county and camera all survive a reload)',
+    theirs.state.view === mine.state.view
+        && theirs.state.dataset === mine.state.dataset
+        && theirs.state.year === mine.state.year
         && theirs.state.type === mine.state.type
         && theirs.state.variable === mine.state.variable
         && theirs.state.countyId === mine.state.countyId
@@ -1630,6 +1746,558 @@ section('▸ Compact 375×720 (touch)');
     await page.evaluate(() => document.getElementById('county-card').hidden));
 
   s.clean('compact');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE PER-VIEW SECTION TEMPLATE
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Drive one non-default view end to end, from the probe table entry alone.
+ *
+ * NOT CALLED IN PR 1, and that is deliberate rather than an oversight: there
+ * is exactly one view today, so step 1 would be a no-op click on an
+ * already-pressed button and every later step would restate what §7 below
+ * already asserts by hand for the default view. It lands now so that PR 2's
+ * diff is one probe-table entry plus one call — the shape of what a view owes
+ * the gates is frozen here, where it can be reviewed once instead of argued
+ * three times.
+ *
+ * The steps, in order, each ending where the plan says it should:
+ *   1  switch          aria-pressed follows, the marker advances
+ *   2  URL             ?view=<slug> appears for a non-default view
+ *   3  lazy fetch      its payload was NOT fetched at boot, and is now
+ *   4  repaint         the feature-state signature changed, and the painted
+ *                      count is what the data (through the crosswalk, for a
+ *                      FIPS-keyed view) says it should be
+ *   5  legend          the expected body is the visible one, with a text key
+ *   6  extraChecks     the view's own controls, each with its own clean()
+ *   7  card            title + populated rows for the view's county
+ *   8  table           rows === the view's own oracle
+ *   9  export          filename scheme + PNG magic bytes
+ *   10 state memory    round trip: the default view is untouched, this view's
+ *                      own state is remembered
+ *   11 clean URL       back at this view's defaults, only ?view remains
+ *   12 clean() + shot
+ *
+ * @param {object} iface an entry from CONFIG.interfaces.
+ * @param {{session: object, bootResources: string[]}} opts the booted session
+ *   from open() (with `downloads: true` if step 9 is wanted) and the resource
+ *   list read at boot, for step 3.
+ */
+async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
+  const { page, clean, shot } = session;
+  const dflt = DEFAULT_INTERFACE;
+  const ds = Object.values(iface.datasets).find((d) => d.isDefault)
+    || Object.values(iface.datasets)[0];
+  section(`▸ View ${iface.slug} — ${iface.label}`);
+
+  /* 1 · Switch. */
+  const sigBefore = await paintSignature(page, CONFIG.sourceId);
+  const seq = await viewSeq(page);
+  const clicked = await clickControl(page, iface.switchSel);
+  const bumped = clicked && await awaitViewSeq(page, seq);
+  const now = await viewControls(page);
+  check(`the switcher moves the app to ${iface.label} (aria-pressed follows the `
+    + 'view, and the transition marker advances)',
+  bumped && now.views.length === 1 && now.views[0] === iface.slug,
+  JSON.stringify({ clicked, bumped, pressed: now.views }));
+  check(`every drawer section not belonging to ${iface.slug} is hidden`,
+    now.sections.every((sec) => (sec.view === iface.slug) === !sec.hidden),
+    JSON.stringify(now.sections));
+
+  /* 2 · URL. */
+  check(`?view=${iface.slug} appears — a non-default view is shareable state`,
+    new URL(page.url()).searchParams.get('view') === iface.slug, page.url());
+
+  /* 3 · Lazy fetch proof. */
+  const fetched = await resourceNames(page);
+  check(`the ${iface.slug} payload was fetched on the FIRST switch and not at `
+    + 'boot (the boot path stays one payload wide)',
+  !bootResources.some((n) => n.includes(ds.payload))
+    && fetched.some((n) => n.includes(ds.payload)),
+  `boot had ${bootResources.filter((n) => n.includes(ds.payload)).length}, `
+    + `now ${fetched.filter((n) => n.includes(ds.payload)).length}`);
+
+  /* 4 · Repaint, with an oracle rather than a number. */
+  const sigAfter = await paintSignature(page, CONFIG.sourceId);
+  check(`the choropleth repainted for ${iface.label} (feature-state signature `
+    + 'changed)', sigBefore.hash !== sigAfter.hash,
+  `${sigBefore.colored} @${sigBefore.hash} → ${sigAfter.colored} @${sigAfter.hash}`);
+  if (typeof iface.paintOracle === 'function') {
+    const expect = await iface.paintOracle(page);
+    check('every county with data in this view carries a colour, and no county '
+      + 'without data kept one (no stale paint across the switch)',
+    sigAfter.colored === expect, `${sigAfter.colored} painted, ${expect} expected`);
+  } else {
+    skip(`${iface.slug}: painted count against the data`,
+      'this view\'s probe-table entry defines no paintOracle');
+  }
+
+  /* 5 · Legend body. */
+  const variable = (await snapshot(page)).state.variable;
+  const kind = iface.legend.kinds ? iface.legend.kinds[variable] : iface.legend.kind;
+  const bodies = { wheel: now.legend.wheel, bar: now.legend.bar,
+    swatches: now.legend.swatches };
+  check(`${iface.label}: the ${kind} legend is the visible body, with a text key`,
+    bodies[kind] === true
+      && Object.entries(bodies).every(([k, v]) => (k === kind) === (v === true))
+      && (now.legend.key || '').length > 20,
+    JSON.stringify(now.legend));
+  if (Array.isArray(iface.legend.items)) {
+    const items = await page.evaluate(() => Array.from(
+      document.querySelectorAll('#legend-swatches [data-legend-item]'))
+      .map((n) => (n.textContent || '').trim()));
+    check(`${iface.label}: the categorical legend labels every class in words `
+      + '(colour is never the only channel)',
+    items.length === iface.legend.items.length
+      && iface.legend.items.every((t, i) => (items[i] || '').includes(t)),
+    JSON.stringify(items));
+  }
+  clean(`view ${iface.slug} switch`);
+
+  /* 6 · The view's own controls. */
+  if (typeof iface.extraChecks === 'function') {
+    await iface.extraChecks({ page, check, skip, clean, shot, iface });
+  }
+
+  /* 7 · Card. */
+  await page.evaluate(async (id) => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    app.ngpContext().selectCounty(id);
+  }, iface.county.id);
+  await page.waitForFunction(() => !document.getElementById('county-card').hidden,
+    null, { timeout: 8000 }).catch(() => {});
+  const card = await page.evaluate(() => ({
+    title: (document.getElementById('card-title').textContent || '').trim(),
+    rows: document.querySelectorAll('#card-rows dt').length,
+    text: (document.getElementById('card-rows').textContent || '').trim(),
+    figure: !!document.querySelector('#card-content figure'),
+    twin: !!document.querySelector('#card-content figcaption'),
+  }));
+  check(`${iface.label}: the card names ${iface.county.name} and reads out this `
+    + 'view\'s own rows',
+  card.title.includes(iface.county.name) && card.rows >= 3
+    && card.text.length > 40,
+  JSON.stringify({ title: card.title, rows: card.rows }));
+  check(`${iface.label}: the card's picture carries its accessible twin`,
+    !card.figure || card.twin,
+    `figure=${card.figure}, figcaption=${card.twin}`);
+
+  /* 8 · Table, against the view's own oracle. */
+  await page.locator('#btn-table').click();
+  await page.waitForFunction(
+    () => document.getElementById('table-modal').open
+      && document.querySelectorAll('#table-modal-body tbody tr').length > 0,
+    null, { timeout: CONFIG.switchMs }).catch(() => {});
+  const table = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#table-modal-body tbody tr').length,
+    caption: (document.getElementById('table-modal-caption').textContent || '').trim(),
+  }));
+  if (typeof iface.tableOracle === 'function') {
+    const expect = await iface.tableOracle(page);
+    check(`${iface.label}: the table is this view's data, row for row`,
+      table.rows === expect, `${table.rows} rows vs ${expect} records`);
+  } else {
+    skip(`${iface.slug}: table row count against the data`,
+      'this view\'s probe-table entry defines no tableOracle');
+  }
+  check(`${iface.label}: the caption names what frames this table`,
+    table.caption.length > 20, JSON.stringify(table.caption));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('table-modal').open,
+    null, { timeout: 5000 }).catch(() => {});
+  clean(`view ${iface.slug} card and table`);
+
+  /* 9 · Export. Needs a context opened with downloads: true. */
+  if (session.downloads) {
+    const pending = page.waitForEvent('download', { timeout: 120000 })
+      .catch(() => null);
+    await page.locator('#btn-export').click();
+    const dl = await pending;
+    if (!dl) {
+      check(`${iface.label}: the export button produces a PNG`, false,
+        'no download appeared inside 120s');
+    } else {
+      const name = dl.suggestedFilename();
+      const path = await dl.path();
+      const bytes = path ? await readFile(path) : Buffer.alloc(0);
+      check(`${iface.label}: the poster is named for the view it holds`,
+        iface.exportName.test(name), name);
+      check(`${iface.label}: and it really is a PNG`,
+        bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50
+          && bytes[2] === 0x4e && bytes[3] === 0x47,
+        'first bytes: ' + [...bytes.slice(0, 8)].map((b) => b.toString(16)).join(' '));
+    }
+    clean(`view ${iface.slug} export`);
+  }
+
+  /* 10 · State memory across a round trip. */
+  const mine = await snapshot(page);
+  const seqOut = await viewSeq(page);
+  await clickControl(page, dflt.switchSel);
+  await awaitViewSeq(page, seqOut);
+  const home = await snapshot(page);
+  const seqIn = await viewSeq(page);
+  await clickControl(page, iface.switchSel);
+  await awaitViewSeq(page, seqIn);
+  const again = await snapshot(page);
+  check(`switching away and back remembers ${iface.label}'s own state, and left `
+    + `${dflt.label}'s alone`,
+  JSON.stringify(again.viewState) === JSON.stringify(mine.viewState)
+    && home.state.view === dflt.slug,
+  JSON.stringify({ mine: mine.viewState, again: again.viewState }));
+  check('shared state carried across both switches (the county and the camera '
+    + 'are the visitor\'s, not the view\'s)',
+  again.state.countyId === mine.state.countyId
+    && Math.abs(again.center[0] - mine.center[0]) < 0.05,
+  JSON.stringify({ county: [mine.state.countyId, again.state.countyId] }));
+
+  /* 11 · Clean URL, both ways. */
+  const seqHome = await viewSeq(page);
+  await clickControl(page, dflt.switchSel);
+  await awaitViewSeq(page, seqHome);
+  check('returning to the default view drops ?view entirely',
+    !new URL(page.url()).searchParams.has('view'), page.url());
+
+  /* 12 · Console gate and evidence. */
+  clean(`view ${iface.slug}`);
+  await shot(`2x-${iface.slug}`);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   7. VIEWS AND DATASETS — the switcher, and one view's two datasets.
+
+   The app is one page over several bodies of data. A view ("interface") is a
+   body of data with its own controls, legend and card; a dataset is one
+   ANSWER within a view — for grazing periods, what FSA published against what
+   NAP-190's method yields from climate normals. The switch between them is the
+   app's only asynchronous state change apart from the boundary swap, and it is
+   the one a screenshot cannot check: the map still looks like a map when the
+   toggle half-lands, when a fetch fails silently, or when the old paint sits
+   under the new legend.
+
+   Everything here therefore hangs off the app's own transition marker rather
+   than a timeout — `data-ngp-view-seq`, bumped after the recolor's
+   feature-state flush — and every interaction ends with a console-clean gate,
+   because a superseded fetch is exactly the kind of failure that gets caught,
+   logged and forgotten.
+
+   A FRESH CONTEXT, not the main run's: this section asserts clean-URL
+   discipline across a round trip, and the main run leaves a year, a county and
+   a camera behind it. Starting from a real boot is what makes "the URL is
+   clean again" mean anything.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ View switcher + NGP datasets — FSA official ↔ nClimGrid climatology');
+{
+  const NGP = CONFIG.interfaces.ngp;
+  const OFFICIAL = NGP.datasets.fsa;
+  const CLIMO = NGP.datasets.nclimgrid;
+
+  const s = await open();
+  const { page } = s;
+  check('the dataset-toggle page reaches ngpReady', s.ready);
+  s.clean('view section boot');
+
+  /* ── The readiness markers themselves ───────────────────────────────────
+     These are a CONTRACT WITH THIS FILE (tools/config.mjs § MARKERS): the
+     harness waits on them, so a rename or a missing stamp turns every
+     transition assertion below into a 30-second timeout with no diagnosis.
+     Assert them by name first, so that failure reads as "the marker is gone"
+     instead of "the app is broken". */
+  const boot = await snapshot(page);
+  check('boot stamps the active view into data-ngp-view (a harness can tell '
+    + 'which body of data is on screen without importing the app)',
+  boot.markers.ngpView === NGP.slug,
+  'data-ngp-view is ' + JSON.stringify(boot.markers.ngpView || null));
+  check('boot stamps a monotonic data-ngp-view-seq — the sequence every async '
+    + 'transition below is waited on',
+  /^[0-9]+$/.test(boot.markers.ngpViewSeq || ''),
+  'data-ngp-view-seq is ' + JSON.stringify(boot.markers.ngpViewSeq || null));
+  check('a clean boot carries no data-ngp-view-error',
+    boot.markers.ngpViewError === undefined,
+    'data-ngp-view-error is ' + JSON.stringify(boot.markers.ngpViewError || null));
+
+  const official = await viewControls(page);
+  check('the switcher shows exactly one pressed view, and it is the default one',
+    official.views.length === 1 && official.views[0] === NGP.slug,
+    `pressed ${JSON.stringify(official.views)} of ${official.viewBtns} button(s)`);
+  check(`the dataset seg offers both grazing-period datasets with `
+    + `"${OFFICIAL.label}" pressed`,
+  official.datasetBtns === 2 && official.datasets.length === 1
+    && official.datasets[0] === OFFICIAL.id,
+  `${official.datasetBtns} button(s), pressed ${JSON.stringify(official.datasets)}`);
+  check('exactly one legend body is visible, and on a grazing-period view it is '
+    + 'never the swatches one (that body exists for the categorical views)',
+  official.legend.swatches === false
+    && [official.legend.wheel, official.legend.bar].filter(Boolean).length === 1,
+  JSON.stringify(official.legend));
+  await s.shot('18-ngp-official');
+
+  /* ── Crosswalk integrity ────────────────────────────────────────────────
+     nClimGrid is keyed by CENSUS FIPS and the map is keyed by FSA county, so
+     every colour it paints arrives through assets/fsa-fips-crosswalk.json.
+     Check the table itself here, by name: a truncated, mis-vintaged or
+     integer-mangled crosswalk otherwise shows up as a mysteriously low painted
+     count in the toggle below, which is a symptom three joins away from its
+     cause. Ids are STRINGS on both sides — a crosswalk that ever saw
+     parseInt() loses every leading zero in New England and Alabama at once. */
+  const xw = await page.evaluate(async ([path, schema]) => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    // A boot that failed leaves no geometry index. Report that instead of
+    // throwing: an exception here would abort the run and take the summary
+    // (and every assertion after this one) with it.
+    if (!c.getCounties()) return { error: 'the app loaded no geometry index' };
+    const idx = c.getCounties().index;
+    const vintage = c.getVintage();
+    let payload;
+    try {
+      const res = await fetch(new URL(path, document.baseURI).href);
+      if (!res.ok) return { error: `HTTP ${res.status} for ${path}` };
+      payload = await res.json();
+    } catch (err) { return { error: String(err) }; }
+    const five = (a) => a.every((v) => typeof v === 'string' && /^[0-9]{5}$/.test(v));
+    const out = {
+      schema: payload.schema, expectedSchema: schema, vintage,
+      geometry: idx.size, vintages: {},
+    };
+    for (const v of Object.keys(payload)) {
+      const t = payload[v];
+      if (!t || typeof t !== 'object' || !Array.isArray(t.fsa)) continue;
+      out.vintages[v] = {
+        n: t.n, fsa: t.fsa.length, fips: t.fips.length,
+        strings: five(t.fsa) && five(t.fips),
+      };
+    }
+    const table = payload[vintage];
+    if (table) {
+      const named = new Set(table.fsa);
+      const reachable = [...idx.keys()].filter((id) => named.has(id));
+      out.reach = { named: named.size, reachable: reachable.length };
+      const orphans = [...named].filter((id) => !idx.has(id));
+      out.orphans = { count: orphans.length, sample: orphans.slice(0, 5) };
+    }
+    return out;
+  }, [CROSSWALK.path, CROSSWALK.schema]);
+
+  if (xw.error) {
+    check(`the crosswalk at ${CROSSWALK.path} could be read and checked against `
+      + 'the loaded geometry', false, xw.error);
+  } else {
+    check(`the crosswalk declares schema ${JSON.stringify(CROSSWALK.schema)}`,
+      xw.schema === CROSSWALK.schema, 'schema is ' + JSON.stringify(xw.schema));
+    check('it holds a table for BOTH boundary vintages — dd17 and dd22 do not '
+      + 'share county footprints, so a FIPS join needs both',
+    CROSSWALK.vintages.every((v) => xw.vintages[v]),
+    'tables: ' + JSON.stringify(Object.keys(xw.vintages)));
+    check('each table is two PARALLEL arrays whose length is the pair count it '
+      + 'declares',
+    CROSSWALK.vintages.every((v) => xw.vintages[v]
+      && xw.vintages[v].fsa === xw.vintages[v].fips
+      && xw.vintages[v].fsa === xw.vintages[v].n),
+    JSON.stringify(xw.vintages));
+    check('every id on both sides is a 5-CHARACTER STRING (leading zeros '
+      + 'intact — never a FIPS integer, never parseInt)',
+    CROSSWALK.vintages.every((v) => xw.vintages[v] && xw.vintages[v].strings),
+    JSON.stringify(xw.vintages));
+    check('the pair counts are the ones the crosswalk contract froze '
+      + `(dd17 ${CROSSWALK.pairs.dd17} · dd22 ${CROSSWALK.pairs.dd22})`,
+    CROSSWALK.vintages.every((v) => xw.vintages[v]
+      && xw.vintages[v].n === CROSSWALK.pairs[v]),
+    'counts are ' + JSON.stringify(Object.fromEntries(
+      Object.entries(xw.vintages).map(([v, t]) => [v, t.n])))
+      + ' — if a boundary archive was legitimately rebuilt, CROSSWALK.pairs in '
+      + 'tools/config.mjs moves in the same commit as the asset');
+    if (xw.reach) {
+      // The direction that matters for painting: can a FIPS-keyed dataset
+      // reach the polygons on screen? A few named FSA ids with no polygon are
+      // expected (the archives' county lists are not the composite's), so the
+      // gate is coverage of the GEOMETRY, and the orphans are printed.
+      check('the crosswalk reaches the map: it names essentially every polygon '
+        + `in the loaded ${xw.vintage} geometry `
+        + `(${xw.reach.reachable} of ${xw.geometry})`,
+      xw.reach.reachable >= xw.geometry * 0.98,
+      `${xw.reach.reachable} of ${xw.geometry} polygons named, `
+        + `${xw.orphans.count} named ids have no polygon `
+        + `(${xw.orphans.sample.join(', ')})`);
+    }
+  }
+
+  /* ── The toggle ─────────────────────────────────────────────────────────
+     One click, then wait on the app's marker. Everything the dataset owns has
+     to move together: the paint (through the crosswalk), the year control (a
+     climatology has no year), the type dictionary (three seasons, not fifteen
+     pasture types), the legend's text key, and the URL. */
+  const sigOfficial = await paintSignature(page, CONFIG.sourceId);
+  const seq0 = await viewSeq(page);
+  const clicked = await clickControl(page, CLIMO.sel);
+  const bumped = clicked && await awaitViewSeq(page, seq0);
+  check(`the ${JSON.stringify(CLIMO.label)} toggle completes: data-ngp-view-seq `
+    + 'advances, which the app stamps only after the fetch, the recolor and the '
+    + 'feature-state flush',
+  bumped, clicked
+    ? `data-ngp-view-seq stayed at ${seq0} for ${CONFIG.switchMs / 1000}s`
+    : `${CLIMO.sel} was not clickable — the dataset seg is missing or covered`);
+  const climo = await viewControls(page);
+  const climoSnap = await snapshot(page);
+  check('no transition error was recorded (a failed fetch would stamp '
+    + 'data-ngp-view-error and show the retry note)',
+  climoSnap.markers.ngpViewError === undefined,
+  'data-ngp-view-error is ' + JSON.stringify(climoSnap.markers.ngpViewError || null));
+  check('the nClimGrid button is the pressed one now, and the official one is '
+    + 'not — aria-pressed is what the kit styles them from',
+  climo.datasets.length === 1 && climo.datasets[0] === CLIMO.id,
+  'pressed ' + JSON.stringify(climo.datasets));
+  check('?dataset=nclimgrid appears — a non-default dataset is shareable state',
+    new URL(page.url()).searchParams.get('dataset') === CLIMO.id, page.url());
+  check('the app is on the nClimGrid dataset by its own account',
+    climoSnap.state.dataset === CLIMO.id,
+    JSON.stringify(climoSnap.state));
+
+  const sigClimo = await paintSignature(page, CONFIG.sourceId);
+  check('the choropleth repainted onto the climatology (feature-state signature '
+    + 'changed)', sigOfficial.hash !== sigClimo.hash,
+  `${sigOfficial.colored} colored @${sigOfficial.hash} → `
+    + `${sigClimo.colored} @${sigClimo.hash}`);
+
+  /* The painted count, against the crosswalk rather than against a number
+     typed here: the expectation is the set of FSA polygons any reporting FIPS
+     county maps onto, computed from the asset and the active decoder. A round
+     number would pass for the wrong reason the first time a vintage changed. */
+  const expected = await page.evaluate(async (path) => {
+    const d = await import(new URL('js/data.js', document.baseURI).href);
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const { year, type } = c.getState();
+    if (!c.getCounties()) return { error: 'the app loaded no geometry index' };
+    const idx = c.getCounties().index;
+    const res = await fetch(new URL(path, document.baseURI).href);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    const table = (await res.json())[c.getVintage()];
+    if (!table) return { error: 'no table for ' + c.getVintage() };
+    const toFsa = new Map();
+    for (let i = 0; i < table.fips.length; i++) {
+      const list = toFsa.get(table.fips[i]);
+      if (list) list.push(table.fsa[i]);
+      else toFsa.set(table.fips[i], [table.fsa[i]]);
+    }
+    const records = d.getYearType(year, type);
+    const painted = new Set();
+    for (const fips of records.keys()) {
+      for (const fsa of (toFsa.get(fips) || [])) if (idx.has(fsa)) painted.add(fsa);
+    }
+    return { expected: painted.size, records: records.size };
+  }, CROSSWALK.path);
+  if (expected.error) {
+    skip('every county the crosswalk reaches carries a climatology colour',
+      'the crosswalk-joined oracle could not be computed: ' + expected.error);
+  } else {
+    check('every county the crosswalk reaches carries a climatology colour, and '
+      + 'nothing else does (no stale official paint under the new legend)',
+    sigClimo.colored === expected.expected && expected.expected > 2000,
+    `${sigClimo.colored} painted, ${expected.expected} expected from `
+      + `${expected.records} FIPS records`);
+  }
+
+  check('the year slider is DISABLED — a 1991–2020 climatology has one set of '
+    + 'periods for every year, so a live slider would promise a distinction '
+    + 'the data cannot make',
+  climo.yearDisabled === true, 'year-range disabled=' + climo.yearDisabled);
+  check('…and the note that says so is visible, in words — a disabled control '
+    + 'with no explanation is a dead end',
+  climo.noteShown && /climatolog|all years/i.test(climo.noteText || ''),
+  JSON.stringify(climo.noteText));
+  check(`the type select was repopulated with the climatology's own dictionary `
+    + `(${CLIMO.types} seasons, not the official pasture types)`,
+  climo.types.length === CLIMO.types, JSON.stringify(climo.types));
+  check('the official default type mapped across to its season rather than '
+    + `resetting (Native Pasture → ${JSON.stringify(CLIMO.fromDefaultType)})`,
+  climo.type === CLIMO.fromDefaultType, 'selected ' + JSON.stringify(climo.type));
+  check('the legend\'s text key says these numbers are computed from climate '
+    + 'normals, not reported by FSA',
+  climo.legend.key !== official.legend.key
+    && /climatolog|climate normal|1991/i.test(climo.legend.key || ''),
+  JSON.stringify((climo.legend.key || '').slice(0, 120)));
+  check('the legend body did not change with the dataset — start/end/duration '
+    + 'are the same three variables on either answer',
+  climo.legend.wheel === official.legend.wheel
+    && climo.legend.bar === official.legend.bar,
+  JSON.stringify({ official: official.legend, climo: climo.legend }));
+  s.clean('dataset toggle → nClimGrid');
+  await s.shot('18b-ngp-nclimgrid');
+
+  /* ── And back ───────────────────────────────────────────────────────────
+     A toggle that cannot be undone is a trap. Back on the official dataset
+     everything must be as it was — including the URL, which is the strictest
+     of the lot: a param left behind at its default is a permanent smudge on
+     every link shared afterwards. */
+  const seq1 = await viewSeq(page);
+  const clickedBack = await clickControl(page, OFFICIAL.sel);
+  const bumpedBack = clickedBack && await awaitViewSeq(page, seq1);
+  const back = await viewControls(page);
+  const backSnap = await snapshot(page);
+  const sigBack = await paintSignature(page, CONFIG.sourceId);
+  check('the toggle back to FSA official completes on the same marker', bumpedBack,
+    `data-ngp-view-seq stayed at ${seq1}`);
+  check('?dataset is DROPPED at the default, not rewritten to ?dataset=fsa',
+    !new URL(page.url()).searchParams.has('dataset'), page.url());
+  check('and the whole round trip leaves the URL as clean as it booted — no '
+    + '?view, no ?dataset, no ?type left over from the season dictionary',
+  new URL(page.url()).search === '',
+  'search is ' + JSON.stringify(new URL(page.url()).search));
+  check('the official paint returns bit for bit (the toggle back is a restore, '
+    + 'not a reload of something new)',
+  sigBack.hash === sigOfficial.hash && sigBack.colored === sigOfficial.colored,
+  `${sigOfficial.colored} @${sigOfficial.hash} → ${sigBack.colored} @${sigBack.hash}`);
+  check('the year slider is live again and the climatology note is gone',
+    back.yearDisabled === false && !back.noteShown,
+    JSON.stringify({ disabled: back.yearDisabled, note: back.noteShown }));
+  check('the official pasture types are back, on the type this run left there',
+    back.types.length === official.types.length && back.type === official.type,
+    `${back.types.length} options, selected ${JSON.stringify(back.type)}`);
+  check('the app is on the official dataset by its own account',
+    backSnap.state.dataset === OFFICIAL.id, JSON.stringify(backSnap.state));
+  s.clean('dataset toggle → official');
+  await s.shot('18c-ngp-official-restored');
+
+  /* ── Two clicks, no waiting ─────────────────────────────────────────────
+     Deliberate abuse, and the only reason it is here: a visitor who changes
+     their mind mid-fetch must not leave an unhandled rejection behind. The
+     app's rule is intent-recheck-after-await rather than abort (the vintage
+     swap's pattern), so the second click's state has to win and the first
+     click's resolution has to notice it was superseded and do nothing. Either
+     way, the console gate below is what makes this a test — plus the assertion
+     that the app came to rest where the LAST click asked, not where the
+     slowest fetch did. */
+  const seq2 = await viewSeq(page);
+  await clickControl(page, CLIMO.sel);
+  await clickControl(page, OFFICIAL.sel);
+  await awaitViewSeq(page, seq2);
+  await page.waitForTimeout(1200);          // let a superseded fetch land too
+  await settleFrames(page);
+  const settled = await viewControls(page);
+  const settledSnap = await snapshot(page);
+  const sigSettled = await paintSignature(page, CONFIG.sourceId);
+  check('a double toggle with no waiting comes to rest where the LAST click '
+    + 'asked (official), not where the slowest fetch did',
+  settled.datasets.length === 1 && settled.datasets[0] === OFFICIAL.id
+    && settledSnap.state.dataset === OFFICIAL.id,
+  JSON.stringify({ pressed: settled.datasets, state: settledSnap.state.dataset }));
+  check('…with the official paint, an enabled year slider and a clean URL — a '
+    + 'superseded transition left nothing of itself behind',
+  sigSettled.hash === sigOfficial.hash && settled.yearDisabled === false
+    && new URL(page.url()).search === '',
+  `@${sigSettled.hash} vs @${sigOfficial.hash}, disabled=`
+    + `${settled.yearDisabled}, search ${JSON.stringify(new URL(page.url()).search)}`);
+  check('no transition error survived the double toggle',
+    settledSnap.markers.ngpViewError === undefined,
+    'data-ngp-view-error is '
+    + JSON.stringify(settledSnap.markers.ngpViewError || null));
+  s.clean('rapid dataset toggle');
+
   await s.ctx.close();
 }
 
