@@ -69,7 +69,19 @@
                         where two native selects and two seg groups share one
                         drawer, and a label association or a name that is only a
                         colour would show up there first
-         table          the data-table <dialog>, ~3,000 rows of markup
+         disasters-view the fourth interface: the disaster designations, whose
+                        drawer is two two-way seg pairs and whose card is the
+                        app's only one built from a LIST rather than a chart —
+                        one entry per declaration, each with a role chip that has
+                        to carry its meaning in text and not only in a colour.
+                        Nothing else in the app produces that markup
+         disasters-table the same view's data table: eleven columns and one row
+                        per county designation, which is structurally the widest
+                        table the app builds. Entered as a PAIR with the state
+                        above (that one leaves the view up, this one takes it
+                        down), because the switch is the expensive half
+         table          the data-table <dialog>, ~3,000 rows of markup — the
+                        grazing periods' own, which is what it has always been
 
      · Violations are merged by rule id ACROSS states and each is reported with
        the states it fired in, so a rule that fires everywhere reads as one
@@ -170,6 +182,23 @@ function settleTransitions(page) {
     () => document.getAnimations().every((a) => a.playState !== 'running'),
     null, { timeout: 3000 }).catch(() => {});
 }
+
+/** The year slider, moved the way a pointer moves it. One state needs it: the
+    designations view's card is a list of the declarations that touched a county
+    in the SELECTED year, and the probe county has none in the year a default
+    boot lands on — so auditing it there would audit an empty list. */
+const setYear = (page, year) => page.evaluate((y) => {
+  const el = document.getElementById('year-range');
+  if (!el) return null;
+  const was = el.value;
+  el.value = String(y);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  return was;
+}, year);
+
+/** The year that state borrowed, so it can be handed back — the states after it
+    are the ones that have always been audited at the boot year. */
+let borrowedYear = null;
 
 /* ── The states ───────────────────────────────────────────────────────────
    Each `enter` leaves the page in the state; each `exit` puts it back. They
@@ -354,6 +383,101 @@ const STATES = [
       await page.waitForFunction(
         (slug) => document.documentElement.dataset.ngpView === slug,
         INTERFACES.ngp.slug, { timeout: SWITCH_MS });
+      await closeDrawerIfOverlay(page);
+    },
+  },
+  {
+    name: 'disasters-view',
+    /* The disaster designations, with a county open on them. Reached through the
+       drawer like the two views above, and then MOVED IN TIME: this view's card
+       is a list of the declarations that touched the selected county in the
+       selected year, and Missoula — the county every other state here uses, so
+       that a reader comparing two reports is comparing two reports of the same
+       county — has none at all in the year a default boot lands on. Auditing it
+       there would audit an empty list and call the state covered. The year comes
+       from the gates' own fixture (tools/config.mjs), and the state below hands
+       it back.
+
+       This state does NOT return to the default view on the way out: the state
+       after it audits this view's data table, and the switch is the expensive
+       half of both. */
+    async enter(page) {
+      await openDrawer(page);
+      await page.locator(INTERFACES.disasters.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.disasters.slug, { timeout: SWITCH_MS });
+      borrowedYear = await setYear(page, INTERFACES.disasters.fixture.year);
+      await page.waitForTimeout(700);
+      await closeDrawerIfOverlay(page);
+      await selectCounty(page, INTERFACES.disasters.county.id);
+      await page.waitForFunction(() => !document.getElementById('county-card').hidden,
+        null, { timeout: 5000 });
+      /* No canvas to wait for here — the card's body is semantic markup, which
+         is its own accessible twin — so what has to be on screen before axe
+         looks is a body with real content in it. */
+      await page.waitForFunction(() => {
+        const c = document.getElementById('card-content');
+        return !!c && !c.hidden && (c.textContent || '').trim().length > 40;
+      }, null, { timeout: 10000 });
+      await settleTransitions(page);
+    },
+    /* Escape for the card (not #card-close — at 375px that button is not
+       hit-testable, and tools/verify.mjs owns that finding). The view stays up. */
+    async exit(page) {
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.getElementById('county-card').hidden,
+        null, { timeout: 5000 }).catch(() => {});
+    },
+  },
+  {
+    name: 'disasters-table',
+    /* The same view's table: eleven columns, one row per county designation, and
+       the archive's own irregular spellings inside them. Structurally the widest
+       table the app builds, and the only one whose cells include values nobody
+       cleaned.
+
+       The switch is repeated only IF NEEDED, so that a run in which the state
+       above could not be reached still audits this one rather than auditing the
+       grazing-period table twice. */
+    async enter(page) {
+      const here = await page.evaluate(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.disasters.slug);
+      if (!here) {
+        await openDrawer(page);
+        await page.locator(INTERFACES.disasters.switchSel).click({ timeout: 5000 });
+        await page.waitForFunction(
+          (slug) => document.documentElement.dataset.ngpView === slug,
+          INTERFACES.disasters.slug, { timeout: SWITCH_MS });
+        if (borrowedYear === null) {
+          borrowedYear = await setYear(page, INTERFACES.disasters.fixture.year);
+          await page.waitForTimeout(700);
+        }
+        await closeDrawerIfOverlay(page);
+      }
+      await page.locator('#btn-table').click();
+      await page.waitForFunction(
+        () => document.getElementById('table-modal').open
+          && document.querySelectorAll('#table-modal-body tbody tr').length > 100,
+        null, { timeout: 30000 });
+      await settleTransitions(page);
+    },
+    /* Close the table, give the year back, and return to the default view — so
+       the `table` state below is the grazing-period table at the boot year that
+       it has always been. */
+    async exit(page) {
+      await page.evaluate(() => document.getElementById('table-modal').close());
+      await openDrawer(page);
+      await page.locator(INTERFACES.ngp.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.ngp.slug, { timeout: SWITCH_MS });
+      if (borrowedYear !== null) {
+        await setYear(page, borrowedYear);
+        borrowedYear = null;
+        await page.waitForTimeout(700);
+      }
       await closeDrawerIfOverlay(page);
     },
   },

@@ -29,15 +29,19 @@
    moveend, and a view that is entirely at defaults emits a CLEAN url with no
    query string at all.
 
-     ?view   interface slug (ngp | usdm | eligibility)
+     ?view   interface slug (ngp | usdm | eligibility | disasters)
      ?dataset the active view's own dataset id (ngp: fsa | nclimgrid;
              usdm: fsa-lfp | reported | census;
-             eligibility: official | web | derived)
+             eligibility: official | web | derived; disasters: one archive, so
+             this view never emits it)
      ?year   2000–2026, narrowed to the ACTIVE view's own domain
      ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?source which county aggregation a dataset that publishes several is read
              at (eligibility's derived archive; dropped on every other dataset)
+     ?decl ?disaster  the ACTIVE VIEW's own enumerated choices — two slices of
+             one table (disasters: secretarial|presidential, drought|all). See
+             § Enumerated choices.
      ?variable the ACTIVE VIEW's own colour-by (ngp: start|end|duration;
              eligibility: months|date)   ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
@@ -175,6 +179,10 @@ const LS = Object.freeze({
   /** Which reading of a dataset that publishes several — per interface, for the
       same reason as the dataset key. */
   source: (view) => 'sfsa-ngp-source-' + view,
+  /** One of a family's own enumerated choices (§ Enumerated choices), per
+      interface and per choice: `sfsa-ngp-decl-disasters` is which designation
+      type the disaster map is read at, and it means nothing anywhere else. */
+  choice: (view, id) => 'sfsa-ngp-' + id + '-' + view,
   drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
 });
@@ -224,6 +232,9 @@ const els = {
   segs: Array.from(document.querySelectorAll('.seg-btn[data-variable]')),
   viewBtns: Array.from(document.querySelectorAll('.seg-btn[data-view-btn]')),
   datasetBtns: Array.from(document.querySelectorAll('.seg-btn[data-dataset]')),
+  /* Every button of every family's enumerated choices, in one list: each
+     carries the choice's id and the value it selects (§ Enumerated choices). */
+  choiceBtns: Array.from(document.querySelectorAll('.seg-btn[data-choice]')),
   search: $('#county-search'),
   results: $('#county-results'),
   btnTable: $('#btn-table'),
@@ -256,7 +267,7 @@ const els = {
     disables itself on error strands them there. */
 const dataControls = [
   els.year, els.type, els.eligType, els.eligSource, ...els.segs, els.search,
-  els.week, els.weekPrev, els.weekNext,
+  els.week, els.weekPrev, els.weekNext, ...els.choiceBtns,
   els.btnTable, els.btnExport, els.btnShare,
 ];
 
@@ -326,6 +337,20 @@ const viewState = {
     type: DEFAULTS.type,
     variable: 'months',
     source: null,
+  },
+  /**
+   * Disaster designations: one archive, and two enumerated choices of how to
+   * read it (§ Enumerated choices) — which designation type, and whether the
+   * map is drought alone or every disaster type in the record.
+   *
+   * `dataset` is here because every family has one and app.js finds the payload
+   * through it; this family's is the only entry in its list, which is also why
+   * `?dataset=` is never emitted on this view.
+   */
+  disasters: {
+    dataset: 'fsa-disasters',
+    decl: 'secretarial',
+    disaster: 'drought',
   },
 };
 
@@ -512,7 +537,7 @@ function isNgpShaped(instance) {
 function selection() {
   const vs = activeViewState();
   const iface = currentInterface();
-  return {
+  const sel = {
     year: state.year,
     type: state.type,
     variable: state.variable,
@@ -533,6 +558,13 @@ function selection() {
     // asked. Zero before the boundaries land.
     universe: counties ? counties.index.size : 0,
   };
+  // Whatever enumerated choices the active family declares, by name — so a
+  // descriptor leaf reads `sel.decl` exactly the way it reads `sel.year`, and a
+  // family that declares none carries none (§ Enumerated choices).
+  for (const choice of choicesOf(iface)) {
+    sel[choice.id] = choiceValue(iface, choice.id);
+  }
+  return sel;
 }
 
 /**
@@ -640,6 +672,11 @@ function readInitialState() {
       + iface.label + ' offers — falling back to '
       + JSON.stringify(defaultVariableOf(iface)) + '.');
   }
+
+  // The family's own enumerated choices. Static lists, so unlike a type slug or
+  // a week these need no payload and are resolved here — for the family being
+  // ASKED FOR, whose remembered state a parked switch will then come up on.
+  readChoices(iface);
 
   // A type slug means whatever the ACTIVE DATASET's dictionary says it means,
   // so it is read from that dataset's own stored key and resolved against that
@@ -752,6 +789,14 @@ function pushState() {
     const week = weekParam();
     if (week) p.week = week;
   }
+  // The active family's own enumerated choices, each elided at its own default
+  // and none of them emitted while another family is on screen — a
+  // grazing-period link carrying ?decl=presidential would describe a control
+  // that is not there.
+  for (const choice of choicesOf(iface)) {
+    const value = choiceValue(iface, choice.id);
+    if (value !== choice.default) p[choice.id] = value;
+  }
   if (state.countyId) p.county = state.countyId;
   // Camera params are emitted only when the camera has been moved off the
   // default fit, so an untouched view keeps a clean URL.
@@ -783,6 +828,12 @@ function persist() {
   // the data rather than a place in it, and a reader who chose the NDMC-reported
   // convention last month meant it.
   if (iface.controls.source && vs.source) lsSet(LS.source(state.view), vs.source);
+  // A choice is a way of READING the archive rather than a place in it — like
+  // the aggregation above and unlike the week — so it is a preference worth
+  // remembering: a reader who came here for Presidential declarations meant it.
+  for (const choice of choicesOf(iface)) {
+    lsSet(LS.choice(state.view, choice.id), choiceValue(iface, choice.id));
+  }
   lsSet(LS.view, state.view);
   lsSet(LS.dataset(state.view), vs.dataset);
   // The WEEK is deliberately absent: it is a selection, not a preference — the
@@ -1649,6 +1700,119 @@ function applySource(instance) {
   populateSourceSelect(instance);
 }
 
+/* ── Enumerated choices ──────────────────────────────────────────────────────
+   A family may slice its ONE dataset in ways that are neither a dataset nor a
+   colour-by. The disaster designations are read as Secretarial or Presidential,
+   and for drought alone or for every disaster type the record carries: four
+   states of one table, none of them a different file and none of them a
+   different quantity.
+
+   So a family DECLARES its choices — `descriptor.choices`, a frozen list of
+   `{id, values[], default}` — and everything here is generic. The button group,
+   the URL param, the stored preference and the remembered per-view state all
+   key off `id`, and the rules are the ones every other control in this file
+   follows: validated against the family's own whitelist on the way in, elided
+   at its default on the way out, remembered per interface so switching away and
+   back is a return rather than a reset.
+
+   Two things a choice is deliberately NOT. It is not a dataset: nothing is
+   fetched, so a change is a synchronous repaint and does NOT bump
+   `data-ngp-view-seq` — that counter means "a transition that involved a fetch
+   has landed" (tools/config.mjs § MARKERS), and a week scrub does not bump it
+   either. And it is not a payload-driven select like the aggregation picker
+   above: the values are static, so `?decl=` needs no parking and is resolved at
+   boot like any other whitelisted param. */
+
+/** The choices one family declares, or none. */
+function choicesOf(iface) {
+  return (iface && iface.choices) || [];
+}
+
+/**
+ * The active value of one choice — re-validated on every read, because the
+ * value in `viewState` may have come from localStorage or a URL and a stored
+ * value gets exactly the same suspicion as a URL one.
+ *
+ * @param {object} iface the interface whose choice it is
+ * @param {string} id the choice id
+ * @returns {string|null} the value, its default, or null when this family has
+ *          no such choice
+ */
+function choiceValue(iface, id) {
+  const choice = choicesOf(iface).find((c) => c.id === id);
+  if (!choice) return null;
+  const slice = viewState[iface.id];
+  const held = slice ? slice[id] : null;
+  return choice.values.includes(held) ? held : choice.default;
+}
+
+/**
+ * Read one family's choices at boot: URL param > stored preference > default,
+ * each validated against that family's own list. Written as a function of the
+ * INTERFACE so readInitialState can ask it about a family that is not on screen
+ * yet.
+ */
+function readChoices(iface) {
+  const slice = viewState[iface.id];
+  if (!slice) return;
+  for (const choice of choicesOf(iface)) {
+    const raw = String(params.get(choice.id)
+      ?? lsGet(LS.choice(iface.id, choice.id)) ?? '').toLowerCase();
+    if (choice.values.includes(raw)) slice[choice.id] = raw;
+    else if (raw) {
+      console.warn('[ngp] ' + JSON.stringify(raw) + ' is not a ' + choice.id
+        + ' ' + iface.label + ' offers — falling back to '
+        + JSON.stringify(choice.default) + '.');
+    }
+  }
+}
+
+/**
+ * Show the same data another way.
+ *
+ * A synchronous repaint: one payload holds every slice, so nothing is fetched
+ * and nothing waits — which is why this does not touch the transition counter
+ * (see the section header).
+ *
+ * @param {string} id a choice id of the active family
+ * @param {string} next one of that choice's values
+ */
+function setChoice(id, next) {
+  const iface = currentInterface();
+  const choice = choicesOf(iface).find((c) => c.id === id);
+  if (!choice || !choice.values.includes(next)) return;
+  const vs = activeViewState();
+  if (choiceValue(iface, id) === next) return;
+  vs[id] = next;
+  syncChoiceButtons();
+  persist();
+  pushState();
+  recolor();      // paints, refills the card, and announces through the descriptor
+  // The legend body and its key belong to the descriptor, and a descriptor is
+  // allowed to describe its slices differently — so the legend is re-asked
+  // rather than assumed unchanged.
+  syncLegend();
+  if (tableCtl) tableCtl.invalidate();
+}
+
+/** Exactly ONE button per choice group reads as pressed — the active family's
+    active value. Every family's buttons are in the markup at all times
+    (`syncSections()` hides the sections that are not the active family's), and a
+    pressed button inside a hidden section is still a pressed button to anything
+    reading the accessibility tree, so the others are cleared rather than left as
+    they were. aria-pressed IS the styling source of truth (HOUSE-STYLE §5.7). */
+function syncChoiceButtons() {
+  const iface = currentInterface();
+  for (const btn of els.choiceBtns) {
+    const id = btn.getAttribute('data-choice');
+    const value = btn.getAttribute('data-value');
+    const mine = choicesOf(iface)
+      .some((c) => c.id === id && c.values.includes(value));
+    btn.setAttribute('aria-pressed',
+      String(mine && choiceValue(iface, id) === value));
+  }
+}
+
 /* ── Views and datasets ──────────────────────────────────────────────────────
    Switching what the map shows is one mechanism used two ways: a VIEW switch
    changes the data family (and with it which drawer sections apply), a DATASET
@@ -1747,6 +1911,7 @@ function setView(next) {
   syncSections();
   syncViewButtons();
   syncDatasetButtons();
+  syncChoiceButtons();
   // The colour-by is the arriving family's own choice, and it needs no payload
   // to settle — so the buttons and the URL below are right from this frame.
   adoptVariable(iface);
@@ -2058,6 +2223,11 @@ function wireControls() {
     btn.addEventListener('click', () => setDataset(btn.getAttribute('data-dataset')));
   }
 
+  for (const btn of els.choiceBtns) {
+    btn.addEventListener('click', () => setChoice(btn.getAttribute('data-choice'),
+      btn.getAttribute('data-value')));
+  }
+
   els.btnShare.addEventListener('click', share);
 
   initThemeToggle({
@@ -2097,6 +2267,7 @@ async function boot() {
   syncSections();
   syncViewButtons();
   syncDatasetButtons();
+  syncChoiceButtons();
 
   live = createLiveRegion();
   vintage = vintageForYear(state.year);

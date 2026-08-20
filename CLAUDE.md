@@ -66,15 +66,15 @@ Specifics that bite in this repo:
   The why, the reference table, and the rescale constants live in the
   `js/projection.js` header.
 
-## Where we left off (2026-08-20, PR 3 of the four-interface expansion)
+## Where we left off (2026-08-20, the four-interface expansion is complete)
 
-The app is mid-way through the **four-interface expansion** (approved plan:
-the administration story in four acts — 1 · Grazing periods, 2 · Drought
-monitor (USDM weekly), 3 · LFP eligibility, 4 · Disaster designations — one
-PR per interface, shared year/county/camera/theme surviving every switch).
-**PRs 1–2 are merged; PR 3 (`feat/eligibility-interface`) is complete and
-green** (verify.mjs prints its own count — currently 430; axe clean
-2 themes × 2 viewports × 9 states; html-validate clean):
+The **four-interface expansion is done**: the administration story in four
+acts — 1 · Grazing periods, 2 · Drought monitor (USDM weekly), 3 · LFP
+eligibility, 4 · Disaster designations — landed as four serial PRs, with
+shared year/county/camera/theme surviving every switch and per-interface
+memory for everything else. Gates at completion: verify.mjs prints its own
+count — currently 509; axe clean 2 themes × 2 viewports × 11 states;
+html-validate clean; LHCI a11y 1.0:
 
 - The **interface framework** (PR 1): "What to show" switcher (top of the
   drawer, absent-until-shipped), `?view=` / `?dataset=` params (elided at
@@ -128,12 +128,32 @@ green** (verify.mjs prints its own count — currently 430; axe clean
   reveal-push, EPSG:5070 client-side pre-projection, runtime payload fetch
   (manifest: `tools/payloads.txt`).
 
+- **4 · Disaster designations** (PR 4): `fsa-disasters/1` — Secretarial
+  designations (2012–) and Presidential declarations (2017–), two-table
+  normalized, FIPS-keyed → crosswalked, Primary `#DC0005` beats Contiguous
+  `#FD9A09` everywhere. `?decl=`/`?disaster=` via the generic
+  `descriptor.choices` mechanism (synchronous — never bumps view-seq). Junk
+  is policy: the year string `"2011, 2012"` (94 rows) and 72 malformed
+  county keys (249 rows) never match a clean year or the crosswalk — they
+  render verbatim in the data table only and are counted out loud in the
+  live region. Presidential × drought is structurally empty (0 of 48,449
+  rows) and the live sentence says so. The card is a declaration list (its
+  own accessible twin; `tabindex="0"` because `.sfsa-card-body` scrolls at
+  compact — see the kit-gap open thread).
+
 Open threads, in rough priority order:
 
-1. **PR 4 — Disaster designations** (fsa-disasters/1: two-table normalized,
-   Secretarial/Presidential, Primary/Contiguous, junk values rendered
-   verbatim in the table only). Fire events for eligibility remain out of
-   scope until the archive adds them to a payload.
+1. **Manual AUDIT-CHECKLIST walk** — the plan's PR-4 gate that automation
+   cannot do: the three manual passes (keyboard-only, 375 px on a real
+   phone, the figures pass) against the finished four-interface app, and
+   updating the checklist's manual sections to name the new controls.
+2. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
+   fires on any `.sfsa-card-body` whose content has no focusable element at
+   compact widths — the other views escape only because their card bodies
+   contain a `<details><summary>`. The durable fix belongs in the kit's
+   card component; this app carries a per-view `tabindex="0"` meanwhile.
+3. **Fire events for eligibility** remain out of scope until the archive
+   adds them to an events payload.
 2. **Annual maintenance tripwire**: both descriptors declare
    `years: {min, max}` (currently max 2026). When the USDM archive rolls into
    a new year, `applyYearDomain` console.warns and the console-clean gate

@@ -66,3 +66,14 @@ fsa-lfp-eligibility-web/fsa-lfp-eligibility-web-events.json
 # drought factor the ladder awards and no payment cap, so what it shows is not
 # the payable amount.
 fsa-lfp-eligibility-derived/fsa-lfp-eligibility-derived.json
+
+# 4 · Disaster designations — USDA Secretarial disaster designations (2012–) and
+# Presidential major-disaster declarations (2017–), scraped weekly from the USDA
+# Disaster Designation portal. ONE archive, so this view has no dataset control:
+# the two seg pairs in its drawer slice this file rather than choosing between
+# files. Declaration-normalized (3,907 declaration amendments, 184,815 county
+# rows) and FIPS-keyed, so it reaches the FSA composite through the crosswalk.
+# Its values are VERBATIM, irregularities included — two unparseable disaster
+# years, 72 malformed county keys, 270 spreadsheet-zero approval dates — which is
+# the archive's own policy and therefore the app's. Fetched lazily.
+fsa-disasters/fsa-disasters.json

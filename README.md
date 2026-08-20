@@ -11,11 +11,13 @@ previously the
 dashboard) alongside the
 [nClimGrid climatology counterfactual](https://github.com/sustainable-fsa/nclimgrid-normal-grazing-period)
 — **2 · Drought monitor** — the weekly worst U.S. Drought Monitor class per
-county, 2000 onward, under three county-aggregation conventions — and
+county, 2000 onward, under three county-aggregation conventions —
 **3 · LFP eligibility** — the qualifying drought events behind LFP payment
 determinations, from FSA's FOIA'd records, its weekly web publications, and
 a reanalysis derived from the Drought Monitor under four county-aggregation
-conventions.
+conventions — and **4 · Disaster designations** — USDA Secretarial
+designations and Presidential major-disaster declarations, the broader
+instruments around the program.
 
 **Live app:** <https://sustainable-fsa.com/lfp-explorer/>
 
@@ -78,6 +80,11 @@ a payload line lands in the same commit as the code that fetches it.
   the reanalysis recomputed from the Drought Monitor (452k events, all four
   aggregation conventions in one file). FSA-keyed, with a parallel Census
   FIPS provenance column. Fetched lazily on the LFP eligibility interface.
+- `fsa-disasters.json` (schema `fsa-disasters/1`, CC0) — USDA Secretarial
+  disaster designations (2012–) and Presidential major-disaster declarations
+  (2017–): 3,907 declarations and 184,815 county rows, values verbatim,
+  irregularities included. FIPS-keyed and crosswalked. Fetched lazily on the
+  Disaster designations interface.
 
 The one **data-shaped file this repo does commit** is
 `assets/fsa-fips-crosswalk.json` (schema `fsa-fips-crosswalk/1`) — the

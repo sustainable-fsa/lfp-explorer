@@ -20,18 +20,23 @@
    harness's probe table mirrors it — so adding an interface is a descriptor
    plus one line here, never a search for hardcoded slugs.
 
-   Three are shipped: grazing periods, then the drought monitor, then LFP
-   eligibility — the order the Livestock Forage Program is administered in
-   (when may livestock graze here · how dry was it · what did that qualify the
-   county for), which is also the order the story reads in. The rest (disaster
-   designations) land as their own descriptors, in `order`, and the switcher
-   grows by itself. Nothing here is a placeholder: an unshipped interface has no
-   entry and therefore no disabled teaser button.
+   FOUR are shipped, and together they are the whole chain: grazing periods,
+   then the drought monitor, then LFP eligibility, then disaster designations —
+   the order the Livestock Forage Program is administered in (when may livestock
+   graze here · how dry was it · what did that qualify the county for · what
+   wider disaster was declared around it), which is also the order the story
+   reads in. Nothing here is a placeholder: an unshipped interface has no entry
+   and therefore no disabled teaser button, and now that the story is complete
+   the switcher carries no promise of more.
+
+   A FIFTH would be a descriptor plus one line in the list below, in its own
+   `order`. Nothing else in the app counts them.
    ========================================================================== */
 
 import { NGP } from './ngp.js';
 import { USDM } from './usdm.js';
 import { ELIGIBILITY } from './eligibility.js';
+import { DISASTERS } from './disasters.js';
 
 /**
  * Every shipped interface, in switcher order. Frozen: the app reads this list
@@ -40,7 +45,7 @@ import { ELIGIBILITY } from './eligibility.js';
  *
  * @type {ReadonlyArray<object>}
  */
-export const INTERFACES = Object.freeze([NGP, USDM, ELIGIBILITY]);
+export const INTERFACES = Object.freeze([NGP, USDM, ELIGIBILITY, DISASTERS]);
 
 /** The interface a session with no `?view=` and no stored preference lands on.
     Its slug is NEVER emitted into the URL (clean-URL discipline, HOUSE-STYLE
