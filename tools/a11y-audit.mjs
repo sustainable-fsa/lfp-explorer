@@ -58,6 +58,17 @@
                         1,389-week heatmap instead of a span chart. None of that
                         markup exists on the default view, so a run that never
                         switched would audit half the app
+         elig-view      the third interface: LFP eligibility, whose drawer adds
+                        a three-way dataset seg, a native <select> of fifteen
+                        pasture types plus a sentinel, a two-way variable seg and
+                        — only on the derived archive — a second <select> for the
+                        aggregation convention. Its legend is a six-step
+                        swatches list and its card's picture is a per-year bar
+                        chart with a table twin. Audited on the DERIVED archive
+                        for exactly one reason: it is the only state in the app
+                        where two native selects and two seg groups share one
+                        drawer, and a label association or a name that is only a
+                        colour would show up there first
          table          the data-table <dialog>, ~3,000 rows of markup
 
      · Violations are merged by rule id ACROSS states and each is reported with
@@ -102,12 +113,14 @@ const AUDIT_VIEWPORTS = [
 /** After ngpReady: the font swap, the legend, the map's first frames. */
 const SETTLE_MS = 1500;
 
-/** How long a VIEW SWITCH may take before the state is called unreachable: a
-    second interface's payload (~4.5 MB) plus the FIPS↔FSA crosswalk plus the
-    re-join and recolor, on a runner with no GPU. Generous for the same reason
-    READY_MS is — the failure it catches is "never", not "slow". Verify.mjs owns
-    the same number under its own name (CONFIG.switchMs); this harness does not
-    import it, because a settle window is a harness's own opinion. */
+/** How long a VIEW SWITCH or dataset toggle may take before the state is called
+    unreachable: another interface's payload — 4.5 MB for a weekly USDM set, 11
+    MB for the derived eligibility archive — plus (for a FIPS-keyed one) the
+    FIPS↔FSA crosswalk, plus the decode, the re-join and the recolor, on a runner
+    with no GPU. Generous for the same reason READY_MS is: the failure it catches
+    is "never", not "slow". Verify.mjs owns the same number under its own name
+    (CONFIG.switchMs); this harness does not import it, because a settle window
+    is a harness's own opinion. */
 const SWITCH_MS = 45000;
 
 const server = serveWorkspace(root);
@@ -143,6 +156,19 @@ function selectCounty(page, id) {
     const mod = await import(new URL('js/app.js', document.baseURI).href);
     mod.ngpContext().selectCounty(countyId);
   }, id);
+}
+
+/** Wait out CSS transitions before handing the page to axe. The kit gives
+    `.nav-btn` (and everything else) a 0.2 s `all` transition; a heavy
+    main-thread stretch — the 11 MB derived decode is one — can freeze a
+    button's aria-pressed background flip mid-blend, and axe then measures a
+    color that matches no token and fails contrast on a picture no visitor
+    ever settles on. Bounded, and forgiving: a page that keeps an animation
+    running forever (none does today) still gets audited after 3 s. */
+function settleTransitions(page) {
+  return page.waitForFunction(
+    () => document.getAnimations().every((a) => a.playState !== 'running'),
+    null, { timeout: 3000 }).catch(() => {});
 }
 
 /* ── The states ───────────────────────────────────────────────────────────
@@ -254,11 +280,71 @@ const STATES = [
       // The card's picture on this view is the full-record weekly heatmap; its
       // <figcaption> and table twin are what axe has to see.
       await page.waitForSelector('#card-content figure svg', { timeout: 10000 });
+      await settleTransitions(page);
     },
     /* Escape for the card (not #card-close — at 375px that button is not
        hit-testable, and tools/verify.mjs owns that finding), then back to the
        default view so the `table` state below is the grazing-period table it
        has always been. */
+    async exit(page) {
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.getElementById('county-card').hidden,
+        null, { timeout: 5000 }).catch(() => {});
+      await openDrawer(page);
+      await page.locator(INTERFACES.ngp.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.ngp.slug, { timeout: SWITCH_MS });
+      await closeDrawerIfOverlay(page);
+    },
+  },
+  {
+    name: 'elig-view',
+    /* LFP eligibility, on the derived archive, with a county open on it.
+       Reached the way a visitor reaches it — through the drawer, which on
+       `narrow` means opening the overlay first and putting it back before the
+       card, exactly as the two states above do.
+
+       THE DATASET TOGGLE IS PART OF THE STATE, not decoration: the aggregation
+       select exists only on the derived archive, so a pass that stayed on the
+       default one would never audit the drawer's second <select> — the state
+       this app has never had before. Both switches wait on the app's own view
+       marker rather than on a timeout: each fetches a payload (the derived one
+       is 11 MB) and recolors, and an axe pass taken mid-transition would audit a
+       page with a new legend over an old paint.
+
+       ARRIVING HERE MOVES THE YEAR. The FOIA archive's record ends before the
+       app's default year, so the app clamps and announces on the way in; that
+       is a state worth auditing too, and it is why this state is entered from
+       the default view rather than from a deep link that hides the move. */
+    async enter(page) {
+      await openDrawer(page);
+      await page.locator(INTERFACES.eligibility.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.eligibility.slug, { timeout: SWITCH_MS });
+      const seq = await page.evaluate(
+        () => Number(document.documentElement.dataset.ngpViewSeq || 0));
+      await page.locator(INTERFACES.eligibility.datasets.derived.sel)
+        .click({ timeout: 5000 });
+      await page.waitForFunction(
+        (before) => Number(document.documentElement.dataset.ngpViewSeq || 0) > before,
+        seq, { timeout: SWITCH_MS });
+      await page.waitForSelector(INTERFACES.eligibility.source.selectSel,
+        { state: 'attached', timeout: 5000 });
+      await closeDrawerIfOverlay(page);
+      await selectCounty(page, INTERFACES.eligibility.county.id);
+      await page.waitForFunction(() => !document.getElementById('county-card').hidden,
+        null, { timeout: 5000 });
+      // The card's picture here is the per-year payment-months bar chart; its
+      // <figcaption> and table twin are what axe has to see.
+      await page.waitForSelector('#card-content figure svg', { timeout: 10000 });
+      await settleTransitions(page);
+    },
+    /* Escape for the card (not #card-close — at 375px that button is not
+       hit-testable, and tools/verify.mjs owns that finding), then back to the
+       default view so the `table` state below is the grazing-period table it has
+       always been. */
     async exit(page) {
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.getElementById('county-card').hidden,

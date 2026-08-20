@@ -10,8 +10,12 @@ previously the
 [fsa-normal-grazing-period](https://github.com/sustainable-fsa/fsa-normal-grazing-period)
 dashboard) alongside the
 [nClimGrid climatology counterfactual](https://github.com/sustainable-fsa/nclimgrid-normal-grazing-period)
-— and **2 · Drought monitor** — the weekly worst U.S. Drought Monitor class
-per county, 2000 onward, under three county-aggregation conventions.
+— **2 · Drought monitor** — the weekly worst U.S. Drought Monitor class per
+county, 2000 onward, under three county-aggregation conventions — and
+**3 · LFP eligibility** — the qualifying drought events behind LFP payment
+determinations, from FSA's FOIA'd records, its weekly web publications, and
+a reanalysis derived from the Drought Monitor under four county-aggregation
+conventions.
 
 **Live app:** <https://sustainable-fsa.com/lfp-explorer/>
 
@@ -67,6 +71,13 @@ a payload line lands in the same commit as the code that fetches it.
   (FSA's FOIA'd LFP boundaries — the map default; NDMC's own published
   stats; vintage-matched Census counties). All FIPS-keyed and crosswalked.
   Fetched lazily on the Drought monitor interface.
+- `fsa-lfp-eligibility-events.json` / `fsa-lfp-eligibility-web-events.json` /
+  `fsa-lfp-eligibility-derived.json` (schema `fsa-lfp-eligibility/1`, CC0) —
+  one record per qualifying drought event: FSA's official FOIA'd
+  determinations (2008–2025), its weekly web publications (2008–2026), and
+  the reanalysis recomputed from the Drought Monitor (452k events, all four
+  aggregation conventions in one file). FSA-keyed, with a parallel Census
+  FIPS provenance column. Fetched lazily on the LFP eligibility interface.
 
 The one **data-shaped file this repo does commit** is
 `assets/fsa-fips-crosswalk.json` (schema `fsa-fips-crosswalk/1`) — the
@@ -76,11 +87,11 @@ the frozen color ramps, not a data archive; moving it behind an
 archive-published URL is an open thread.
 
 [`R/web-assets.R`](R/web-assets.R) builds the frozen `assets/` contracts —
-the color ramps and the crosswalk (the latter reads the two sibling
-`fsa-counties-dd17`/`-dd22` checkouts):
+the color ramps (including the drought-factor ramp), and the crosswalk
+(which reads the two sibling `fsa-counties-dd17`/`-dd22` checkouts):
 
 ```r
-source("R/web-assets.R"); build_color_ramps(); build_crosswalk()
+source("R/web-assets.R"); build_color_ramps(); build_df_ramp(); build_crosswalk()
 ```
 
 ## Development

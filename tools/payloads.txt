@@ -45,3 +45,24 @@ usdm-counties-reported/usdm-counties-reported.json
 # Vintage-matched TIGER counties: the one non-rectangular set, where a county
 # absent from a week is absent in the data too.
 usdm-counties/usdm-counties.json
+
+# 3 · LFP eligibility — one record per qualifying drought event, at the grain
+# the program itself uses: Census county × FSA county × program year × pasture
+# type × tier. All three are FSA-keyed (each carries a `counties` dictionary of
+# FSA ids and a parallel `fips` column into a separate Census dictionary), so
+# none of them touches the crosswalk. All fetched lazily.
+#
+# FSA's own determinations, obtained by FOIA — program years 2008–2025. This
+# view's default, and the only payload in the app whose record ends before the
+# app's default year.
+fsa-lfp-eligibility/fsa-lfp-eligibility-events.json
+# The same determinations as FSA publishes them week by week on its maps page —
+# 2008 through the current program year, and the only one of the three that
+# carries per-tier dates for 2008–2011.
+fsa-lfp-eligibility-web/fsa-lfp-eligibility-web-events.json
+# Eligibility RECOMPUTED from the Drought Monitor under four county-aggregation
+# conventions — not a record of FSA's determinations, and the largest payload in
+# the app (~11 MB: it holds all four aggregations side by side). It carries the
+# drought factor the ladder awards and no payment cap, so what it shows is not
+# the payable amount.
+fsa-lfp-eligibility-derived/fsa-lfp-eligibility-derived.json

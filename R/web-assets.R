@@ -5,11 +5,13 @@
 ## credentials, no S3 client, no FOIA workbooks:
 ##
 ##   build_color_ramps() the two color ramps the map colors with
+##   build_df_ramp()     the payment-months ramp the LFP eligibility map colors
+##                       with
 ##   build_crosswalk()   the FSA <-> FIPS county crosswalk the FIPS-keyed
 ##                       payloads are joined onto the FSA geometry with
 ##
-## build_color_ramps() is a pure function of nothing at all. build_crosswalk()
-## is NOT: it reads the two sibling boundary archives' geoparquet
+## build_color_ramps() and build_df_ramp() are pure functions of nothing at all.
+## build_crosswalk() is NOT: it reads the two sibling boundary archives' geoparquet
 ## (../fsa-counties-dd17, ../fsa-counties-dd22), so it only runs in a checkout
 ## of the whole sustainable-fsa workspace. That is deliberate — those parquets
 ## are the same files the boundary TopoJSON is built from, so a crosswalk built
@@ -66,6 +68,102 @@ build_color_ramps <- function(dir = "assets") {
                        auto_unbox = TRUE)
 
   invisible(file.path(dir, c("colors.json", "colors-duration.json")))
+}
+
+
+## The payment-months ramp, as `assets/colors-df.json`: six hex strings, index 0
+## for "eligible, months not stated" and 1-5 for the months themselves.
+##
+## NOT a Crameri palette, and deliberately: the derived-eligibility archive
+## publishes its own maps with a ladder taken from an FSA map PDF
+## (#E0E436 -> #DF9114 -> #DD2313 -> #850014 -> #3B003C), and a reader who has
+## seen those maps must recognise this one. So the ANCHORS' hues are kept and
+## everything else about them is fixed: their lightness steps are uneven, and
+## their top two collapse into a single color under deuteranopia.
+##
+## What this function does, therefore, is RE-SPACE them. Each anchor is moved to
+## a target CIE L*, keeping its own hue (only step 1 is rotated, +12 degrees
+## toward yellow-green, which is what puts it clear of the US Drought Monitor's
+## D0 yellow -- the two palettes appear in adjacent exports), and taking as much
+## of the anchor's chroma as sRGB will hold at that lightness. The clip is a
+## binary search because polarLAB -> sRGB has no closed-form gamut boundary.
+##
+## Index 0 is a LITERAL, not a derivation: it is not a step on the ladder at all
+## but a category beside it -- an event that qualified a county without a stated
+## month count (most 2008-2011 determinations). Mid-lightness so it cannot read
+## as either end of the ramp, and nearly unsaturated (C* 11 against 41-87) so
+## the eye reads it as a different KIND of answer.
+##
+## Every measured distance behind these six colors -- the L* ladder, the three
+## CVD simulations, the grayscale ordering, and the separations from the
+## no-data fill, the two map grounds and the USDM's own palette -- is documented
+## in js/color.js, where the ramp is read. Those measurements are the acceptance
+## test; the checks below are the ones this file can make for itself.
+build_df_ramp <- function(dir = "assets") {
+
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+
+  ## The FSA ladder's own colors, and where each one is moved to.
+  anchors  <- c("#E0E436", "#DF9114", "#DD2313", "#850014", "#3B003C")
+  target_l <- c(87.1,      68.1,      52.0,      27.9,      11.0)
+  rotate   <- c(12,        0,         0,         0,         0)
+
+  ## Eligible, months not stated. See above.
+  slate <- "#5F6C7D"
+
+  polar <- function(hex) as(colorspace::hex2RGB(hex), "polarLAB")@coords
+
+  respace <- function(hex, L, dh) {
+    p <- polar(hex)
+    chroma <- p[1, "C"]
+    hue <- (p[1, "H"] + dh) %% 360
+    ## The requested chroma, if sRGB holds it at this lightness.
+    exact <- colorspace::hex(colorspace::polarLAB(L, chroma, hue), fixup = FALSE)
+    if (!is.na(exact)) return(exact)
+    ## Otherwise the most saturated in-gamut color on the same hue leaf.
+    lo <- 0
+    hi <- chroma
+    best <- NA_character_
+    for (i in 1:40) {
+      mid <- (lo + hi) / 2
+      got <- colorspace::hex(colorspace::polarLAB(L, mid, hue), fixup = FALSE)
+      if (!is.na(got)) { best <- got; lo <- mid } else hi <- mid
+    }
+    if (is.na(best)) {
+      stop("build_df_ramp(): no in-gamut color for L* ", L, " on hue ", hue,
+           call. = FALSE)
+    }
+    best
+  }
+
+  months <- toupper(mapply(respace, anchors, target_l, rotate, USE.NAMES = FALSE))
+  ramp <- c(toupper(slate), months)
+
+  ## Shape: exactly six #RRGGBB strings. A five-entry file would paint every
+  ## five-month county the same as a four-month one, and the front end's own
+  ## length assert would be the only thing to notice.
+  stopifnot(
+    length(ramp) == 6L,
+    all(grepl("^#[0-9A-F]{6}$", ramp))
+  )
+
+  ## Criterion 1, re-measured from what was actually written: L* falls
+  ## monotonically across the five month steps, by at least 12 at every step.
+  ## Below that the ramp stops being readable in grayscale, which is the whole
+  ## reason the anchors were re-spaced.
+  lightness <- vapply(months, function(h) polar(h)[1, "L"], numeric(1))
+  steps <- -diff(lightness)
+  if (any(steps < 12)) {
+    stop("build_df_ramp(): neighbouring lightness steps are ",
+         paste(sprintf("%.1f", steps), collapse = ", "),
+         "; every one must be at least 12 L*.", call. = FALSE)
+  }
+
+  ## Written as ONE line, like the other ramps: it is machine input.
+  out <- file.path(dir, "colors-df.json")
+  jsonlite::write_json(ramp, out, auto_unbox = TRUE)
+
+  invisible(out)
 }
 
 

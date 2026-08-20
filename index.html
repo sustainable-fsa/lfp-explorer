@@ -80,7 +80,7 @@
   </script>
 
   <title>LFP Explorer · Sustainable FSA</title>
-  <meta name="description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
+  <meta name="description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
   <meta name="author" content="Sustainable FSA">
   <meta name="theme-color" content="#B7410E">
 
@@ -88,7 +88,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Sustainable FSA">
   <meta property="og:title" content="LFP Explorer · Sustainable FSA">
-  <meta property="og:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
+  <meta property="og:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
   <meta property="og:url" content="https://sustainable-fsa.com/lfp-explorer/">
   <!-- Generated later in the build; referenced now so the card is complete the
        moment the file lands. -->
@@ -98,7 +98,7 @@
   <meta property="og:image:alt" content="A map of the United States with counties colored by the length of their FSA normal grazing period.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="LFP Explorer · Sustainable FSA">
-  <meta name="twitter:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods and the weekly U.S. Drought Monitor record, 2000–2026.">
+  <meta name="twitter:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
   <meta name="twitter:image" content="https://sustainable-fsa.com/lfp-explorer/brand/og-image.png">
 
   <!-- Favicons / app icons: kit-hosted and UNVERSIONED, per snippets/head.html
@@ -235,6 +235,8 @@
                     data-view-btn="ngp" aria-pressed="true">1 · Grazing periods</button>
             <button type="button" class="nav-btn seg-btn" id="btn-view-usdm"
                     data-view-btn="usdm" aria-pressed="false">2 · Drought monitor</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-view-eligibility"
+                    data-view-btn="eligibility" aria-pressed="false">3 · LFP eligibility</button>
           </div>
           <p class="control-note">More LFP data families coming.</p>
         </section>
@@ -288,6 +290,59 @@
             statistics, or vintage-matched Census counties. Same drought, three
             county sets.
           </p>
+        </section>
+
+        <!-- ══ Dataset — LFP eligibility ═════════════════════════════════════
+             Three archives of one question, and they do not agree. Two are
+             FSA's own — the determinations obtained by FOIA, and the weekly
+             public tables FSA posts while a program year is still being
+             determined. The third recomputes the statutory ladder from the
+             Drought Monitor, which is not a determination and is labelled that
+             way everywhere it appears, including on the exported poster.
+
+             The aggregation picker below belongs to that third archive alone,
+             so it is a DIV inside this section rather than a section of its own:
+             `syncSections()` shows a [data-view] section whenever its family is
+             active, and this control is narrower than its family (app.js §
+             syncSourceControl).
+
+             Each payload is fetched on FIRST PRESS, never at boot — asserted in
+             tools/verify.mjs. -->
+        <section class="sfsa-drawer-section" id="elig-dataset-seg" data-view="eligibility" hidden>
+          <h2 class="sfsa-drawer-title" id="elig-dataset-title">Dataset</h2>
+          <div class="seg-btns" role="group" aria-labelledby="elig-dataset-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-elig-official"
+                    data-dataset="official" aria-pressed="true">FSA official (FOIA)</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-elig-web"
+                    data-dataset="web" aria-pressed="false">FSA weekly web</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-elig-derived"
+                    data-dataset="derived" aria-pressed="false">Derived from USDM</button>
+          </div>
+          <p class="control-note">
+            FSA's determinations as obtained by FOIA (2008–2025), FSA's own
+            weekly web tables (2008–2026), or the same statutory ladder
+            recomputed from the Drought Monitor — a comparison, not a
+            determination.
+          </p>
+          <!-- Unhidden by app.js only while the derived archive is showing:
+               it is the one payload with four aggregations to choose between. -->
+          <!-- The select is named by aria-labelledby rather than by the <label>
+               alone, and deliberately: a name that lives on the FIELD survives
+               every state this drawer passes through. An explicit <label> is the
+               only naming mechanism whose accessible name can evaporate — axe's
+               hidden-explicit-label check drops a label the moment it is hidden
+               (a closed compact drawer, a sr-only clip), and a <select> whose
+               name came only from that label is then an unnamed control. The
+               visible label stays: it is what a sighted reader reads, and
+               clicking it still focuses the field. -->
+          <div id="elig-source-wrap" hidden>
+            <label class="control-label" id="elig-source-label" for="elig-source">Aggregation</label>
+            <select id="elig-source" aria-labelledby="elig-source-label"></select>
+            <p class="control-note">
+              Four defensible ways to read “any area of the county”; they
+              disagree.
+            </p>
+          </div>
         </section>
 
         <section class="sfsa-drawer-section">
@@ -390,6 +445,40 @@
             <button type="button" class="nav-btn seg-btn" id="btn-var-start" data-variable="start" aria-pressed="false">Start</button>
             <button type="button" class="nav-btn seg-btn" id="btn-var-end" data-variable="end" aria-pressed="false">End</button>
             <button type="button" class="nav-btn seg-btn" id="btn-var-duration" data-variable="duration" aria-pressed="true">Duration</button>
+          </div>
+        </section>
+
+        <!-- ══ Pasture type — LFP eligibility ════════════════════════════════
+             A select of its own rather than a share of #type-select: the
+             options are the same fifteen FSA pasture types PLUS a sentinel that
+             is in no dictionary — "All types (worst case)", which asks whether
+             the county was eligible for anything at all that year. The shared
+             select's checks are the grazing periods', so mixing a value it can
+             never resolve into it would make both dictionaries suspect. -->
+        <section class="sfsa-drawer-section" id="elig-type-seg" data-view="eligibility" hidden>
+          <h2 class="sfsa-drawer-title" id="elig-type-title">Pasture type</h2>
+          <!-- Named from the section's own eyebrow, the way every segmented
+               group in this drawer is (aria-labelledby, not a second copy of the
+               words) — and for the reason spelled out over #elig-source above:
+               a name on the FIELD cannot evaporate with the element that carries
+               it. No sr-only <label>, so there is nothing to keep in sync. -->
+          <!-- One static placeholder; app.js replaces the whole list from the
+               payload's type dictionary when the interface comes on screen. -->
+          <select id="elig-type-select" aria-labelledby="elig-type-title">
+            <option value="Native Pasture">Native Pasture</option>
+          </select>
+        </section>
+
+        <section class="sfsa-drawer-section" id="elig-variable-seg" data-view="eligibility" hidden>
+          <h2 class="sfsa-drawer-title" id="elig-variable-title">Color by</h2>
+          <!-- This family's own two variables, and they are NOT the grazing
+               periods' three: `?variable=` is read against whichever family is
+               on screen (js/interfaces/eligibility.js § VARIABLES). -->
+          <div class="seg-btns" role="group" aria-labelledby="elig-variable-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-elig-months"
+                    data-variable="months" aria-pressed="true">Payment months</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-elig-date"
+                    data-variable="date" aria-pressed="false">Qualifying date</button>
           </div>
         </section>
 

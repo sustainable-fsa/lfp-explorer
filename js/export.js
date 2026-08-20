@@ -186,9 +186,18 @@ function drawDurationLegend(ctx2d, rect, noDataLabel) {
   drawNoDataChip(ctx2d, barX + BAR_W + 64, barY + BAR_H / 2, c, noDataLabel);
 }
 
-/** Start / end: the month wheel, in canvas arcs, from the same angle math the
-    DOM wheel uses. */
-function drawWheelLegend(ctx2d, rect, variable, noDataLabel) {
+/**
+ * A cyclic scale: the month wheel, in canvas arcs, from the same angle math the
+ * DOM wheel uses.
+ *
+ * The two lines of prose beside it are the descriptor's when it has an opinion
+ * (`iface.export.legendLines`), because the WHEEL is shared and the sentence is
+ * not: the same ring reads a grazing period's start date on one family and the
+ * day a drought tier was satisfied on another. Without an opinion it falls back
+ * to the grazing periods' own wording, which is what shipped and what posters
+ * already in circulation say.
+ */
+function drawWheelLegend(ctx2d, rect, variable, noDataLabel, ownLines) {
   const c = tokens();
   const ramp = ramps().cyclic;
   const cx = rect.x + WHEEL_R_LABEL + 8;
@@ -232,7 +241,7 @@ function drawWheelLegend(ctx2d, rect, variable, noDataLabel) {
   ctx2d.textAlign = 'left';
 
   const which = variable === 'start' ? 'begins' : 'ends';
-  const lines = [
+  const lines = (Array.isArray(ownLines) && ownLines.length === 2) ? ownLines : [
     'Color is the point in the calendar where the grazing period ' + which
       + ', read against the months around the wheel.',
     'The scale wraps, so late December and early January are neighboring colors.',
@@ -325,12 +334,14 @@ function legendPainter(iface, sel) {
     ? legend.items(sel) : null;
   const attribution = (iface.export && typeof iface.export.attribution === 'function')
     ? iface.export.attribution(sel) : null;
+  const lines = (iface.export && typeof iface.export.legendLines === 'function')
+    ? iface.export.legendLines(sel) : null;
 
   return (ctx2d, rect) => {
     if (kind === 'swatches' && items && items.length) {
       drawSwatchLegend(ctx2d, rect, items, noDataLabel, attribution);
     } else if (kind === 'wheel') {
-      drawWheelLegend(ctx2d, rect, sel.variable, noDataLabel);
+      drawWheelLegend(ctx2d, rect, sel.variable, noDataLabel, lines);
     } else {
       drawDurationLegend(ctx2d, rect, noDataLabel);
     }

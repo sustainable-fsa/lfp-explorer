@@ -258,23 +258,38 @@ async function open({
  * out of the middle of a section — which aborted the process and took the
  * summary, and every assertion after it, with it (the same reasoning as the
  * crosswalk probe in §7). Nulls travel back instead; the comparisons that use
- * them fail as named checks with the nulls printed. */
+ * them fail as named checks with the nulls printed.
+ *
+ * THE IMPORT ITSELF CAN FAIL, which is the same failure one level earlier: the
+ * app's entry module imports the pinned kit over the network, so a DNS blip
+ * makes `js/app.js` unresolvable and this evaluate reject. Caught here for the
+ * same reason as everything else — an empty snapshot fails the checks that read
+ * it, where a rejection would end the run. */
 const snapshot = (page) => page.evaluate(async () => {
-  const app = await import(new URL('js/app.js', document.baseURI).href);
-  const c = app.ngpContext();
-  const state = c.getState();
-  const vs = typeof c.getViewState === 'function' ? c.getViewState() : null;
-  const slice = vs && (typeof vs.dataset === 'string' ? vs : vs[state.view]);
-  const map = c.getMap();
-  return {
-    state: { ...state, dataset: (slice && slice.dataset) || null },
-    viewState: slice || null,
-    vintage: c.getVintage(),
-    geometryCount: c.getCounties() ? c.getCounties().index.size : 0,
-    center: map ? map.getCenter().toArray() : [null, null],
-    zoom: map ? map.getZoom() : null,
-    markers: { ...document.documentElement.dataset },
-  };
+  try {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const state = c.getState();
+    const vs = typeof c.getViewState === 'function' ? c.getViewState() : null;
+    const slice = vs && (typeof vs.dataset === 'string' ? vs : vs[state.view]);
+    const map = c.getMap();
+    return {
+      state: { ...state, dataset: (slice && slice.dataset) || null },
+      viewState: slice || null,
+      vintage: c.getVintage(),
+      geometryCount: c.getCounties() ? c.getCounties().index.size : 0,
+      center: map ? map.getCenter().toArray() : [null, null],
+      zoom: map ? map.getZoom() : null,
+      markers: { ...document.documentElement.dataset },
+    };
+  } catch (err) {
+    return {
+      state: {}, viewState: null, vintage: null, geometryCount: 0,
+      center: [null, null], zoom: null,
+      markers: { ...document.documentElement.dataset },
+      error: String(err).split('\n')[0],
+    };
+  }
 });
 
 /**
@@ -383,24 +398,30 @@ const viewControls = (page) => page.evaluate(() => {
  * that match prove it did not.
  */
 const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
-  const app = await import(new URL('js/app.js', document.baseURI).href);
-  const c = app.ngpContext();
-  const map = c.getMap();
-  let colored = 0;
-  let hash = 5381;
-  // No map or no geometry means nothing is painted, which is a signature too —
-  // and one that fails every "the paint changed" comparison rather than
-  // throwing the run away.
-  if (!map || !c.getCounties()) return { colored: 0, hash: 0 };
-  for (const id of c.getCounties().index.keys()) {
-    const st = map.getFeatureState({ source: src, id });
-    const color = (st && st.color) || '';
-    if (color) colored++;
-    for (let i = 0; i < color.length; i++) {
-      hash = (Math.imul(hash, 33) ^ color.charCodeAt(i)) >>> 0;
+  // No map, no geometry, or no app module at all means nothing is painted,
+  // which is a signature too — and one that fails every "the paint changed"
+  // comparison rather than throwing the run away. The module can genuinely be
+  // missing: `js/app.js` imports the pinned kit over the network, so a DNS blip
+  // is enough to make the dynamic import below reject.
+  try {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const map = c.getMap();
+    let colored = 0;
+    let hash = 5381;
+    if (!map || !c.getCounties()) return { colored: 0, hash: 0 };
+    for (const id of c.getCounties().index.keys()) {
+      const st = map.getFeatureState({ source: src, id });
+      const color = (st && st.color) || '';
+      if (color) colored++;
+      for (let i = 0; i < color.length; i++) {
+        hash = (Math.imul(hash, 33) ^ color.charCodeAt(i)) >>> 0;
+      }
     }
+    return { colored, hash };
+  } catch (err) {
+    return { colored: 0, hash: 0, error: String(err).split('\n')[0] };
   }
-  return { colored, hash };
 }, sourceId);
 
 /** The paint color of one county, straight out of feature state. Null if there
@@ -565,8 +586,13 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
      and got.
 
      The lazy list is DERIVED from the probe table rather than typed: it is
-     every dataset in the app except the default view's default one, so a fifth
-     payload is covered here by the commit that adds it to config.mjs. */
+     every dataset in the app except the default view's default one, plus every
+     committed asset a view declares as its own (`lazyAssets` — the eligibility
+     view's drought-factor ramp), so a fifth payload or a third ramp is covered
+     here by the commit that adds it to config.mjs. A ramp belongs in this list
+     for the same reason a payload does: the two the grazing periods need are on
+     the boot path, and a third one loaded beside them would cost the LCP a
+     round trip for a legend nobody has asked to see yet. */
   {
     const NGP = CONFIG.interfaces.ngp;
     const fetched = await resourceNames(page);
@@ -574,18 +600,24 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
     const official = has(NGP.datasets.fsa.payload);
     const lazy = [...has(CROSSWALK.path.split('/').pop())];
     let lazyCount = 0;
+    let lazyAssets = 0;
     for (const iface of Object.values(CONFIG.interfaces)) {
       for (const ds of Object.values(iface.datasets)) {
         if (iface.isDefault && ds.isDefault) continue;
         lazyCount++;
         lazy.push(...has(ds.payload));
       }
+      for (const asset of iface.lazyAssets || []) {
+        lazyAssets++;
+        lazy.push(...has(asset.split('/').pop()));
+      }
     }
     check('the boot path fetched the FSA official grazing-period payload',
       official.length > 0, `${fetched.length} resources, none named `
       + JSON.stringify(NGP.datasets.fsa.payload));
-    check(`…and NOTHING ELSE: all ${lazyCount} other datasets and the crosswalk `
-      + 'stay lazy until something asks for them (the LCP guarantee)',
+    check(`…and NOTHING ELSE: all ${lazyCount} other datasets, the crosswalk and `
+      + `${lazyAssets} view-scoped asset(s) stay lazy until something asks for `
+      + 'them (the LCP guarantee)',
     lazy.length === 0, lazy.join(' | '));
   }
 
@@ -1622,6 +1654,7 @@ const TOUCH_CONTRACT = [
      is named here rather than left to inherit `.seg-btn`. */
   ['#btn-view-ngp', 40],
   ['#btn-view-usdm', 40],
+  ['#btn-view-eligibility', 40],
 ];
 
 /** The drought monitor's own controls. Measured in a SECOND pass, after a
@@ -1636,6 +1669,22 @@ const USDM_TOUCH_CONTRACT = [
   ['#btn-usdm-reported', 40],
   ['#btn-usdm-census', 40],
 ];
+
+/** The eligibility view's own controls, measured in a THIRD pass for the same
+    reason. Its source select is the exception that has to be reached rather
+    than merely switched to: `#elig-source` is hidden unless the DERIVED dataset
+    is active, so the pass that measures it toggles the dataset first — a select
+    that only appears at 375px under one dataset is exactly the control that
+    ends up 28px tall. */
+const ELIG_TOUCH_CONTRACT = [
+  ['#btn-elig-official', 40],
+  ['#btn-elig-web', 40],
+  ['#btn-elig-derived', 40],
+  ['#elig-type-select', 40],
+  ['#btn-elig-months', 40],
+  ['#btn-elig-date', 40],
+];
+const ELIG_SOURCE_TOUCH_CONTRACT = [['#elig-source', 40]];
 
 /** Measure every visible element the contract names. Invisible ones are
     skipped — which is why every caller also checks WHAT it measured. */
@@ -1912,6 +1961,61 @@ section('▸ Compact 375×720 (touch)');
       + `innerWidth ${window.innerWidth}`));
   await s.shot('17c-compact-usdm');
   s.clean('compact drought monitor');
+
+  /* ── The third view's controls, on the phone ─────────────────────────────
+     Same argument again, one control further: the eligibility view adds a
+     three-way dataset seg, a native <select> for fifteen pasture types plus a
+     sentinel, a two-way variable seg — and a SECOND select that does not exist
+     until the derived dataset is chosen. A control a phone visitor can only
+     reach after a toggle is a control whose touch size nobody has looked at, so
+     this pass toggles and then measures. The drawer is already open from the
+     drought-monitor pass above. */
+  {
+    const ELIG = CONFIG.interfaces.eligibility;
+    const seq = await viewSeq(page);
+    const clicked = await clickControl(page, ELIG.switchSel);
+    const arrived = clicked && await awaitViewSeq(page, seq);
+    const targets = await measureTargets(page, ELIG_TOUCH_CONTRACT);
+    const undersizedElig = targets.filter((m) => m.w < m.min || m.h < m.min);
+    const want = ELIG_TOUCH_CONTRACT.map(([sel]) => sel.replace('#', ''));
+    const got = new Set(targets.map((m) => m.id));
+    const missing = want.filter((id) => !got.has(id));
+    console.log('    eligibility touch targets: '
+      + targets.map((m) => `${m.id} ${m.w}×${m.h}`).join(', '));
+    check('a phone visitor can reach LFP eligibility from the drawer, and its '
+      + 'dataset seg, pasture-type select and variable seg all meet the touch '
+      + 'sizes the kit promises — every one of them really on screen',
+    arrived && undersizedElig.length === 0 && missing.length === 0,
+    [clicked ? '' : `${ELIG.switchSel} was not clickable at 375px`,
+      arrived ? '' : `data-ngp-view-seq stayed at ${seq}`,
+      undersizedElig.map((m) => `${m.id} ${m.w}×${m.h} < ${m.min}`).join(', '),
+      missing.length ? 'never measured: ' + missing.join(', ') : '']
+      .filter(Boolean).join(' | '));
+
+    const seqDs = await viewSeq(page);
+    const toDerived = await clickControl(page, ELIG.datasets.derived.sel);
+    const onDerived = toDerived && await awaitViewSeq(page, seqDs);
+    const src = await measureTargets(page, ELIG_SOURCE_TOUCH_CONTRACT);
+    const undersizedSrc = src.filter((m) => m.w < m.min || m.h < m.min);
+    console.log('    eligibility source select: '
+      + (src.map((m) => `${m.id} ${m.w}×${m.h}`).join(', ') || 'not on screen'));
+    check('the aggregation select the derived dataset brings with it is on '
+      + 'screen once that dataset is chosen, at a size a thumb can hit',
+    onDerived && src.length === 1 && undersizedSrc.length === 0,
+    [toDerived ? '' : `${ELIG.datasets.derived.sel} was not clickable at 375px`,
+      onDerived ? '' : `data-ngp-view-seq stayed at ${seqDs}`,
+      src.length ? '' : `${ELIG_SOURCE_TOUCH_CONTRACT[0][0]} has no client rects`,
+      undersizedSrc.map((m) => `${m.id} ${m.w}×${m.h} < ${m.min}`).join(', ')]
+      .filter(Boolean).join(' | '));
+    check('the phone does not scroll sideways with the eligibility controls in '
+      + 'the drawer',
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1),
+    await page.evaluate(() => `scrollWidth ${document.documentElement.scrollWidth} > `
+      + `innerWidth ${window.innerWidth}`));
+    await s.shot('17d-compact-eligibility');
+    s.clean('compact LFP eligibility');
+  }
   await s.ctx.close();
 }
 
@@ -2864,7 +2968,16 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
     await settleVintage(page);
     const home = await viewControls(page);
     const homeSnap = await snapshot(page);
-    const saidAfter = await liveText(page);
+    /* Same deferred-announcement race as the eligibility ceiling check: the
+       app composes the clamp sentence after ~350 ms of rest. The vintage
+       settle usually outlasts that, but "usually" is what flakes are made
+       of — poll briefly rather than read once. */
+    let saidAfter = await liveText(page);
+    for (let i = 0; i < 15 && (saidAfter === saidBefore
+      || !dflt.yearDomain.clampSays.test(saidAfter)); i++) {
+      await page.waitForTimeout(120);
+      saidAfter = await liveText(page);
+    }
     check(`switching to ${dflt.label} CLAMPS the out-of-domain year to `
       + `${dflt.yearDomain.min}, the first program year FSA published, and puts `
       + 'the domain back with it',
@@ -3135,6 +3248,1044 @@ section('▸ Two views, two memories — an NGP state survives a USDM excursion'
     output: returned.out }));
   s.clean('two views, two memories');
   await s.shot('21-two-views');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   11. LFP ELIGIBILITY — the third interface, driven by the same template.
+
+   The program's answer, and the first view in this app whose subject is a
+   DETERMINATION rather than a measurement. Everything structural is the section
+   template again; what is below is what this view adds, and each of these is a
+   claim a screenshot cannot make:
+
+     · THREE ARCHIVES OF THE SAME QUESTION that disagree on purpose — what FSA
+       determined (FOIA), what FSA published week by week, and what the
+       statutory rule yields when it is recomputed from the Drought Monitor. The
+       third one carries no payment months at all, so its legend has to say that
+       the number on screen is not the payable amount.
+     · A FOURTH CONTROL THAT ONLY SOMETIMES EXISTS: the derived archive holds
+       four county aggregations side by side, and the select that picks between
+       them must appear with that dataset, take its options from the payload,
+       and take its URL param away again when the dataset changes.
+     · TWO VARIABLES OVER ONE MAP, validated per view: `?variable=duration` is a
+       grazing-period value and means nothing here, so it has to fall back
+       rather than paint a blank map.
+     · A DATASET WHOSE RECORD ENDS BEFORE THE APP'S DEFAULT YEAR. The FOIA
+       archive stops at 2025, so arriving on it from any later year moves the
+       visitor — and a move has to be said out loud, with the reason.
+     · AN ERA WITH HOLES IN IT. 2008–2011 determinations carry payment months
+       without dates in the FOIA archive and dates without payment months on the
+       web, which is what the ramp's index-0 slate is for in each of the two
+       variables.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const ELIG = CONFIG.interfaces.eligibility;
+
+/** Flattened for the in-page probe: RegExps do not survive Playwright's
+    serialisation, so only strings cross and every pattern is applied in Node. */
+const ELIG_SELS = {
+  sourceWrap: ELIG.source.wrapSel,
+  sourceSel: ELIG.source.selectSel,
+  typeSel: ELIG.type.selectSel,
+  monthsSel: ELIG.variables.months.sel,
+  dateSel: ELIG.variables.date.sel,
+};
+
+/**
+ * Everything the eligibility drawer, its URL params and its stored state say,
+ * in one round trip. `exists: false` on any control is an answer, not a crash —
+ * the checks that need it then fail or skip by name instead of throwing a
+ * Playwright stack trace out of the middle of the section.
+ */
+const eligProbe = (page) => page.evaluate((s) => {
+  const el = (sel) => document.querySelector(sel);
+  const wrap = el(s.sourceWrap);
+  const src = el(s.sourceSel);
+  const type = el(s.typeSel);
+  const url = new URL(location.href);
+  const shown = (n) => !!(n && !n.hidden && n.getClientRects().length > 0);
+  const opts = (n) => (n ? Array.from(n.options).map((o) => ({
+    value: o.value, label: (o.textContent || '').trim(),
+  })) : []);
+  const pressed = (sel) => {
+    const b = el(sel);
+    return b ? b.getAttribute('aria-pressed') : null;
+  };
+  const ls = (k) => {
+    try { return localStorage.getItem(k); } catch (e) { return 'unavailable'; }
+  };
+  return {
+    sourceWrapExists: !!wrap,
+    /** A wrap that is `hidden` and a wrap the drawer has scrolled out of view
+        are different things; on a phone the whole drawer can be
+        `visibility: hidden`, so the `hidden` attribute is what is read and the
+        client rect only confirms it when the drawer is up. */
+    sourceWrapHidden: wrap ? wrap.hidden : null,
+    sourceWrapShown: shown(wrap),
+    sourceExists: !!src,
+    sourceValue: src ? src.value : null,
+    sourceOptions: opts(src),
+    typeExists: !!type,
+    typeValue: type ? type.value : null,
+    typeLabel: type && type.selectedIndex >= 0
+      ? (type.options[type.selectedIndex].textContent || '').trim() : null,
+    typeOptions: opts(type),
+    monthsPressed: pressed(s.monthsSel),
+    datePressed: pressed(s.dateSel),
+    params: {
+      view: url.searchParams.get('view'),
+      dataset: url.searchParams.get('dataset'),
+      source: url.searchParams.get('source'),
+      type: url.searchParams.get('type'),
+      variable: url.searchParams.get('variable'),
+      year: url.searchParams.get('year'),
+      week: url.searchParams.get('week'),
+    },
+    stored: {
+      dataset: ls('sfsa-ngp-dataset-eligibility'),
+      source: ls('sfsa-ngp-source-eligibility'),
+      type: ls('sfsa-ngp-type-eligibility'),
+      variable: ls('sfsa-ngp-variable-eligibility'),
+    },
+    legendWheelHasDrawing: !!document.querySelector('#legend-wheel svg, #legend-wheel canvas'),
+    swatchLabels: Array.from(
+      document.querySelectorAll('#legend-swatches .sfsa-legend-item'))
+      .map((n) => (n.textContent || '').trim()),
+  };
+}, ELIG_SELS);
+
+/** The source dictionary the ACTIVE decoder shipped — so "the select offers the
+    four conventions" can be checked against the payload rather than against the
+    same literal the app read. */
+const decoderSources = (page) => page.evaluate(async () => {
+  try {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const d = app.ngpContext().getData();
+    return d && typeof d.sources === 'function' ? (d.sources() || []) : null;
+  } catch (err) { return null; }
+});
+
+/**
+ * Choose an option the way a pointer does: match it by value or by label
+ * (slugified, so it does not matter which of the two the app puts in `value`),
+ * set it, fire `change`. Returns the chosen value, or null if no option
+ * matched — which the caller turns into a named failure.
+ */
+const selectOption = (page, sel, wanted) => page.evaluate(([s, want]) => {
+  const slug = (t) => String(t).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const node = document.querySelector(s);
+  if (!node) return null;
+  const hit = Array.from(node.options).find((o) => o.value === want
+    || slug(o.value) === slug(want) || slug(o.textContent || '') === slug(want));
+  if (!hit) return null;
+  node.value = hit.value;
+  node.dispatchEvent(new Event('change', { bubbles: true }));
+  return hit.value;
+}, [sel, wanted]);
+
+/** A histogram of what the choropleth is painting, keyed by colour string. The
+    paint signature says THAT the map changed; this says which colours are on it
+    and how many counties carry each, which is how a categorical claim ("the
+    undated counties took the slate") is checked. */
+const paintHistogram = (page, sourceId) => page.evaluate(async (src) => {
+  const out = {};
+  try {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const map = c.getMap();
+    if (!map || !c.getCounties()) return out;
+    for (const id of c.getCounties().index.keys()) {
+      const st = map.getFeatureState({ source: src, id });
+      const color = ((st && st.color) || '').toLowerCase();
+      if (color) out[color] = (out[color] || 0) + 1;
+    }
+    return out;
+  } catch (err) { return out; }
+}, sourceId);
+
+/** The committed ramp asset, fetched by the PAGE (so it is the same bytes the
+    app read) rather than from disk. Null when it is not there yet. */
+const dfRamp = (page, path) => page.evaluate(async (p) => {
+  try {
+    const res = await fetch(new URL(p, document.baseURI).href);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return Array.isArray(json) ? json.map((c) => String(c).toLowerCase()) : null;
+  } catch (err) { return null; }
+}, path);
+
+/** A repaint that involves no fetch (a variable toggle, a type change, a source
+    change) is throttled to a frame and announced at rest, like the year. */
+const settleRepaint = async (page) => {
+  await page.waitForTimeout(600);
+  await settleFrames(page);
+};
+
+/** Did the live region say this number? Counts are announced with the locale's
+    separators, so both forms are accepted. */
+const saysCount = (said, n) => typeof n === 'number'
+  && (said.includes(n.toLocaleString('en-US')) || said.includes(String(n)));
+
+/**
+ * The eligibility view's own controls — step 6 of the section template.
+ *
+ * Here rather than in the probe table for the documented reason: every check
+ * below needs the paint-signature, marker, histogram and live-region probes in
+ * this file, and tools/config.mjs must not assert. The selectors, fixtures and
+ * measured counts all live in the entry.
+ */
+async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
+  const DS = iface.datasets;
+  /* The year the template arrived on — which is already the CLAMPED one if the
+     visitor's shared year was later than the FOIA archive's last program year.
+     Restored at the end, so the template's card, table and poster steps read a
+     year this view actually has data for rather than whatever the last probe
+     left behind. */
+  const entryYear = (await snapshot(page)).state.year;
+
+  /* ── 11a. Three archives of one determination ───────────────────────────
+     Ending on the default, so the URL is clean again for the steps after this
+     and the section's own round-trip claim means something.
+
+     NO PER-TOGGLE REPAINT WITNESS HERE, and that is a measured decision rather
+     than a gap. The two FSA archives are the same determinations by two routes,
+     and on a CLOSED program year they agree — at 2025 Native Pasture both paint
+     the identical 737 counties with the identical colours, which is exactly the
+     claim each archive makes about the other. A "the map must change" check
+     would therefore fail on a correct app, and passing it would need a year
+     picked for disagreement rather than for being the year a visitor lands on.
+     What IS asserted per toggle is the paint against that archive's own
+     reduction (the oracle below), and what is asserted ONCE, after the loop, is
+     that the recomputed archive paints a different map from FSA's own — the
+     comparison the view exists to make. */
+  section('▸ LFP eligibility — three archives of the same determination');
+  const sigOf = {};
+  for (const ds of [DS.web, DS.derived, DS.official]) {
+    const seq = await viewSeq(page);
+    const clicked = await clickControl(page, ds.sel);
+    const bumped = clicked && await awaitViewSeq(page, seq);
+    const vc = await viewControls(page);
+    const snap = await snapshot(page);
+    const sig = await paintSignature(page, CONFIG.sourceId);
+    const p = await eligProbe(page);
+    check(`the ${JSON.stringify(ds.label)} toggle completes on data-ngp-view-seq `
+      + `(fetch${ds.id === 'derived' ? ' of an 11 MB payload' : ''}, decode, `
+      + 'reduce, recolor, feature-state flush)',
+    bumped, clicked ? `data-ngp-view-seq stayed at ${seq}`
+      : `${ds.sel} was not clickable — the eligibility dataset seg is missing`);
+    check(`${ds.label}: it is the one pressed button of the view's three, and no `
+      + 'other view\'s dataset button is in play',
+    vc.datasets.length === 1 && vc.datasets[0] === ds.id && vc.datasetBtns === 3,
+    `${vc.datasetBtns} button(s) in play, pressed ${JSON.stringify(vc.datasets)}`);
+    check(`${ds.label}: the app is on it by its own account, with no transition `
+      + 'error left behind',
+    snap.state.dataset === ds.id && snap.markers.ngpViewError === undefined,
+    JSON.stringify({ dataset: snap.state.dataset,
+      error: snap.markers.ngpViewError || null }));
+    check(ds.isDefault
+      ? `${ds.label} is the default, so ?dataset is DROPPED rather than rewritten`
+      : `?dataset=${ds.id} appears — a non-default dataset is shareable state`,
+    p.params.dataset === (ds.isDefault ? null : ds.id), page.url());
+    const expect = await iface.paintOracle(page);
+    if (typeof expect === 'number') {
+      check(`${ds.label}: every county this year's determinations reach carries a `
+        + 'colour, and nothing else does',
+      sig.colored === expect, `${sig.colored} painted, ${expect} expected`);
+    } else {
+      skip(`${ds.label}: painted count against the data`, String(expect));
+    }
+    check(`${ds.label}: the choice is remembered for the next visit `
+      + '(sfsa-ngp-dataset-eligibility)',
+    p.stored.dataset === ds.id, 'stored ' + JSON.stringify(p.stored.dataset));
+
+    /* The aggregation select belongs to ONE of the three, and the param that
+       drives it must not outlive the dataset that has it. */
+    check(ds.id === 'derived'
+      ? 'Derived from USDM: the aggregation select comes with it, because only '
+        + 'that archive holds four answers to choose between'
+      : `${ds.label}: there is no aggregation to choose, so the select stays out `
+        + 'of the drawer and ?source stays out of the URL',
+    ds.id === 'derived'
+      ? (p.sourceWrapHidden === false && p.sourceExists)
+      : (p.sourceWrapHidden !== false && p.params.source === null),
+    JSON.stringify({ wrapHidden: p.sourceWrapHidden, select: p.sourceExists,
+      sourceParam: p.params.source }));
+
+    /* What the numbers MEAN differs with the archive, and the legend key is
+       where that is said. The derived archive carries the drought factor the
+       ladder awards and no cap, so a reader must not take it for a payment. */
+    const key = (vc.legend.key || '');
+    if (ds.id === 'derived') {
+      check('Derived from USDM: the legend says in words that these are '
+        + 'recomputed drought factors and NOT FSA\'s payable months — an '
+        + 'uncapped number shown as a payment would overstate every award',
+      /no cap|uncapped|not .{0,30}payable|recomputed/i.test(key),
+      JSON.stringify(key.slice(0, 220)));
+      const said = await liveText(page);
+      check('…and the announcement says the same thing, so a screen-reader '
+        + 'visitor is not the only one who has to infer it',
+      /recompute/i.test(said) && /not (?:an )?(?:official )?FSA|not FSA/i.test(said),
+      JSON.stringify(said.slice(0, 220)));
+    } else {
+      check(`${ds.label}: the legend key describes payment months, which is what `
+        + 'this archive actually carries',
+      /month/i.test(key) && key.length > 40, JSON.stringify(key.slice(0, 220)));
+      const said = await liveText(page);
+      const eligible = await iface.eligibleOracle(page);
+      if (typeof eligible !== 'number') {
+        skip(`${ds.label}: the announced eligible-county count`, String(eligible));
+      } else {
+        check(`${ds.label}: the announcement counts the counties this year's `
+          + `determinations reach (${eligible.toLocaleString('en-US')}) rather `
+          + 'than leaving a canvas with no text a screen reader can read',
+        saysCount(said, eligible) || saysCount(said, sig.colored),
+        `live region says ${JSON.stringify(said.slice(0, 220))} — expected `
+          + `${eligible} (reduction) or ${sig.colored} (painted)`);
+      }
+    }
+    clean(`eligibility dataset → ${ds.id}`);
+    await shot(`22-elig-${ds.id}`);
+    sigOf[ds.id] = sig;
+  }
+  check('the recomputed archive paints a DIFFERENT map from FSA\'s own '
+    + 'determination — which is the comparison this view exists to make, and '
+    + 'the reason the derived numbers may not be read as payments',
+  !!sigOf.derived && !!sigOf.official
+    && sigOf.derived.hash !== sigOf.official.hash,
+  Object.entries(sigOf)
+    .map(([id, s]) => `${id} ${s.colored} @${s.hash}`).join(' | '));
+
+  /* ── 11b. Four defensible ways to read "any area of the county" ──────────
+     The derived archive publishes all four rather than picking one, and the
+     select is the only place in the app where a visitor chooses between two
+     defensible readings of the same statutory phrase. So: the options come from
+     the PAYLOAD, each one repaints, the default is elided, and the param is
+     dropped the moment the dataset that owns it is gone. */
+  section('▸ LFP eligibility — four ways to read "any area of the county"');
+  {
+    const seqD = await viewSeq(page);
+    const toDerived = await clickControl(page, DS.derived.sel);
+    const onDerived = toDerived && await awaitViewSeq(page, seqD);
+    const p0 = await eligProbe(page);
+    const shipped = await decoderSources(page);
+    const wanted = iface.source.conventions.map((c) => c.id);
+    check('setup: the derived archive is loaded and its aggregation select is '
+      + 'in the drawer', onDerived && p0.sourceExists && p0.sourceWrapHidden === false,
+    JSON.stringify({ onDerived, select: p0.sourceExists,
+      wrapHidden: p0.sourceWrapHidden }));
+
+    if (!p0.sourceExists) {
+      skip('the aggregation select offers the payload\'s four conventions',
+        `${iface.source.selectSel} is not in the page`);
+    } else {
+      const slug = (t) => String(t).toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const offered = p0.sourceOptions.map((o) => slug(o.value));
+      check('the aggregation select offers exactly the four conventions the '
+        + 'payload ships — read from its own dictionary, not from a list typed '
+        + 'into the app',
+      Array.isArray(shipped) && shipped.length === 4
+        && wanted.every((id) => offered.some((o) => o === slug(id)))
+        && offered.length === 4,
+      JSON.stringify({ shipped, offered,
+        labels: p0.sourceOptions.map((o) => o.label) }));
+      check('every option is named in words a reader can tell apart, not by its '
+        + 'archive slug',
+      p0.sourceOptions.every((o) => o.label.length > 3 && !/^usdm-/.test(o.label)),
+      JSON.stringify(p0.sourceOptions.map((o) => o.label)));
+      check('it opens on the FSA-boundary convention — the same geometry this '
+        + 'map draws, and the same default the drought monitor takes — and a '
+        + 'default says nothing in the URL',
+      slug(p0.sourceValue || '') === slug(iface.source.default)
+        && p0.params.source === null,
+      JSON.stringify({ value: p0.sourceValue, param: p0.params.source }));
+
+      /* ONE AGGREGATE REPAINT WITNESS, not four. The four conventions agree
+         about most of the country — measured at 2024 Native Pasture, they name
+         630 counties between them and disagree about six — and two of them can
+         easily agree EXACTLY on a given year and pasture type (the two Census
+         conventions do, at 2025 Native Pasture). So "this convention repaints
+         the map" is not a property any single one of them has; what the archive
+         claims, and what is checked below, is that the four are not one map
+         relabelled. Each convention is still held to its own reduction, county
+         for county, by the oracle. */
+      const sigs = { [iface.source.default]: await paintSignature(page, CONFIG.sourceId) };
+      for (const conv of iface.source.conventions.slice(1)) {
+        const chosen = await selectOption(page, iface.source.selectSel, conv.id);
+        await settleRepaint(page);
+        const p = await eligProbe(page);
+        const next = await paintSignature(page, CONFIG.sourceId);
+        const expect = await iface.paintOracle(page);
+        sigs[conv.id] = next;
+        check(`${conv.label}: the select accepted it and the app is reading it`,
+          chosen !== null && slug(p.sourceValue || '') === slug(conv.id),
+          chosen === null ? `no option matched ${conv.id}`
+            : `select value ${JSON.stringify(p.sourceValue)}`);
+        check(`${conv.label}: ?source=${conv.slug} is in the URL — which `
+          + 'aggregation produced a map is not a detail a shared link may drop',
+        p.params.source !== null && slug(p.params.source) === slug(conv.slug),
+        `?source=${JSON.stringify(p.params.source)} — ${page.url()}`);
+        if (typeof expect === 'number') {
+          check(`${conv.label}: the counties painted are the ones this `
+            + 'aggregation makes eligible',
+          next.colored === expect, `${next.colored} painted, ${expect} expected`);
+        } else {
+          skip(`${conv.label}: painted count against the data`, String(expect));
+        }
+        check(`${conv.label}: the choice is remembered for the next visit `
+          + '(sfsa-ngp-source-eligibility)',
+        p.stored.source !== null && p.stored.source !== 'unavailable'
+          && slug(p.stored.source) === slug(conv.slug),
+        'stored ' + JSON.stringify(p.stored.source));
+      }
+      {
+        const hashes = new Set(Object.values(sigs).map((s) => s.hash));
+        check('the four conventions are NOT one map relabelled: reading the same '
+          + 'statutory phrase four defensible ways gives at least two different '
+          + 'maps, which is why the archive publishes all four instead of '
+          + 'picking one',
+        hashes.size >= 2,
+        Object.entries(sigs)
+          .map(([id, s]) => `${id} ${s.colored} @${s.hash}`).join(' | '));
+      }
+
+      /* Back to the default, and then out of the dataset that owns it. */
+      await selectOption(page, iface.source.selectSel, iface.source.default);
+      await settleRepaint(page);
+      const home = await eligProbe(page);
+      check('choosing the default convention again DROPS ?source — a param at '
+        + 'its default is a permanent smudge on every link shared afterwards',
+      home.params.source === null, page.url());
+
+      const conv2 = iface.source.conventions[1];
+      await selectOption(page, iface.source.selectSel, conv2.id);
+      await settleRepaint(page);
+      const seqOut = await viewSeq(page);
+      await clickControl(page, DS.official.sel);
+      await awaitViewSeq(page, seqOut);
+      const away = await eligProbe(page);
+      check('leaving the derived archive takes ?source with it, even when it was '
+        + 'not at its default — an aggregation param on an FSA determination '
+        + 'would describe a control that is not on screen',
+      away.params.source === null && away.sourceWrapHidden !== false,
+      JSON.stringify({ source: away.params.source,
+        wrapHidden: away.sourceWrapHidden, url: page.url() }));
+
+      const seqBack = await viewSeq(page);
+      await clickControl(page, DS.derived.sel);
+      await awaitViewSeq(page, seqBack);
+      const back = await eligProbe(page);
+      check('…and coming back restores the convention the visitor had chosen, '
+        + 'param and select together (session memory, not a reset)',
+      slug(back.sourceValue || '') === slug(conv2.id)
+        && back.params.source !== null
+        && slug(back.params.source) === slug(conv2.slug),
+      JSON.stringify({ value: back.sourceValue, param: back.params.source }));
+
+      /* Leave the section on the default archive at its default convention. */
+      await selectOption(page, iface.source.selectSel, iface.source.default);
+      await settleRepaint(page);
+      const seqHome = await viewSeq(page);
+      await clickControl(page, DS.official.sel);
+      await awaitViewSeq(page, seqHome);
+    }
+    clean('eligibility aggregation select');
+    await shot('22b-elig-source');
+  }
+
+  /* ── 11c. Two variables, two legend bodies ──────────────────────────────
+     The same determination, painted twice: how much it pays, and when it
+     qualified. The second one is the grazing periods' cyclic wheel, which is
+     the point — a date is a date, whatever view is asking. */
+  section('▸ LFP eligibility — payment months and qualifying date');
+  {
+    const months0 = await eligProbe(page);
+    const vc0 = await viewControls(page);
+    const sig0 = await paintSignature(page, CONFIG.sourceId);
+    check('it opens on payment months, with the swatches legend and no '
+      + '?variable in the URL',
+    months0.monthsPressed === 'true' && months0.datePressed === 'false'
+      && vc0.legend.swatches === true && vc0.legend.wheel === false
+      && vc0.legend.bar === false && months0.params.variable === null,
+    JSON.stringify({ months: months0.monthsPressed, date: months0.datePressed,
+      legend: vc0.legend, param: months0.params.variable }));
+    check('the swatch rows name every step of the ramp in words, ending in the '
+      + 'two categories that are not months at all — eligible with no month '
+      + 'count, and not eligible this year',
+    iface.legend.items.every((t, i) => (months0.swatchLabels[i] || '').includes(t))
+      && (months0.swatchLabels[months0.swatchLabels.length - 1] || '')
+        .includes(iface.legend.noData),
+    JSON.stringify(months0.swatchLabels));
+
+    const clickedDate = await clickControl(page, iface.variables.date.sel);
+    await settleRepaint(page);
+    const onDate = await eligProbe(page);
+    const vcDate = await viewControls(page);
+    const sigDate = await paintSignature(page, CONFIG.sourceId);
+    check('the qualifying date is painted on the cyclic month wheel — the same '
+      + 'legend body the grazing periods use, because a date is a date',
+    clickedDate && vcDate.legend.wheel === true && vcDate.legend.swatches === false
+      && vcDate.legend.bar === false && onDate.legendWheelHasDrawing,
+    JSON.stringify({ clicked: clickedDate, legend: vcDate.legend,
+      drawing: onDate.legendWheelHasDrawing }));
+    check('switching variable repaints the map (a determination\'s date and its '
+      + 'payment months are two different pictures of one record)',
+    sigDate.hash !== sig0.hash,
+    `${sig0.colored} @${sig0.hash} → ${sigDate.colored} @${sigDate.hash}`);
+    check('?variable=date appears, and the pressed button follows it',
+      onDate.params.variable === 'date' && onDate.datePressed === 'true'
+        && onDate.monthsPressed === 'false', page.url());
+    check('the date legend\'s key says what the counties with no date on their '
+      + 'record are doing there — most 2008–2011 determinations carry none',
+    /does not carry|not recorded|undated|no date/i.test(vcDate.legend.key || ''),
+    JSON.stringify((vcDate.legend.key || '').slice(0, 240)));
+    check('the choice is remembered for the next visit '
+      + '(sfsa-ngp-variable-eligibility)',
+    onDate.stored.variable === 'date',
+    'stored ' + JSON.stringify(onDate.stored.variable));
+
+    await clickControl(page, iface.variables.months.sel);
+    await settleRepaint(page);
+    const backToMonths = await eligProbe(page);
+    const sigBack = await paintSignature(page, CONFIG.sourceId);
+    check('going back to payment months drops ?variable and restores that paint '
+      + 'bit for bit — the toggle is a restore, not a rebuild',
+    backToMonths.params.variable === null && sigBack.hash === sig0.hash,
+    `${sigBack.colored} @${sigBack.hash} vs ${sig0.colored} @${sig0.hash} — `
+      + `?variable=${JSON.stringify(backToMonths.params.variable)}`);
+    clean('eligibility variable toggle');
+    await shot('22c-elig-date');
+  }
+
+  /* ── 11d. All types (worst case) ────────────────────────────────────────
+     A sentinel, not a pasture type: the eligibility question a producer asks is
+     usually about one forage type, but the question a reader asks of a map is
+     "was this county eligible at all". Measured on the published payload at
+     program year 2024: 1,022 counties are eligible under some type against 626
+     under Native Pasture, and 449 counties' best determination differs. So this
+     is a different map, and the counts have to move. */
+  section('▸ LFP eligibility — all types (worst case)');
+  {
+    const before = await eligProbe(page);
+    const sigOne = await paintSignature(page, CONFIG.sourceId);
+    const oneType = await iface.eligibleOracle(page);
+    const chosen = await selectOption(page, iface.type.selectSel, iface.type.all.slug);
+    await settleRepaint(page);
+    const after = await eligProbe(page);
+    const sigAll = await paintSignature(page, CONFIG.sourceId);
+    const allTypes = await iface.eligibleOracle(page);
+    check('the pasture-type select offers the payload\'s fifteen types PLUS the '
+      + 'all-types sentinel, and the sentinel is first',
+    after.typeOptions.length === iface.type.count + 1
+      && /all types/i.test(after.typeOptions[0].label),
+    JSON.stringify({ n: after.typeOptions.length,
+      first: after.typeOptions[0] || null }));
+    check('choosing "all types (worst case)" repaints the map onto every '
+      + 'determination a county has, which is a wider map than any one type',
+    chosen !== null && sigAll.hash !== sigOne.hash
+      && sigAll.colored > sigOne.colored,
+    chosen === null ? `no option matched ${iface.type.all.slug}`
+      : `${sigOne.colored} @${sigOne.hash} → ${sigAll.colored} @${sigAll.hash}`);
+    if (typeof oneType === 'number' && typeof allTypes === 'number') {
+      check('…and the reduction behind it really is the best across types, not '
+        + 'one type relabelled',
+      allTypes > oneType, `${oneType} counties under `
+        + `${JSON.stringify(before.typeValue)} → ${allTypes} across all types`);
+    } else {
+      skip('the all-types reduction against the data',
+        String(typeof oneType === 'number' ? allTypes : oneType));
+    }
+    check(`?type=${iface.type.all.slug} carries the sentinel — a link to the `
+      + 'worst-case map has to reproduce the worst-case map',
+    after.params.type !== null
+      && after.params.type === iface.type.all.slug, page.url());
+
+    await selectOption(page, iface.type.selectSel, iface.type.default);
+    await settleRepaint(page);
+    const home = await eligProbe(page);
+    const sigHome = await paintSignature(page, CONFIG.sourceId);
+    check(`going back to ${iface.type.default} drops ?type at its default and `
+      + 'restores that paint bit for bit',
+    home.params.type === null && sigHome.hash === sigOne.hash,
+    `${sigHome.colored} @${sigHome.hash} vs ${sigOne.colored} @${sigOne.hash} — `
+      + `?type=${JSON.stringify(home.params.type)}`);
+    clean('eligibility all types');
+    await shot('22d-elig-all-types');
+  }
+
+  /* ── 11e. A record that ends before the app's default year ──────────────
+     The FOIA archive's last program year is 2025 and the app's shared default
+     year is 2026, so this is not a hypothetical: every arrival on this view
+     from a default boot moves the visitor. The rule the app already follows for
+     the drought monitor applies — clamp, and SAY SO — with one addition, because
+     "2026 is outside this dataset" has a reason a reader deserves: FSA has not
+     published those determinations yet. Both ceilings are read from the live
+     decoder; the assertion is the inequality, not a literal, because the FOIA
+     archive gains a program year every spring. */
+  section('▸ LFP eligibility — the FOIA archive stops before the current year');
+  {
+    const seqWeb = await viewSeq(page);
+    await clickControl(page, DS.web.sel);
+    await awaitViewSeq(page, seqWeb);
+    const webYears = await dataYears(page);
+    const webVc = await viewControls(page);
+    const webSnap = await snapshot(page);
+    check('the weekly web archive re-authors the slider to its own record '
+      + `(${iface.yearDomain.min}–${webYears.max}, read from the payload)`,
+    webSnap.state.dataset === DS.web.id
+      && webVc.yearMin === String(iface.yearDomain.min)
+      && webVc.yearMax === String(webYears.max) && webVc.yearDisabled === false,
+    JSON.stringify({ dataset: webSnap.state.dataset,
+      slider: [webVc.yearMin, webVc.yearMax], data: webYears }));
+
+    await slideYear(page, webYears.max);
+    await settleVintage(page);
+    const atLatest = await snapshot(page);
+    check(`${webYears.max} is reachable on the weekly archive — it is the year `
+      + 'FSA is publishing right now',
+    atLatest.state.year === webYears.max,
+    'state.year is ' + atLatest.state.year);
+
+    const saidBefore = await liveText(page);
+    const seqOff = await viewSeq(page);
+    await clickControl(page, DS.official.sel);
+    await awaitViewSeq(page, seqOff);
+    const offYears = await dataYears(page);
+    const offVc = await viewControls(page);
+    const offSnap = await snapshot(page);
+    /* The clamp announcement is DEFERRED by the app (deferAnnounce, ~350 ms
+       of rest) so the reader hears one composed sentence instead of two in a
+       row. Reading the region at seq-bump time races that timer — poll until
+       the sentence lands or 1.8 s passes, and let the check judge whatever
+       the region holds then. */
+    let saidAfter = await liveText(page);
+    for (let i = 0; i < 15 && (saidAfter === saidBefore
+      || !iface.yearDomain.officialSays.test(saidAfter)); i++) {
+      await page.waitForTimeout(120);
+      saidAfter = await liveText(page);
+    }
+    check('switching to the FOIA archive CLAMPS the year to the last one it '
+      + `covers (${offYears.max}), and re-authors the slider's ceiling with it`,
+    typeof offYears.max === 'number' && offYears.max < webYears.max
+      && offSnap.state.year === offYears.max
+      && offVc.year === String(offYears.max)
+      && offVc.yearMax === String(offYears.max),
+    JSON.stringify({ webMax: webYears.max, officialMax: offYears.max,
+      year: offSnap.state.year, slider: [offVc.yearMin, offVc.yearMax] }));
+    check('…and the clamp is ANNOUNCED with its reason: the live region changed, '
+      + 'names the year the app moved to, and says that FSA has not published '
+      + 'the year the visitor asked for',
+    saidAfter !== saidBefore && saidAfter.includes(String(offYears.max))
+      && iface.yearDomain.clampSays.test(saidAfter)
+      && iface.yearDomain.officialSays.test(saidAfter),
+    `live region says ${JSON.stringify(saidAfter.slice(0, 240))} — it must name `
+      + `${offYears.max} and match ${iface.yearDomain.officialSays}`);
+
+    const seqBack2 = await viewSeq(page);
+    await clickControl(page, DS.web.sel);
+    await awaitViewSeq(page, seqBack2);
+    const backVc = await viewControls(page);
+    const backSnap = await snapshot(page);
+    check('going back to the weekly archive re-authors the wider ceiling again, '
+      + 'and the clamped year stays clamped — the app moved the visitor once, '
+      + 'not twice',
+    backSnap.state.dataset === DS.web.id
+      && backVc.yearMax === String(webYears.max)
+      && backSnap.state.year === offYears.max
+      && offYears.max < webYears.max,
+    JSON.stringify({ dataset: backSnap.state.dataset, max: backVc.yearMax,
+      year: backSnap.state.year }));
+    const seqOff2 = await viewSeq(page);
+    await clickControl(page, DS.official.sel);
+    await awaitViewSeq(page, seqOff2);
+    clean('eligibility year ceiling');
+  }
+
+  /* ── 11f. The era with holes in it ──────────────────────────────────────
+     2008–2011 is two different gaps in two archives, and the ramp's index-0
+     slate is what both of them look like on the map. On the FOIA archive the
+     era's determinations carry payment months but no qualifying date: the
+     response reported when the drought BEGAN, not when a tier was satisfied,
+     and for the duration tiers no satisfaction date is recoverable. So colour
+     that era by date and the counties with nothing to place on the wheel take
+     the slate — measured, 98 of the 247 counties with a 2010 Native Pasture
+     determination — and the card has to say so in words rather than printing an
+     empty row or an invented date. */
+  section('▸ LFP eligibility — 2008–2011, when the record carries no date');
+  {
+    const U = iface.undated;
+    await slideYear(page, U.year);
+    await settleVintage(page);
+    await clickControl(page, iface.variables.date.sel);
+    await settleRepaint(page);
+    const snap = await snapshot(page);
+    const ramp = await dfRamp(page, iface.ramp.path);
+    const hist = await paintHistogram(page, CONFIG.sourceId);
+    const dateless = await iface.datelessOracle(page);
+    check(`setup: the FOIA archive at ${U.year}, coloured by qualifying date`,
+      snap.state.year === U.year && snap.state.variable === 'date'
+        && snap.state.dataset === U.dataset,
+      JSON.stringify({ year: snap.state.year, variable: snap.state.variable,
+        dataset: snap.state.dataset }));
+    if (!Array.isArray(ramp)) {
+      skip('the undated era takes the ramp\'s index-0 slate',
+        `${iface.ramp.path} could not be read from the page`);
+    } else {
+      check(`the drought-factor ramp is the ${iface.ramp.steps} colours this `
+        + 'view needs — five payment months and one categorical step for a '
+        + 'determination with no month count',
+      ramp.length === iface.ramp.steps
+        && ramp.every((c) => /^#[0-9a-f]{6}$/.test(c)),
+      JSON.stringify(ramp));
+      const slate = ramp[0];
+      const painted = hist[slate] || 0;
+      if (typeof dateless !== 'number') {
+        skip('the undated counties take the slate', String(dateless));
+      } else {
+        check('every county whose best determination carries no date takes the '
+          + `ramp's index-0 slate (${slate}) and no other county does — a date `
+          + 'the record does not have is not a date to invent',
+        painted > 0 && painted === dateless,
+        `${painted} counties painted ${slate}, ${dateless} dateless AND drawn `
+          + `(${await iface.datelessAllOracle(page)} dateless in the reduction, `
+          + `polygon or not); histogram ${JSON.stringify(hist)}`);
+      }
+    }
+
+    /* And the card, on one of the counties that has no date to show. */
+    let saidIt = null;
+    for (const id of U.probeCounties) {
+      /* eslint-disable no-await-in-loop */
+      const ok = await page.evaluate(async (countyId) => {
+        const app = await import(new URL('js/app.js', document.baseURI).href);
+        app.ngpContext().selectCounty(countyId);
+        return true;
+      }, id).catch(() => false);
+      if (!ok) continue;
+      await page.waitForFunction(
+        () => !document.getElementById('county-card').hidden,
+        null, { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      const text = await page.evaluate(
+        () => (document.getElementById('card-rows').textContent || '').trim());
+      if (U.says.test(text)) { saidIt = { id, text }; break; }
+      saidIt = saidIt || { id, text };
+      /* eslint-enable no-await-in-loop */
+    }
+    check('the card SAYS the date is not on the record, in words, rather than '
+      + 'leaving the row empty',
+    !!saidIt && U.says.test(saidIt.text),
+    saidIt ? `county ${saidIt.id} card reads ${JSON.stringify(saidIt.text.slice(0, 200))}`
+      : 'none of the probe counties could be selected');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await shot('22e-elig-undated');
+    clean('eligibility undated era');
+
+    /* Put the view back where the template found it: the default variable, the
+       year it arrived on (which is the clamped one), and the FOIA archive. */
+    await clickControl(page, iface.variables.months.sel);
+    await settleRepaint(page);
+    await slideYear(page, entryYear);
+    await settleVintage(page);
+    const restored = await snapshot(page);
+    check('setup: the view is back on payment months at the year the section '
+      + 'arrived on, so the card, table and poster below read a real '
+      + 'determination',
+    restored.state.year === entryYear && restored.state.variable === 'months',
+    JSON.stringify({ year: restored.state.year,
+      variable: restored.state.variable, wanted: entryYear }));
+  }
+}
+
+section('▸ View eligibility — LFP eligibility, end to end');
+{
+  /* A FRESH context, opened for downloads so the template's export step runs,
+     and the boot resource list read BEFORE anything is switched. */
+  const s = await open({ downloads: true });
+  check('the eligibility page reaches ngpReady on the boot payload', s.ready);
+  s.clean('eligibility section boot');
+  const bootResources = await resourceNames(s.page);
+  await verifyInterfaceSection(ELIG, {
+    session: s, bootResources, extraChecks: eligExtraChecks,
+  });
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   12. DEEP LINK ?view=eligibility&year=2024&type=native-pasture&county=30063
+
+   A determination, shared. Every param honoured on LOAD rather than by
+   replaying the clicks that would have produced it — and the card is the point
+   here: the whole ladder of one real determination, measured against the
+   published payload rather than described.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section(`▸ Deep link ${ELIG.deepLink}`);
+{
+  const E = ELIG.deepLinkExpect;
+  const s = await open({ query: ELIG.deepLink });
+  const { page } = s;
+  check('the deep-linked eligibility page reaches ngpReady', s.ready);
+
+  const snap = await snapshot(page);
+  const vc = await viewControls(page);
+  const p = await eligProbe(page);
+  const years = await dataYears(page);
+  const card = await page.evaluate(() => ({
+    open: !document.getElementById('county-card').hidden,
+    title: (document.getElementById('card-title').textContent || '').trim(),
+    terms: Array.from(document.querySelectorAll('#card-rows dt'))
+      .map((n) => (n.textContent || '').trim()),
+    values: Array.from(document.querySelectorAll('#card-rows dd'))
+      .map((n) => (n.textContent || '').trim()),
+    figure: !!document.querySelector('#card-content figure svg'),
+    caption: (document.querySelector('#card-content figcaption')?.textContent || '').trim(),
+    twinRows: document.querySelectorAll('#card-content details tbody tr').length,
+  }));
+
+  check('?view=eligibility boots straight onto the eligibility view: the marker, '
+    + 'the pressed switcher button, and only its own drawer sections',
+  snap.markers.ngpView === ELIG.slug && snap.state.view === ELIG.slug
+    && vc.views.length === 1 && vc.views[0] === ELIG.slug
+    && vc.sections.every((sec) => (sec.view === ELIG.slug) === !sec.hidden),
+  JSON.stringify({ marker: snap.markers.ngpView, pressed: vc.views,
+    sections: vc.sections }));
+  check(`the year is ${E.year}, inside the FOIA archive's own domain `
+    + `(${ELIG.yearDomain.min}–${years.max}), on the ${E.vintage} boundaries `
+    + 'that were in force for it',
+  vc.year === String(E.year) && vc.yearMin === String(ELIG.yearDomain.min)
+    && snap.vintage === E.vintage && snap.state.year === E.year,
+  JSON.stringify({ year: vc.year, domain: [vc.yearMin, vc.yearMax],
+    vintage: snap.vintage }));
+  check('the pasture-type slug resolved against the eligibility dictionary — a '
+    + 'slug means whatever the ACTIVE view\'s dictionary says it means',
+  snap.state.type === E.type, JSON.stringify(snap.state.type));
+  check('the three defaults stay out of a deep link: no ?dataset for the FOIA '
+    + 'archive, no ?variable for payment months, and no ?source at all (there '
+    + 'is no aggregation to name on an FSA determination)',
+  p.params.dataset === null && p.params.variable === null
+    && p.params.source === null, page.url());
+  check('the swatches legend is the visible body, and neither continuous one is',
+    vc.legend.swatches === true && vc.legend.wheel === false
+      && vc.legend.bar === false, JSON.stringify(vc.legend));
+  check(`the card is open on the linked county and reads out the whole ladder of `
+    + `one real determination — ${E.event}, qualifying ${E.date}, `
+    + `${E.months} payment months against a cap of ${E.mepm}`,
+  card.open && card.title.includes(ELIG.county.name)
+    && card.values.some((v) => v.includes(E.event))
+    && card.values.some((v) => v.includes(E.date))
+    && card.values.some((v) => new RegExp(`\\b${E.months}\\b`).test(v)),
+  JSON.stringify({ title: card.title, terms: card.terms, values: card.values }));
+  check('the card\'s picture is drawn and carries its accessible twin — a bar '
+    + 'per program year, and the same years in a table',
+  card.figure && card.caption.length > 20 && card.twinRows > 5,
+  JSON.stringify({ figure: card.figure, caption: card.caption.slice(0, 160),
+    twinRows: card.twinRows }));
+  const painted = await paintSignature(page, CONFIG.sourceId);
+  const expect = await ELIG.paintOracle(page);
+  if (typeof expect === 'number') {
+    check('the choropleth painted for the deep-linked year and type, county for '
+      + 'county', painted.colored === expect,
+    `${painted.colored} painted, ${expect} expected`);
+  } else {
+    skip('the deep-linked determination painted the counties it reaches',
+      String(expect));
+  }
+  s.clean('eligibility deep link');
+  await s.shot('23-elig-deep-link');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   13. ?variable= IS VALIDATED AGAINST THE ACTIVE VIEW'S REGISTRY.
+
+   Two views now paint different variables of different data, and `?variable=`
+   is one param. `duration` is a grazing period's length in weeks and means
+   nothing to a determination; `months` is a payment count and means nothing to
+   a grazing period. Neither may be accepted by the view that does not have it —
+   an unrecognised variable that survives validation paints a blank map under a
+   legend for a scale nobody selected — and neither may be REJECTED by the view
+   that does, which is the half a one-way check would miss.
+
+   The app warns on the console when it drops a value it cannot use; a warning
+   is not an error, so the console-clean gate deliberately does not police it.
+   What is asserted here is the observable fallback.
+
+   The POSITIVE case for each view is asserted elsewhere, which is what keeps
+   these two checks from passing on an app that simply ignores `?variable=`: §2's
+   deep link boots the grazing periods on `?variable=start` and holds the wheel
+   to it, and §11c drives eligibility onto `?variable=date` through its own seg
+   button and back again.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ ?variable= belongs to the view that has it');
+{
+  const NGP = CONFIG.interfaces.ngp;
+  const alien = ELIG.variables.alien;
+  const s = await open({ query: `?view=${ELIG.slug}&variable=${alien}` });
+  const snap = await snapshot(s.page);
+  const vc = await viewControls(s.page);
+  const p = await eligProbe(s.page);
+  check(`?variable=${alien} on the eligibility view falls back to its own `
+    + `default (${ELIG.variables.default}) instead of painting a scale this `
+    + 'view does not have',
+  snap.state.view === ELIG.slug
+    && snap.state.variable === ELIG.variables.default
+    && vc.legend.swatches === true && p.monthsPressed === 'true',
+  JSON.stringify({ view: snap.state.view, variable: snap.state.variable,
+    legend: vc.legend, pressed: p.monthsPressed }));
+  check('…and the value it could not use is gone from the URL rather than left '
+    + 'there to be shared again',
+  !new URL(s.page.url()).searchParams.has('variable'), s.page.url());
+  s.clean('alien variable on eligibility');
+  await s.ctx.close();
+
+  const s2 = await open({ query: '?variable=months' });
+  const snap2 = await snapshot(s2.page);
+  const vc2 = await viewControls(s2.page);
+  check('and the same in reverse: ?variable=months on the grazing periods falls '
+    + 'back to duration — that view keeps its own three variables, none of '
+    + 'which is a payment count',
+  snap2.state.view === NGP.slug && snap2.state.variable === 'duration'
+    && vc2.legend.bar === true && vc2.legend.swatches === false,
+  JSON.stringify({ view: snap2.state.view, variable: snap2.state.variable,
+    legend: vc2.legend }));
+  check('…and that value is gone from the URL too — a param the app could not '
+    + 'use is not a param to keep',
+  !new URL(s2.page.url()).searchParams.has('variable'), s2.page.url());
+  s2.clean('alien variable on the grazing periods');
+  await s2.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   14. THREE VIEWS, THREE MEMORIES — an excursion changes nothing it did not
+   touch, now across all three.
+
+   §10 proved this for two. The third view is the one that tests it properly,
+   because it has four pieces of state of its own (archive, aggregation, pasture
+   type, variable) and because the middle of a three-stop trip is where a
+   "remember the last view" implementation passes a two-view test and loses the
+   first view's state on the way home.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Three views, three memories');
+{
+  const NGP = CONFIG.interfaces.ngp;
+  const USDM = CONFIG.interfaces.usdm;
+  const s = await open();
+  const { page } = s;
+  check('the three-view page reaches ngpReady', s.ready);
+
+  /* 1 · Put the grazing periods somewhere no default could be mistaken for. */
+  await slideYear(page, 2012);
+  await settleVintage(page);
+  await page.locator('#btn-var-start').click();
+  await page.waitForTimeout(300);
+  const seq0 = await viewSeq(page);
+  await clickControl(page, NGP.datasets.nclimgrid.sel);
+  await awaitViewSeq(page, seq0);
+  const ngpBefore = await viewControls(page);
+  const ngpSnapBefore = await snapshot(page);
+
+  /* 2 · The drought monitor, on its own dataset and its own week. */
+  const seq1 = await viewSeq(page);
+  const toUsdm = await clickControl(page, USDM.switchSel);
+  const onUsdm = toUsdm && await awaitViewSeq(page, seq1);
+  const seq2 = await viewSeq(page);
+  await clickControl(page, USDM.datasets.reported.sel);
+  await awaitViewSeq(page, seq2);
+  await scrubWeek(page, 8);
+  await settleWeek(page);
+  const usdmBefore = await weekProbe(page);
+
+  /* 3 · Eligibility, on all four of its own pieces of state. */
+  const seq3 = await viewSeq(page);
+  const toElig = await clickControl(page, ELIG.switchSel);
+  const onElig = toElig && await awaitViewSeq(page, seq3);
+  const seq4 = await viewSeq(page);
+  await clickControl(page, ELIG.datasets.derived.sel);
+  await awaitViewSeq(page, seq4);
+  const conv = ELIG.source.conventions[1];
+  await selectOption(page, ELIG.source.selectSel, conv.id);
+  await settleRepaint(page);
+  await selectOption(page, ELIG.type.selectSel, ELIG.type.all.slug);
+  await settleRepaint(page);
+  await clickControl(page, ELIG.variables.date.sel);
+  await settleRepaint(page);
+  const eligBefore = await eligProbe(page);
+  const eligSnapBefore = await snapshot(page);
+  check('setup: all three views are somewhere distinctive — the grazing periods '
+    + 'on the climatology coloured by season start, the drought monitor on the '
+    + 'NDMC-reported set at week 8, and eligibility on the derived archive\'s '
+    + `${conv.label} aggregation, all types, coloured by date`,
+  onUsdm && onElig && ngpBefore.datasets[0] === 'nclimgrid'
+    && eligSnapBefore.state.dataset === 'derived'
+    && eligSnapBefore.state.variable === 'date'
+    && eligBefore.params.source !== null,
+  JSON.stringify({ onUsdm, onElig, ngp: ngpBefore.datasets,
+    elig: eligBefore.params }));
+  check('while eligibility is on screen the URL carries ITS params and nobody '
+    + 'else\'s — no ?week from the drought monitor, and ?dataset naming the '
+    + 'archive this view is reading',
+  eligBefore.params.week === null && eligBefore.params.dataset === 'derived'
+    && eligBefore.params.view === ELIG.slug, page.url());
+
+  /* 4 · Home the long way round: eligibility → drought monitor → grazing
+         periods, then back out to eligibility. Each stop has to be the state
+         its own visitor left, not the state the previous stop implies. */
+  const seq5 = await viewSeq(page);
+  await clickControl(page, USDM.switchSel);
+  await awaitViewSeq(page, seq5);
+  const usdmAgain = await weekProbe(page);
+  check('the drought monitor comes back to the county set and the week it was '
+    + 'left on, two stops later',
+  usdmAgain.datasetParam === 'reported'
+    && usdmAgain.weekParam === usdmBefore.weekParam
+    && !!weekNumber(usdmBefore.out)
+    && weekNumber(usdmAgain.out)?.n === weekNumber(usdmBefore.out)?.n,
+  JSON.stringify({ dataset: usdmAgain.datasetParam,
+    week: [usdmBefore.weekParam, usdmAgain.weekParam] }));
+
+  const seq6 = await viewSeq(page);
+  await clickControl(page, NGP.switchSel);
+  await awaitViewSeq(page, seq6);
+  const ngpAgain = await viewControls(page);
+  const ngpSnapAgain = await snapshot(page);
+  check('the grazing periods come back exactly as they were left — the '
+    + 'climatology, its own season dictionary, the start variable and the '
+    + 'disabled year slider under its note — after an excursion through two '
+    + 'other views',
+  ngpAgain.datasets[0] === 'nclimgrid' && ngpAgain.type === ngpBefore.type
+    && ngpAgain.types.length === ngpBefore.types.length
+    && ngpSnapAgain.state.variable === 'start'
+    && ngpAgain.yearDisabled === true && ngpAgain.noteShown,
+  JSON.stringify({ dataset: ngpAgain.datasets, type: ngpAgain.type,
+    variable: ngpSnapAgain.state.variable, disabled: ngpAgain.yearDisabled }));
+  check('…and the shared year is still the visitor\'s: 2012, set before any of '
+    + 'this and inside every view\'s domain, was never moved',
+  ngpSnapAgain.state.year === 2012 && ngpSnapBefore.state.year === 2012,
+  `${ngpSnapBefore.state.year} → ${ngpSnapAgain.state.year}`);
+
+  const seq7 = await viewSeq(page);
+  await clickControl(page, ELIG.switchSel);
+  await awaitViewSeq(page, seq7);
+  const eligAgain = await eligProbe(page);
+  const eligSnapAgain = await snapshot(page);
+  check('and eligibility remembers all FOUR of its own pieces of state — the '
+    + 'derived archive, the aggregation inside it, the all-types sentinel and '
+    + 'the date variable',
+  eligSnapAgain.state.dataset === 'derived'
+    && eligAgain.params.source === eligBefore.params.source
+    && eligAgain.params.type === ELIG.type.all.slug
+    && eligSnapAgain.state.variable === 'date'
+    && eligAgain.datePressed === 'true',
+  JSON.stringify({ before: eligBefore.params, again: eligAgain.params,
+    variable: eligSnapAgain.state.variable }));
+  s.clean('three views, three memories');
+  await s.shot('24-three-views');
   await s.ctx.close();
 }
 
