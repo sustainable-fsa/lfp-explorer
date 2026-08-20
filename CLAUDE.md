@@ -49,3 +49,50 @@ Specifics that bite in this repo:
   the `MutationObserver` on `#card-rows` in `js/card-content.js` are written
   against those ids. The kit's `dock-right` / bottom-sheet geometries are
   CSS-only for exactly that reason.
+- **Every `loadCounties()` result must pass through `projectCounties()`**
+  (`js/projection.js`) before anything touches it — the map renders a dummy
+  EPSG:5070 space, not lng/lat. Both existing call sites (boot and the 2015
+  vintage swap) already do; a new one that forgets will draw a second, tiny
+  geographic country near (0,0). Bounds are `PROJECTED_BOUNDS`, never the
+  kit's `COMPOSITE_BOUNDS`; `?lng`/`?lat`/`?zoom` are dummy-space positions.
+  The why, the reference table, and the rescale constants live in the
+  `js/projection.js` header.
+
+## Where we left off (2026-08-19)
+
+Everything below is **shipped, green, and live** (verify.mjs 159/159; axe
+clean across 2 themes × 2 viewports × 7 states; CI passing; production
+deployed):
+
+- The two-drawer layout, adopted from mt-climate-office/mesonet-explorer via
+  **style kit v0.2.0** (this app is the kit drawer's pilot consumer): left
+  controls drawer (search/year/type/color-by/legend; desktop column that
+  resizes the map, compact off-canvas overlay + scrim), right-docked county
+  card (`dock-right`; unchanged bottom sheet on compact).
+- The data payload is fetched at runtime from the archive repo's Pages copy
+  (this repo ships no data); CI curls it into the sibling slot
+  (`.github/workflows/audit.yaml`).
+- **Reveal-push**: selecting a county the docked card would obscure stamps
+  `.card-pushes` — the canvas gives up the dock's width and re-fits at the
+  floor, or pans the residual when zoomed in. A pure camera pan cannot do
+  this (the maxBounds cage clamps it); see `revealSelectedCounty()`.
+- **EPSG:5070 rendering** via client-side pre-projection (see the bullet
+  above). Camera deep links minted before 2026-08-19 re-frame; accepted.
+
+Open threads, in rough priority order:
+
+1. **fsa-lfp-eligibility-web drawer adoption** — the kit's named second
+   drawer consumer (style CONSUMERS.md: "control relocation into a drawer"
+   for its dependent controls). The kit surface is released and proven here.
+2. **Compact reveal is best-effort only**: the bottom sheet gets a
+   mesonet-style pan, which the bounds cage clamps at the fit floor. A
+   vertical push (`#map { bottom: var(--sheet-h) }` + resize, mirroring the
+   desktop push) is the symmetric fix if it ever matters on phones.
+3. **Archive-side projected artifact (optional)**: fsa-counties-dd17/dd22
+   already build the composite in Albers (`tigris::shift_geometry`,
+   ESRI:102003) and unproject one line before publishing. Publishing a
+   projected TopoJSON and pointing the kit's `BOUNDARY_URLS` at it (kit
+   v0.2.1+) would move the projection from `js/projection.js` into the data.
+   Client-side is a lossless inverse, so this is lineage hygiene, not a fix.
+4. `tools/AUDIT-CHECKLIST.md`'s three manual passes have not been walked
+   since the restructure (the automated gates have).
