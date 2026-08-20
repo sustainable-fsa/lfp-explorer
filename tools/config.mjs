@@ -20,9 +20,11 @@
    ("interface", in the plan's language) to four, each with its own datasets,
    legend body, export filename scheme and deep link. Every harness fact about
    a view lives in one entry here, so adding a view to the gates is adding a
-   literal — not editing assertions scattered through 1,700 lines. PR 1 ships
-   the `ngp` entry only; the fields the PR 2+ section template consumes are
-   named and documented now so the shape is not invented four times.
+   literal — not editing assertions scattered through 1,700 lines. Three of the
+   four are here (`ngp`, `usdm`, `eligibility`), and the shape has now survived
+   two additions: what a new view needs is its own entry plus one call to the
+   section template, and what it must NOT need is a new assertion in a place a
+   reader would not look for it.
 
    Ids, slugs and filenames in this file are FROZEN CONTRACT with the app: they
    are the same strings index.html authors and js/app.js reads. Change one here
@@ -130,8 +132,8 @@ export const MARKERS = Object.freeze({
    ══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Everything the gates know about a view. PR 1 ships `ngp`; `usdm`,
- * `eligibility` and `disasters` land with their own PRs.
+ * Everything the gates know about a view. `ngp`, `usdm` and `eligibility` are
+ * here; `disasters` lands with its own PR.
  *
  * Fields:
  *   slug        `?view=` value. The default view emits NO param at all.
@@ -169,6 +171,9 @@ export const MARKERS = Object.freeze({
  *               the format its <output> owes a reader.
  *   unmatchedOracle async (page) → how many source areas this view's join
  *               cannot reach, for the count the live region must say out loud.
+ *   lazyAssets  committed repo assets this view loads WITH the view rather than
+ *               at boot (a second colour ramp). The lazy-boot assertion adds
+ *               them to the list of things the boot path must not have fetched.
  *   extraChecks the view's own controls (a week scrubber, a source picker),
  *               each followed by a repaint witness and a clean(). NULL here
  *               when those checks need the harness's own paint-signature and
@@ -367,6 +372,290 @@ export const INTERFACES = Object.freeze({
         fixture, the oracles — is in this entry. */
     extraChecks: null,
   }),
+
+  eligibility: Object.freeze({
+    slug: 'eligibility',
+    label: 'LFP eligibility',
+    isDefault: false,
+    switchSel: '#btn-view-eligibility',
+    sectionSel: '#view-seg',
+
+    /** MISSOULA AGAIN, and this time the choice needed checking rather than
+        asserting. The rule for this field is a county with data in every
+        boundary vintage; the rule for a THIRD view is also that the
+        three-interface state-memory round trip can only prove the selection is
+        the visitor's if all three views can show the same county.
+        `30063` clears both, but its eligibility record is thin and that is a
+        fact about the county, not a defect: FSA determined Missoula eligible in
+        six program years only — 2015, 2016, 2021, 2023, 2024 and 2025 — 11
+        Native Pasture events, 33 across all pasture types (measured against the
+        published payload 2026-08-20). It has NO 2012 determination, which is
+        why the deep link below is a 2024 one and not the 2012 the frozen
+        contract sketched: a deep link whose card reads "not eligible" would
+        assert the empty half of the card and nothing about a determination.
+
+        A card on an ineligible county-year is still a state worth auditing —
+        the section template lands on one at the app's clamped default year
+        whenever the type has no determination — and the descriptor owes it the
+        no-data facts in words. It is simply not what a DEEP LINK should be
+        pointed at. */
+    county: Object.freeze({ id: '30063', name: 'Missoula' }),
+
+    /* THREE ANSWERS, and here the three disagree about more than county keys:
+       what FSA determined (FOIA), what FSA published week by week (web), and
+       what the statute's own rule yields when it is recomputed from the Drought
+       Monitor (derived). All three are FSA-keyed — `counties` is a dictionary
+       of 5-character FSA ids and the parallel `fips` column indexes a SEPARATE
+       Census dictionary, so nothing here goes through the crosswalk. The fips
+       key is card provenance, not a join.
+
+       `events`/`sources` counts are measured, not assumed: the official archive
+       really does carry only five event codes, because the D2 split that
+       P.L. 119-21 introduced applies to program year 2026 and the FOIA response
+       stops at 2025. */
+    datasets: Object.freeze({
+      official: Object.freeze({
+        id: 'official',
+        isDefault: true,
+        label: 'FSA official (FOIA)',
+        sel: '#btn-elig-official',
+        payload: 'fsa-lfp-eligibility-events.json',
+        keySpace: 'fsa',
+        /** 105,719 events, 2,829 FSA counties, 5 event codes (D2 D3a D3b D4a
+            D4b), program years 2008–2025 — and it is the only one of the three
+            with a ceiling BELOW the app's shared default year, which is what
+            makes the clamp below a real path rather than a hypothetical. */
+        events: 5,
+        hasPayments: true,
+        /** MEASURED: 2,839 rows carry no qualifying date at all, every one of
+            them in 2008–2011 (2008: 465, 2009: 322, 2010: 271, 2011: 1,781).
+            The era's FOIA response reported when the drought BEGAN, not when a
+            tier was satisfied, so for the duration tiers no satisfaction date
+            is recoverable. Payment months, by contrast, are complete here: not
+            one of the 105,719 rows is missing `pf`. */
+        undatedRows: 2839,
+      }),
+      web: Object.freeze({
+        id: 'web',
+        isDefault: false,
+        label: 'FSA weekly web',
+        sel: '#btn-elig-web',
+        payload: 'fsa-lfp-eligibility-web-events.json',
+        keySpace: 'fsa',
+        /** 135,253 events, 2,904 FSA counties, 7 event codes (the five above
+            plus D2a_2026 and D2b_2026), program years 2008–2026. */
+        events: 7,
+        hasPayments: true,
+        /** MEASURED, and the exact mirror image of the official archive's gap:
+            every one of the 14,064 rows in 2008–2011 carries a qualifying DATE
+            and no payment months at all (`pf` and `mepm` both null). So the
+            ramp's index-0 chip — "eligible, months not stated" — is a WEB
+            phenomenon before 2012, and the undated slate is an OFFICIAL one.
+            Two different holes in the same four program years. */
+        monthlessRows: 14064,
+      }),
+      derived: Object.freeze({
+        id: 'derived',
+        isDefault: false,
+        label: 'Derived from USDM',
+        sel: '#btn-elig-derived',
+        payload: 'fsa-lfp-eligibility-derived.json',
+        keySpace: 'fsa',
+        events: 7,
+        /** NO `mepm`, NO `pf`: this archive carries the drought factor the
+            ladder awards and stops there, because the cap follows from the
+            grazing period alone. `df` here is therefore NOT the payable
+            amount, and the legend has to say so.
+            452,114 rows — one per county × year × type × EVENT × source — in an
+            11 MB payload, four times the size of either FSA one because it
+            holds all four aggregations side by side. It is the slowest
+            transition in the app; the switch waits on the app's own marker
+            with CONFIG.switchMs (30s) rather than on a timeout. */
+        hasPayments: false,
+        rows: 452114,
+        approxBytes: 11 * 1024 * 1024,
+      }),
+    }),
+
+    /** THE FOURTH CONTROL — visible only on `derived`, because only that
+        payload has a `sources` dictionary to choose from. The four conventions
+        are four defensible readings of "any area of the county", and the
+        archive publishes all four rather than picking one; the app defaults to
+        the same FSA-boundary convention the drought monitor defaults to, for
+        the same reason (it is the geometry this map draws).
+
+        `slug` is what `?source=` carries; the default is elided, and the param
+        is DROPPED — not remembered in the URL — the moment the dataset stops
+        being `derived`, because it would describe a control that is not on
+        screen (the same rule pushState() applies to ?type and ?week). */
+    source: Object.freeze({
+      wrapSel: '#elig-source-wrap',
+      selectSel: '#elig-source',
+      param: 'source',
+      default: 'usdm-counties-fsa-lfp',
+      conventions: Object.freeze([
+        Object.freeze({ id: 'usdm-counties-fsa-lfp', slug: 'usdm-counties-fsa-lfp', label: 'FSA LFP boundaries' }),
+        Object.freeze({ id: 'usdm-counties-reported', slug: 'usdm-counties-reported', label: 'NDMC reported' }),
+        Object.freeze({ id: 'usdm-counties-census-2020', slug: 'usdm-counties-census-2020', label: 'Census 2020' }),
+        Object.freeze({ id: 'usdm-counties', slug: 'usdm-counties', label: 'Census vintage-matched' }),
+      ]),
+      /** The payload's own order, which is what the decoder's `sources()` hands
+          back and what `source[]` indexes. Alphabetical, not the UI's order —
+          the select is free to present them most-relevant-first. */
+      payloadOrder: Object.freeze(['usdm-counties', 'usdm-counties-census-2020',
+        'usdm-counties-fsa-lfp', 'usdm-counties-reported']),
+    }),
+
+    /** The pasture-type control in this view's own terms. The dictionary is the
+        payload's 15 types, and the first option is a SENTINEL rather than a
+        type: "all types (worst case)" paints each county's best determination
+        across every type it has one for, which is a different map — measured at
+        program year 2024, 1,022 counties are eligible under some type against
+        626 under Native Pasture, and 449 counties' best differs. */
+    type: Object.freeze({
+      selectSel: '#elig-type-select',
+      default: 'Native Pasture',
+      defaultSlug: 'native-pasture',
+      count: 15,
+      all: Object.freeze({ slug: 'all-types', label: 'All types (worst case)' }),
+    }),
+
+    /** TWO VARIABLES, and this view's own registry rather than color.js's:
+        `months` is the payment months on the new drought-factor ramp, `date` is
+        the qualifying date on the same cyclic wheel the grazing periods use.
+        `?variable=` is validated against the ACTIVE view's registry, so
+        `duration` (a grazing-period variable) is not a value here and falls
+        back to the default with a console warning. */
+    variables: Object.freeze({
+      default: 'months',
+      months: Object.freeze({ sel: '#btn-elig-months', kind: 'swatches' }),
+      date: Object.freeze({ sel: '#btn-elig-date', kind: 'wheel' }),
+      segSel: '#elig-variable-seg',
+      /** A variable belonging to the OTHER view, used to assert the fallback in
+          both directions. */
+      alien: 'duration',
+    }),
+
+    /** Two legend bodies, one per variable — so `kinds`, like the grazing
+        periods, rather than the drought monitor's single `kind`.
+
+        `items` are the SUBSTRINGS each swatch row must contain, in order, with
+        the no-data chip last. Substrings and not the full copy on purpose: the
+        claim being gated is that every step of a colour ramp is also named in
+        words (colour is never the only channel), not that a designer never
+        rewrites a chip's punctuation. The index-0 chip is the categorical one —
+        eligible, with no month count on the record — and it must not read as a
+        sixth month. */
+    legend: Object.freeze({
+      kinds: Object.freeze({ months: 'swatches', date: 'wheel' }),
+      items: Object.freeze(['1 month', '2 months', '3 months', '4 months',
+        '5 months', 'months not stated']),
+      noData: 'Not eligible this year',
+    }),
+
+    /** 2008 is the first LFP program year and the floor of all three payloads.
+        THE CEILINGS ARE NOT LITERALS, and here that is load-bearing rather than
+        tidy: the web and derived archives already carry 2026, the FOIA archive
+        stops at 2025, and the whole point of the clamp is that ONE dataset's
+        ceiling is lower than the app's shared default year. Both numbers are
+        read from the live decoder, and the assertion is the inequality.
+
+        `clampSays` is inherited from the grazing periods' copy contract (a
+        clamp has to be said out loud, not merely happen); `officialSays` is
+        this view's extra: the announcement must also say WHY 2026 is not
+        available, which is that FSA has not published those determinations. */
+    yearDomain: Object.freeze({
+      min: 2008,
+      clampSays: /adjust|clamp|moved|nearest|closest|earliest|latest|instead|outside|out of|does not (?:cover|go|reach|have)|only (?:goes|covers|reaches)|has not|not (?:yet )?published|no (?:\d{4} )?determinations/i,
+      officialSays: /(?:has not|have not|not yet|no)\s+(?:\w+\s+){0,3}publish/i,
+    }),
+
+    /** The dataset id is in the filename because two datasets can produce the
+        same year, type and variable and mean different things; the source slug
+        is there only when there is a source to name (derived), which is what
+        the optional group encodes. */
+    exportName: /^fsa-lfp-eligibility_(official|web|derived)(_[a-z0-9-]+)?_\d{4}_[a-z0-9-]+_(months|date)\.png$/,
+
+    /** 2024 rather than 2012 — see `county` above. Every param here is one the
+        view must honour on load, and `?type=native-pasture` is deliberately a
+        DEFAULT: the app is expected to resolve it against the eligibility
+        dictionary and then drop it from the URL again. */
+    deepLink: '?view=eligibility&year=2024&type=native-pasture&county=30063',
+
+    /** What that link must produce, measured against the published official
+        payload (2026-08-20). Missoula's 2024 Native Pasture determination has
+        four events — D2 (Jul 9), D3a (Jul 16), D4a (Jul 23) and D4b (Aug 19) —
+        and the best of them under the one comparator this app uses is D4b.
+        Payment months are 5 and the cap did not bind (max eligible 5), so this
+        card shows the whole ladder cleanly: drought factor 5, cap 5, payable 5.
+        `months` is what the paint reads; `df`/`mepm` are the two rows beside it
+        that a derived-dataset card cannot show. */
+    deepLinkExpect: Object.freeze({
+      year: 2024, vintage: 'dd22', type: 'Native Pasture',
+      event: 'D4b', date: 'Aug 19, 2024', months: 5, df: 5, mepm: 5,
+      events: 4,
+    }),
+
+    /** THE UNDATED ERA, as a fixture. On the official archive at program year
+        2010, 247 FSA counties have a Native Pasture determination and 98 of
+        them — measured — have no qualifying date on their best event. Colour
+        the map by date and those 98 have nothing to place on the wheel, so they
+        take the ramp's index-0 slate and the card says so in words. The
+        counties named are three of the 98, any of which the probe may open. */
+    undated: Object.freeze({
+      dataset: 'official', year: 2010, variable: 'date',
+      type: 'Native Pasture', counties: 247, undatedBest: 98,
+      probeCounties: Object.freeze(['04015', '05027', '06035']),
+      says: /not recorded|no(?:t)? (?:date|qualifying date)|undated|does not carry/i,
+    }),
+
+    /** The drought-factor ramp: six steps, loaded WITH this view rather than at
+        boot (indexes 1–5 are the payment months, index 0 the categorical
+        "eligible, months not stated" slate). Named here so the lazy-boot
+        assertion can hold it to that, and so the undated probe can read the
+        slate's hex from the asset instead of hard-coding a colour the app owns. */
+    ramp: Object.freeze({ path: 'assets/colors-df.json', steps: 6 }),
+    lazyAssets: Object.freeze(['assets/colors-df.json']),
+
+    /** Row for row, EVERY qualifying event for the dataset, source, year and
+        type on screen — not the per-county reduction the map paints, which is
+        what `paintOracle` counts. Neither is a number typed here: at program
+        year 2024 on Native Pasture the official archive holds 1,134 events in
+        626 counties, at 2025 it holds 1,385 in 738, and the derived archive's
+        four conventions disagree with each other (3,821–3,833 events at 2012).
+        The oracle reads whichever of those the app is actually showing.
+
+        Under the all-types sentinel there is no single-type answer to give, so
+        the oracle returns a REASON and the harness names the skip — the
+        string/number convention documented in the field list above. */
+    tableOracle: async (page) => oracle(await eligJoin(page), 'events'),
+    paintOracle: async (page) => oracle(await eligJoin(page), 'painted'),
+    /** The four counts the live region and the undated probe read: how many FSA
+        counties the year's determinations reach at all (`eligible` — the
+        reduction's own size, polygon or not), how many of those reached four or
+        more payment months, how many carry a determination with NO month count
+        (the web archive's 2008–2011 gap), and how many carry one with no
+        qualifying DATE (the official archive's). The last two are different
+        sets in different datasets, and each is what the ramp's index-0 slate
+        means under one of the two variables. */
+    eligibleOracle: async (page) => oracle(await eligJoin(page), 'eligible'),
+    fourOracle: async (page) => oracle(await eligJoin(page), 'four'),
+    slateOracle: async (page) => oracle(await eligJoin(page), 'slate'),
+    /** Dateless counties that are also DRAWN — the count a colour histogram can
+        be compared against. `dateless` alone includes counties the composite has
+        no polygon for, and the difference between the two numbers is a boundary
+        archive's coverage rather than anything about the paint. */
+    datelessOracle: async (page) => oracle(await eligJoin(page), 'datelessPainted'),
+    datelessAllOracle: async (page) => oracle(await eligJoin(page), 'dateless'),
+
+    /** The three dataset toggles, the source select, the two variables, the
+        all-types sentinel, the 2026 clamp, the undated era and the
+        three-interface round trip are asserted in tools/verify.mjs § the LFP
+        eligibility view's own controls — they need that file's paint-signature,
+        marker and live-region probes, and this file must not assert. Every
+        selector, fixture and measured count they read is in this entry. */
+    extraChecks: null,
+  }),
 });
 
 /**
@@ -441,10 +730,120 @@ function usdmJoin(page) {
   });
 }
 
+/**
+ * The LFP eligibility reduction, counted independently of the descriptor that
+ * painted it — the oracle behind `tableOracle` and `paintOracle`.
+ *
+ * These payloads are FSA-keyed, so there is no crosswalk to re-implement and
+ * nothing to re-join: what this probe does instead is ask the live decoder for
+ * the (year, type, source) slice the app says is on screen and count it two
+ * ways. `painted` is the per-county reduction intersected with the geometry the
+ * map holds — the number of counties that may carry a colour. `events` is every
+ * qualifying event in that slice — the number of ROWS the table owes, which is a
+ * different and larger number, because a county whose drought deepened through
+ * the season reached several tiers and each one is a record.
+ *
+ * WHICH SLICE: the app's own selection, plus the source the view state names
+ * (only `derived` has sources; the other two payloads have no such dictionary
+ * and the decoder takes no index for them). The source is matched by name and
+ * then by slug, so it does not matter whether the app carries the archive's own
+ * id or a URL slug of it.
+ *
+ * NO SINGLE-TYPE ANSWER UNDER THE SENTINEL: "all types (worst case)" is not a
+ * member of the payload's dictionary, and the reduction it produces is one
+ * record per county drawn from up to fifteen types. `events` is therefore null
+ * there, which the oracle turns into a named skip rather than a comparison
+ * against a number that would mean something else.
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} defaultSource the documented default convention, used only
+ *   when the app is on `derived` and exposes no source of its own.
+ * @returns {Promise<object>} counts, or `{error}` if the view is not up yet.
+ */
+function eligJoin(page, defaultSource = 'usdm-counties-fsa-lfp') {
+  // A THROW IS AN ANSWER — see usdmJoin above for why every branch here comes
+  // back as data, including the failures.
+  return page.evaluate(async (fallbackSource) => {
+    try {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const c = app.ngpContext();
+      const data = typeof c.getData === 'function' ? c.getData() : null;
+      if (!data) return { error: 'the app has no active decoder' };
+      if (typeof data.getYearType !== 'function' || typeof data.events !== 'function') {
+        return { error: 'the active decoder is not an eligibility one (no events dictionary)' };
+      }
+      const sel = typeof c.getSelection === 'function' ? c.getSelection() : {};
+      const vs = typeof c.getViewState === 'function' ? c.getViewState() : {};
+      const idx = c.getCounties() ? c.getCounties().index : new Map();
+      const slug = (s) => String(s).toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+      const sources = typeof data.sources === 'function' ? (data.sources() || []) : [];
+      let sourceIdx;
+      if (sources.length) {
+        const want = sel.source ?? vs.source ?? fallbackSource;
+        sourceIdx = sources.findIndex((s) => s === want || slug(s) === slug(want));
+        if (sourceIdx < 0) {
+          return { error: `the source ${JSON.stringify(want)} is not one of `
+            + JSON.stringify(sources) };
+        }
+      }
+
+      const types = typeof data.types === 'function' ? (data.types() || []) : [];
+      const single = types.includes(sel.type);
+      let m;
+      try { m = data.getYearType(sel.year, sel.type, sourceIdx); }
+      catch (err) {
+        return { error: 'the reduction threw: ' + String(err).split('\n')[0] };
+      }
+      if (!m || typeof m.forEach !== 'function') {
+        return { error: 'getYearType did not hand back a Map' };
+      }
+
+      let painted = 0; let events = 0; let slate = 0; let four = 0;
+      let eligible = 0; let dateless = 0; let datelessPainted = 0;
+      for (const [id, rec] of m) {
+        eligible++;
+        const drawn = idx.has(id);
+        if (drawn) painted++;
+        if (rec && Array.isArray(rec.events)) events += rec.events.length;
+        const best = rec && rec.best;
+        if (best) {
+          if (best.months === null || best.months === undefined) slate++;
+          else if (best.months >= 4) four++;
+          if (best.date === null || best.date === undefined) {
+            dateless++;
+            if (drawn) datelessPainted++;
+          }
+        }
+      }
+      return {
+        eligible, painted, slate, four, dateless, datelessPainted,
+        events: single ? events : null,
+        singleType: single, type: sel.type ?? null, year: sel.year ?? null,
+        dataset: sel.dataset ?? vs.dataset ?? null,
+        source: sources.length ? sources[sourceIdx] : null,
+        geometry: idx.size,
+      };
+    } catch (err) {
+      return {
+        error: 'the reduction threw inside the app: ' + String(err).split('\n')[0],
+      };
+    }
+  }, defaultSource);
+}
+
 /** An oracle's answer, or the reason there isn't one — the string/number
-    convention documented in the probe table's field list. */
+    convention documented in the probe table's field list. A null field is a
+    reason too: it means the app is in a state the oracle deliberately does not
+    speak for (the all-types sentinel), not that the count is zero. */
 function oracle(join, field) {
-  return join.error ? join.error : join[field];
+  if (join.error) return join.error;
+  if (join[field] === null || join[field] === undefined) {
+    return `no ${field} oracle for ${JSON.stringify(join.type)} — this count is `
+      + 'defined for one pasture type at a time';
+  }
+  return join[field];
 }
 
 /** The default view — the one whose slug is never emitted. */
@@ -454,10 +853,13 @@ export const DEFAULT_INTERFACE = Object.values(INTERFACES)
 /**
  * The FIPS↔FSA crosswalk: a committed repo asset, not a staged payload.
  *
- * FIPS-keyed payloads (nClimGrid here; USDM and disasters later) are joined
- * onto the FSA composite through this table, per vintage — dd17 and dd22 do
- * not hold the same county footprints, so a vintage swap re-joins. The pair
- * counts are the contract's: a legitimate archive rebuild that moves them
+ * FIPS-keyed payloads — the nClimGrid climatology and all three USDM county
+ * sets — are joined onto the FSA composite through this table, per vintage:
+ * dd17 and dd22 do not hold the same county footprints, so a vintage swap
+ * re-joins. The eligibility archives are deliberately NOT among them; they
+ * carry both keys already (an LFP determination is made against both), so that
+ * view paints FSA ids directly and reports the Census county as provenance. The
+ * pair counts are the contract's: a legitimate archive rebuild that moves them
  * means updating this literal in the same commit as the asset.
  */
 export const CROSSWALK = Object.freeze({

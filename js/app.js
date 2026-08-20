@@ -29,13 +29,17 @@
    moveend, and a view that is entirely at defaults emits a CLEAN url with no
    query string at all.
 
-     ?view   interface slug (ngp | usdm)
+     ?view   interface slug (ngp | usdm | eligibility)
      ?dataset the active view's own dataset id (ngp: fsa | nclimgrid;
-             usdm: fsa-lfp | reported | census)
+             usdm: fsa-lfp | reported | census;
+             eligibility: official | web | derived)
      ?year   2000–2026, narrowed to the ACTIVE view's own domain
      ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
-     ?variable start|end|duration ?kbd    off (disables the / shortcut)
+     ?source which county aggregation a dataset that publishes several is read
+             at (eligibility's derived archive; dropped on every other dataset)
+     ?variable the ACTIVE VIEW's own colour-by (ngp: start|end|duration;
+             eligibility: months|date)   ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
      ?lng ?lat ?zoom  camera (all three or none)
      ?theme  light | high-contrast
@@ -157,10 +161,20 @@ const LS = Object.freeze({
   year: 'sfsa-ngp-year',
   /** `sfsa-ngp-type` keeps its original meaning — the OFFICIAL payload's
       pasture type — and every other dataset gets a key of its own, because one
-      slug means different things to different dictionaries. */
+      slug means different things to different dictionaries. A family whose
+      datasets SHARE one dictionary (`typeScope: 'view'`) stores one type for
+      the whole interface instead, under its view slug. */
   type: 'sfsa-ngp-type',
-  typeFor: (dataset) => 'sfsa-ngp-type-' + dataset,
+  typeFor: (scope) => 'sfsa-ngp-type-' + scope,
+  /** Likewise the colour-by: `sfsa-ngp-variable` is the grazing periods' (it has
+      always held one of their three), and a family with a registry of its own
+      gets a key of its own — `duration` means nothing to a family that paints
+      payment months, and a stored value gets the same suspicion as a URL one. */
   variable: 'sfsa-ngp-variable',
+  variableFor: (view) => 'sfsa-ngp-variable-' + view,
+  /** Which reading of a dataset that publishes several — per interface, for the
+      same reason as the dataset key. */
+  source: (view) => 'sfsa-ngp-source-' + view,
   drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
 });
@@ -201,6 +215,12 @@ const els = {
   weekPrev: $('#btn-week-prev'),
   weekNext: $('#btn-week-next'),
   type: $('#type-select'),
+  /* The eligibility family's own three controls. Its type select is separate
+     because its options carry a sentinel ("All types") that is in no payload's
+     dictionary, and the shared select's checks are the grazing periods'. */
+  eligType: $('#elig-type-select'),
+  eligSource: $('#elig-source'),
+  eligSourceWrap: $('#elig-source-wrap'),
   segs: Array.from(document.querySelectorAll('.seg-btn[data-variable]')),
   viewBtns: Array.from(document.querySelectorAll('.seg-btn[data-view-btn]')),
   datasetBtns: Array.from(document.querySelectorAll('.seg-btn[data-dataset]')),
@@ -235,7 +255,7 @@ const els = {
     payload failed to load is the user's way out of the failure. A control that
     disables itself on error strands them there. */
 const dataControls = [
-  els.year, els.type, ...els.segs, els.search,
+  els.year, els.type, els.eligType, els.eligSource, ...els.segs, els.search,
   els.week, els.weekPrev, els.weekNext,
   els.btnTable, els.btnExport, els.btnShare,
 ];
@@ -289,6 +309,24 @@ const viewState = {
     dataset: 'fsa-lfp',
     week: null,
   },
+  /**
+   * LFP eligibility: which of the three archives is painted, which pasture type
+   * (ONE field, because all three share the fifteen-name dictionary — the
+   * descriptor says so with `typeScope: 'view'`), which of its two colour-by
+   * variables, and — for the derived archive alone — which of the four
+   * aggregation conventions.
+   *
+   * `source` is null until a payload can say which conventions exist; it is
+   * remembered across a toggle to another archive and back, and it is only ever
+   * emitted into the URL while the archive that has conventions is the one on
+   * screen.
+   */
+  eligibility: {
+    dataset: 'official',
+    type: DEFAULTS.type,
+    variable: 'months',
+    source: null,
+  },
 };
 
 let params = urlParams();
@@ -297,6 +335,7 @@ let pendingTypeSlug = null;     // held until the type dictionary exists
 let pendingDatasetId = null;    // held until the default dataset has painted
 let pendingViewId = null;       // held until the DEFAULT view has painted
 let pendingWeekParam = null;    // held until the week domain exists
+let pendingSourceSlug = null;   // held until the aggregation dictionary exists
 let pendingYear = null;         // held when the boot view cannot show it
 let pendingDrawerParam = null;  // 'open' | 'closed' | null, held until initDrawer
 
@@ -406,14 +445,59 @@ function defaultDatasetId(view) {
   return viewFromSlug(view).datasets[0].id;
 }
 
-/** Is this instance one js/data.js's facade can speak for? The facade IS the
-    `fsa-ngp-web/1` surface — getYearType, getCountySeries, types — and a
-    decoder for another schema answers none of it. Asked of the INSTANCE rather
-    than of the view slug: the question is what it can do, not what it is
-    called. */
+/**
+ * The colour-by choices of ONE interface — its own registry, not the app's.
+ *
+ * js/color.js's VARIABLES are the grazing-period family's three (start, end,
+ * duration). A family that paints another quantity declares its own, and
+ * `?variable=`, the stored preference and the segmented buttons are all read
+ * against whichever family is on screen. That is why an alien value cannot
+ * survive a view switch: `duration` means nothing to the eligibility map and
+ * `date` means nothing to the grazing-period one, and each falls back to its own
+ * default with a warning rather than blanking a map.
+ *
+ * @param {object} iface an interface descriptor
+ * @returns {object} name → {label, cyclic, …}
+ */
+function variablesOf(iface) {
+  return (iface && iface.variables) || VARIABLES;
+}
+
+/** Which variable a family shows when nothing has asked for another one. */
+function defaultVariableOf(iface) {
+  return (iface && iface.defaultVariable) || DEFAULTS.variable;
+}
+
+/** Is this a variable THIS family can paint? */
+function knownVariable(iface, name) {
+  return !!name && Object.prototype.hasOwnProperty.call(variablesOf(iface), name);
+}
+
+/** Where one interface's remembered colour-by lives. The first interface keeps
+    the historical `sfsa-ngp-variable`; every other one gets a key of its own,
+    because one name means different things to two registries. */
+function variableLsKey(view) {
+  return view === DEFAULTS.view ? LS.variable : LS.variableFor(view);
+}
+
+/**
+ * Is this instance one js/data.js's facade can speak for?
+ *
+ * The facade IS the `fsa-ngp-web/1` surface, and it is asked of the INSTANCE
+ * rather than of the view slug: the question is what it can do, not what it is
+ * called. The four names below are the WHOLE test and every one of them is
+ * load-bearing — `getYearType` and `types` are not enough, because the
+ * eligibility decoder answers both of those about a completely different
+ * quantity and answers `countyName`/`typeFromSlug` not at all. Binding one of
+ * those to the facade would leave the county gazetteer (which everything from
+ * the search box to the card title reads) pointing at a payload that has no
+ * names in it.
+ */
 function isNgpShaped(instance) {
   return !!instance && typeof instance.getYearType === 'function'
-    && typeof instance.types === 'function';
+    && typeof instance.types === 'function'
+    && typeof instance.typeFromSlug === 'function'
+    && typeof instance.countyName === 'function';
 }
 
 /**
@@ -422,33 +506,56 @@ function isNgpShaped(instance) {
  * snapshot, never a live handle, so a leaf cannot mutate the app's state.
  *
  * @returns {{year: number, type: string, variable: string, dataset: string,
- *            vintage: string|null}}
+ *            source: string|null, vintage: string|null, week: number|null,
+ *            universe: number}}
  */
 function selection() {
   const vs = activeViewState();
+  const iface = currentInterface();
   return {
     year: state.year,
     type: state.type,
     variable: state.variable,
     dataset: vs.dataset,
+    // Which reading of a dataset that publishes several — null for every
+    // dataset that publishes one, so a leaf can tell "the only answer" from
+    // "the answer they chose".
+    source: iface.controls.source ? (vs.source || null) : null,
     vintage,
     // Absolute index into a weekly payload's series, for the families that have
     // one; null for the families that do not, so a leaf can tell "no week" from
     // "week zero" (which is a real week — 2000-01-04).
-    week: currentInterface().controls.week ? absoluteWeek() : null,
+    week: iface.controls.week ? absoluteWeek() : null,
+    // How many counties the GEOMETRY on screen has. The denominator for a
+    // family whose live-region sentence is about the map rather than about its
+    // own payload: an archive naming 2,829 counties out of the 3,095 a reader
+    // is looking at must not report "1,208 of 2,829" as if the rest had been
+    // asked. Zero before the boundaries land.
+    universe: counties ? counties.index.size : 0,
   };
 }
 
-/** The remembered pasture type for one dataset of the grazing-periods view.
-    PR 1 has exactly two dataset dictionaries to keep apart; the second
-    interface generalises this into its own descriptor. */
+/**
+ * The remembered pasture type for one dataset of the active view.
+ *
+ * Two shapes, and the DESCRIPTOR says which: a family whose datasets have
+ * disjoint dictionaries remembers one type per dataset (grazing periods — FSA's
+ * sixteen pasture types against the climatology's three seasons), and a family
+ * whose datasets share one dictionary remembers one type for the whole
+ * interface (`typeScope: 'view'` — the three eligibility archives are the same
+ * fifteen names three times).
+ */
 function rememberedType(datasetId) {
-  return datasetId === 'nclimgrid' ? viewState.ngp.nclimgridType : viewState.ngp.type;
+  const vs = activeViewState();
+  if (currentInterface().typeScope === 'view') return vs.type;
+  return datasetId === 'nclimgrid' ? vs.nclimgridType : vs.type;
 }
 
 function rememberType(datasetId, name) {
-  if (datasetId === 'nclimgrid') viewState.ngp.nclimgridType = name;
-  else viewState.ngp.type = name;
+  const vs = activeViewState();
+  if (currentInterface().typeScope === 'view') vs.type = name;
+  else if (datasetId === 'nclimgrid') vs.nclimgridType = name;
+  else vs.type = name;
 }
 
 /* ── URL + persistence ───────────────────────────────────────────────────── */
@@ -518,15 +625,37 @@ function readInitialState() {
   const rawWeek = params.get('week');
   pendingWeekParam = rawWeek == null ? null : String(rawWeek);
 
-  const rawVar = (params.get('variable') ?? lsGet(LS.variable) ?? '').toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(VARIABLES, rawVar)) state.variable = rawVar;
+  // The colour-by is read against the REQUESTED family's own registry: `date`
+  // is a real choice on the eligibility map and no choice at all on the grazing
+  // periods, so which family is being asked for decides what the value means.
+  // A parked family's choice goes into ITS remembered state and is adopted when
+  // the switch lands (adoptVariable); the boot family's is the live one.
+  const rawVar = (params.get('variable')
+    ?? lsGet(variableLsKey(iface.id)) ?? '').toLowerCase();
+  if (knownVariable(iface, rawVar)) {
+    if (pendingViewId) viewState[iface.id].variable = rawVar;
+    else state.variable = rawVar;
+  } else if (rawVar) {
+    console.warn('[ngp] ' + JSON.stringify(rawVar) + ' is not a colour-by '
+      + iface.label + ' offers — falling back to '
+      + JSON.stringify(defaultVariableOf(iface)) + '.');
+  }
 
   // A type slug means whatever the ACTIVE DATASET's dictionary says it means,
   // so it is read from that dataset's own stored key and resolved against that
   // dataset's own list — never against the one that happens to boot first.
-  const wantDataset = pendingDatasetId || defaultDatasetId(state.view);
-  const rawType = params.get('type') ?? lsGet(typeLsKey(wantDataset));
+  const wantDataset = pendingViewId
+    ? viewState[iface.id].dataset
+    : (pendingDatasetId || defaultDatasetId(state.view));
+  const rawType = params.get('type') ?? lsGet(typeLsKeyFor(iface, wantDataset));
   pendingTypeSlug = rawType == null ? null : String(rawType).toLowerCase();
+
+  // Which reading of a dataset that publishes several. Parked like the type
+  // slug: the dictionary of conventions arrives with the payload, and only the
+  // family that HAS one can consume this.
+  const rawSource = iface.controls.source
+    ? (params.get('source') ?? lsGet(LS.source(iface.id))) : null;
+  pendingSourceSlug = rawSource == null ? null : String(rawSource).toLowerCase();
 
   // A selection is not a preference: it comes from the URL only.
   const rawCounty = params.get('county');
@@ -544,10 +673,25 @@ function readInitialState() {
   activeViewState().variable = state.variable;
 }
 
-/** Where one dataset's remembered type lives. The first dataset of a view keeps
-    the historical `sfsa-ngp-type`; every other one gets a key of its own. */
+/**
+ * Where one dataset's remembered type lives.
+ *
+ * The first dataset of the first view keeps the historical `sfsa-ngp-type`;
+ * every other DATASET of a per-dataset family gets a key of its own; and a
+ * family whose datasets share one dictionary (`typeScope: 'view'`) gets one key
+ * for the whole interface. Written as a function of the interface rather than of
+ * `state.view` so readInitialState can ask it about a family that is not on
+ * screen yet.
+ */
+function typeLsKeyFor(iface, datasetId) {
+  if (iface.typeScope === 'view') return LS.typeFor(iface.id);
+  if (iface.id !== DEFAULTS.view) return LS.typeFor(iface.id + '-' + datasetId);
+  return datasetId === defaultDatasetId(iface.id) ? LS.type : LS.typeFor(datasetId);
+}
+
+/** The active family's key, for the call sites that are already on screen. */
 function typeLsKey(datasetId) {
-  return datasetId === defaultDatasetId(state.view) ? LS.type : LS.typeFor(datasetId);
+  return typeLsKeyFor(currentInterface(), datasetId);
 }
 
 /** Resolve `pendingTypeSlug` against the real dictionary. Anything unknown —
@@ -589,8 +733,18 @@ function pushState() {
   // carrying ?type=cool-season would describe a control that is not on screen
   // and mean nothing to anyone who opened the link.
   if (iface.controls.type && state.type !== DEFAULTS.type) p.type = typeSlug(state.type);
-  if (iface.controls.variable && state.variable !== DEFAULTS.variable) {
+  // Elided at THIS family's default, not at the app's: `months` is the
+  // eligibility map's default and `duration` the grazing periods', and a view
+  // sitting on its own default emits no param either way.
+  if (iface.controls.variable && state.variable !== defaultVariableOf(iface)) {
     p.variable = state.variable;
+  }
+  // Only while the dataset that HAS conventions is the one on screen: a link
+  // carrying ?source= for an archive with one aggregation would describe a
+  // control that is not there. The choice is still remembered for the session.
+  if (iface.controls.source && activeData && activeDataset().hasSources) {
+    const src = vs.source;
+    if (src && src !== iface.source.defaultId(activeData)) p.source = src;
   }
   if (iface.controls.week) {
     // 1-based within the selected year, elided at its default (the year's last
@@ -624,7 +778,11 @@ function persist() {
   // all writes nothing here — the type on screen is the OTHER family's, and
   // storing it against this one's dataset key would be a lie about both.
   if (iface.controls.type) lsSet(typeLsKey(vs.dataset), typeSlug(state.type));
-  if (iface.controls.variable) lsSet(LS.variable, state.variable);
+  if (iface.controls.variable) lsSet(variableLsKey(state.view), state.variable);
+  // The aggregation IS a preference — unlike the week, it is a way of reading
+  // the data rather than a place in it, and a reader who chose the NDMC-reported
+  // convention last month meant it.
+  if (iface.controls.source && vs.source) lsSet(LS.source(state.view), vs.source);
   lsSet(LS.view, state.view);
   lsSet(LS.dataset(state.view), vs.dataset);
   // The WEEK is deliberately absent: it is a selection, not a preference — the
@@ -1045,6 +1203,30 @@ function applyYearDomain(instance) {
 }
 
 /**
+ * Why the year moved, in one sentence.
+ *
+ * The generic form is true of every family: the reader asked for a year this one
+ * does not cover. A family with a SPECIFIC reason may say it instead
+ * (`iface.clampNotice`) — "FSA has not published 2026 determinations" is
+ * something a reader can act on, and "2026 is outside 2008–2025" is not. A
+ * descriptor that returns nothing gets the generic sentence, which is also what
+ * every family without the leaf gets.
+ *
+ * @param {number} from the year the reader asked for
+ * @param {number} to the year they are getting
+ * @returns {string}
+ */
+function clampSentence(from, to) {
+  const iface = currentInterface();
+  if (typeof iface.clampNotice === 'function') {
+    const said = iface.clampNotice(from, to, selection());
+    if (said) return said;
+  }
+  return from + ' is outside ' + iface.label + '\'s ' + yearDomain.min + '–'
+    + yearDomain.max + ' range; showing ' + to + '.';
+}
+
+/**
  * Bring the shared year inside the active domain, saying so when it moves.
  *
  * Announced, not silent: the reader is looking at 2004 and about to be shown
@@ -1055,8 +1237,7 @@ function applyYearDomain(instance) {
 function clampYear() {
   const want = Math.min(yearDomain.max, Math.max(yearDomain.min, state.year));
   if (want === state.year) return;
-  notice = state.year + ' is outside ' + currentInterface().label + '\'s '
-    + yearDomain.min + '–' + yearDomain.max + ' range; showing ' + want + '.';
+  notice = clampSentence(state.year, want);
   if (!booted) {
     // Boot: there is no layer handle to repaint, no card to refill and no URL
     // to rewrite from a half-read view. Set the year and let loadAndRender's
@@ -1293,7 +1474,8 @@ function applyWeek(instance) {
 function setType(next) {
   if (next === state.type) return;
   state.type = next;
-  els.type.value = next;
+  const control = typeControl();
+  if (control) control.value = next;
   // Remembered against the dataset it belongs to, so a toggle away and back
   // returns to this choice rather than re-seeding from the other dictionary.
   rememberType(activeViewState().dataset, next);
@@ -1303,33 +1485,168 @@ function setType(next) {
 }
 
 function setVariable(next) {
-  if (!Object.prototype.hasOwnProperty.call(VARIABLES, next)) return;
+  // Against the ACTIVE family's registry: a click can only come from a button in
+  // that family's own drawer section, but a stale deep link or a stored value
+  // can carry anything.
+  if (!knownVariable(currentInterface(), next)) return;
   state.variable = next;
   // Remembered only by a family that HAS a colour-by control. Writing it into a
   // family that does not would put a field in its remembered state that means
   // nothing there — and the state a switch restores is compared field for field.
   if (currentInterface().controls.variable) activeViewState().variable = next;
-  // aria-pressed IS the styling source of truth (HOUSE-STYLE §5.7): the CSS
-  // keys off it, so the accessible state cannot drift from the visual one.
-  for (const btn of els.segs) {
-    btn.setAttribute('aria-pressed', String(btn.dataset.variable === next));
-  }
+  syncVariableButtons();
   persist();
   pushState();
   syncLegend();
   recolor();
 }
 
-function populateTypeSelect() {
-  const frag = document.createDocumentFragment();
-  for (const t of types()) {
-    const opt = document.createElement('option');
-    opt.value = t;
-    opt.textContent = t;
-    frag.appendChild(opt);
+/**
+ * Exactly ONE colour-by button in the page reads as pressed — the active
+ * family's active variable.
+ *
+ * Every family's buttons are in the markup at all times (`syncSections()` hides
+ * the sections that are not the active family's), and a pressed button inside a
+ * hidden section is still a pressed button to anything reading the
+ * accessibility tree. So the other families' are cleared rather than left as
+ * they were — the same rule syncDatasetButtons() follows, for the same reason.
+ *
+ * aria-pressed IS the styling source of truth (HOUSE-STYLE §5.7): the CSS keys
+ * off it, so the accessible state cannot drift from the visual one.
+ */
+function syncVariableButtons() {
+  const iface = currentInterface();
+  for (const btn of els.segs) {
+    const name = btn.dataset.variable;
+    btn.setAttribute('aria-pressed',
+      String(knownVariable(iface, name) && name === state.variable));
   }
-  els.type.replaceChildren(frag);
-  els.type.value = state.type;
+}
+
+/**
+ * Bring the shared colour-by into the arriving family's own registry.
+ *
+ * The variable is shared state like the year — a reader who was looking at dates
+ * should still be looking at dates — but unlike the year it cannot be clamped:
+ * `duration` is not a lesser `months`, it is a different question. So each
+ * family remembers its own choice, and coming on screen means adopting it. No
+ * payload is needed for this (a registry is static), so it happens in the switch
+ * itself and the URL is right from the first frame.
+ */
+function adoptVariable(iface) {
+  if (!iface.controls.variable) {
+    syncVariableButtons();
+    return;
+  }
+  const vs = viewState[iface.id];
+  const want = knownVariable(iface, vs.variable)
+    ? vs.variable : defaultVariableOf(iface);
+  state.variable = want;
+  vs.variable = want;
+  syncVariableButtons();
+}
+
+/** The `<select>` the ACTIVE family's pasture types live in. A family with a
+    dictionary the shared select cannot hold (a sentinel that is in no payload)
+    names its own; everyone else uses the shared one. */
+function typeControl() {
+  const id = currentInterface().typeSelectId;
+  return id ? document.getElementById(id) : els.type;
+}
+
+/** The options the active family's type select should offer, as {value, label}.
+    A family with no opinion gets its dictionary, one name per option — which is
+    exactly what the grazing periods have always shown. */
+function typeOptionsFor(iface, instance) {
+  if (typeof iface.typeOptions === 'function') return iface.typeOptions(instance);
+  const names = (instance && typeof instance.types === 'function')
+    ? instance.types() : types();
+  return names.map((t) => ({ value: t, label: t }));
+}
+
+function populateTypeSelect() {
+  const control = typeControl();
+  if (!control) return;
+  const frag = document.createDocumentFragment();
+  for (const opt of typeOptionsFor(currentInterface(), activeData)) {
+    const node = document.createElement('option');
+    node.value = opt.value;
+    node.textContent = opt.label;
+    frag.appendChild(node);
+  }
+  control.replaceChildren(frag);
+  control.value = state.type;
+}
+
+/* ── The aggregation picker ──────────────────────────────────────────────────
+   One archive in the app publishes the same question four times over, under
+   four defensible readings of "any area of the county" (js/interfaces/
+   eligibility.js § SOURCE_LABELS). That is a fact about ONE dataset, not about
+   its interface, so the control appears and disappears with the dataset —
+   which makes it the one [data-view] control whose visibility is narrower than
+   its section's. */
+
+/** Show the picker only while the dataset that has conventions is on screen. */
+function syncSourceControl() {
+  if (!els.eligSourceWrap) return;
+  const iface = currentInterface();
+  els.eligSourceWrap.hidden = !(iface.controls.source && activeDataset().hasSources);
+}
+
+/** Fill it from the payload's own dictionary, in the payload's own order. */
+function populateSourceSelect(instance) {
+  const iface = currentInterface();
+  if (!els.eligSource || !iface.source) return;
+  const frag = document.createDocumentFragment();
+  for (const opt of iface.source.options(instance)) {
+    const node = document.createElement('option');
+    node.value = opt.value;
+    node.textContent = opt.label;
+    frag.appendChild(node);
+  }
+  els.eligSource.replaceChildren(frag);
+  const chosen = activeViewState().source;
+  if (chosen) els.eligSource.value = chosen;
+}
+
+/**
+ * Read the same archive at another convention.
+ *
+ * A synchronous repaint: the payload holds all four, so nothing is fetched and
+ * nothing waits. It therefore does NOT bump `data-ngp-view-seq` — that counter
+ * means "a transition that involved a fetch has landed" (tools/config.mjs §
+ * MARKERS), and a week scrub does not bump it either.
+ *
+ * @param {string} next an aggregation id from the payload's dictionary
+ */
+function setSource(next) {
+  const iface = currentInterface();
+  const vs = activeViewState();
+  if (!iface.controls.source || !activeData) return;
+  const known = iface.source.options(activeData).some((o) => o.value === next);
+  if (!known || next === vs.source) return;
+  vs.source = next;
+  if (els.eligSource) els.eligSource.value = next;
+  persist();
+  pushState();
+  recolor();          // paints, refills the card, and announces the convention
+  if (tableCtl) tableCtl.invalidate();
+}
+
+/**
+ * Resolve a parked `?source=` against the dictionary that has just arrived, or
+ * fall back to what this session was already reading — and then to the
+ * descriptor's default.
+ */
+function applySource(instance) {
+  const iface = currentInterface();
+  const vs = activeViewState();
+  if (!iface.controls.source || !iface.source) return;
+  if (!activeDataset().hasSources) return;
+  const parked = pendingSourceSlug;
+  pendingSourceSlug = null;
+  vs.source = iface.source.resolve(instance, parked ?? vs.source);
+  populateSourceSelect(instance);
 }
 
 /* ── Views and datasets ──────────────────────────────────────────────────────
@@ -1351,6 +1668,9 @@ function syncSections() {
   for (const section of document.querySelectorAll('.sfsa-drawer-section[data-view]')) {
     section.hidden = section.dataset.view !== state.view;
   }
+  // One control inside those sections is narrower than its section: the
+  // aggregation picker belongs to a single DATASET of a single family.
+  syncSourceControl();
   // The map's accessible name follows the active family too — index.html
   // authors the NGP boot value, and every switch restates it from the
   // descriptor so a screen reader is never told a drought map is a
@@ -1427,6 +1747,9 @@ function setView(next) {
   syncSections();
   syncViewButtons();
   syncDatasetButtons();
+  // The colour-by is the arriving family's own choice, and it needs no payload
+  // to settle — so the buttons and the URL below are right from this frame.
+  adoptVariable(iface);
   syncYearControl();
   // The URL follows the intent immediately; localStorage follows the RESULT
   // (applyDataset persists once the payload is really on screen), so a family
@@ -1481,7 +1804,10 @@ function setDataset(next) {
 async function applyDataset(ds) {
   const wanted = ds.id;
   const iface = currentInterface();
-  note('Loading ' + ds.label + '…');
+  // A dataset that knows it is a big download says so in its own words: the
+  // derived eligibility archive is 11 MB, and four seconds of a pill that says
+  // "Loading Derived from USDM…" reads as a hung app.
+  note(ds.loadingNote || ('Loading ' + ds.label + '…'));
 
   let instance;
   try {
@@ -1490,6 +1816,11 @@ async function applyDataset(ds) {
       // Only a FIPS-keyed dataset needs the crosswalk, and only once per
       // session — an FSA-keyed one joins straight onto the geometry.
       ds.keySpace === 'fips' ? loadCrosswalk() : null,
+      // An interface may need an asset of its own before it can paint (the
+      // eligibility map's payment-months ramp). Fetched HERE rather than at
+      // boot, so the boot path stays one payload and two ramps wide, and
+      // awaited with the payload so the first paint has everything.
+      typeof iface.ensureAssets === 'function' ? iface.ensureAssets() : null,
     ]);
     // The user may have toggled again while this was in flight; the last press
     // wins, and this one is now history.
@@ -1524,6 +1855,9 @@ async function applyDataset(ds) {
     populateTypeSelect();
   }
   if (iface.controls.week) applyWeek(instance);
+  // Before the paint: which convention is being read decides what is painted.
+  applySource(instance);
+  syncSourceControl();
   syncYearControl();
   persist();
   pushState();
@@ -1558,7 +1892,10 @@ async function applyDataset(ds) {
  */
 function resolveTypeFor(ds, instance) {
   const iface = currentInterface();
-  const known = new Set(instance.types());
+  // The OPTIONS, not the dictionary: a family may offer a selection the payload
+  // has no name for ("All types (worst case)"), and it is as real a choice as
+  // any of the fifteen.
+  const known = new Set(typeOptionsFor(iface, instance).map((o) => o.value));
   const parked = pendingTypeSlug;
   pendingTypeSlug = null;
 
@@ -1700,6 +2037,14 @@ function wireControls() {
   if (els.weekNext) els.weekNext.addEventListener('click', () => stepWeek(1));
 
   els.type.addEventListener('change', () => setType(els.type.value));
+  // The eligibility family's own select — same handler, different dictionary
+  // (and one option the shared select could never resolve).
+  if (els.eligType) {
+    els.eligType.addEventListener('change', () => setType(els.eligType.value));
+  }
+  if (els.eligSource) {
+    els.eligSource.addEventListener('change', () => setSource(els.eligSource.value));
+  }
 
   for (const btn of els.segs) {
     btn.addEventListener('click', () => setVariable(btn.dataset.variable));
@@ -1745,9 +2090,7 @@ async function boot() {
   readInitialState();
   els.year.value = String(state.year);
   els.yearOut.textContent = String(state.year);
-  for (const btn of els.segs) {
-    btn.setAttribute('aria-pressed', String(btn.dataset.variable === state.variable));
-  }
+  syncVariableButtons();
   // The drawer reflects the family and dataset that are about to PAINT, which
   // for a deep-linked non-default dataset is still the default one: the toggle
   // lands after the first payload is on screen (see the end of loadAndRender).
@@ -1851,10 +2194,13 @@ async function loadAndRender() {
   counties = projectCounties(payloads[0]);
   activeData = activeNgpDataset();
 
-  // A slug parked for a dataset that is not the one booting is not this
-  // dictionary's to resolve: the toggle at the end of this function consumes it
-  // against the dictionary it was written against.
-  if (!pendingDatasetId) applyPendingType();
+  // A slug parked for a dataset — or a FAMILY — that is not the one booting is
+  // not this dictionary's to resolve: the switch at the end of this function
+  // consumes it against the dictionary it was written against. `?view=
+  // eligibility&type=all-types` is the case that makes the second half of that
+  // sentence load-bearing: resolved here it would be an unknown pasture type,
+  // warned about, and thrown away before the family that has it comes up.
+  if (!pendingDatasetId && !pendingViewId) applyPendingType();
   populateTypeSelect();
 
   // The slider's range is authored in the HTML; the payload is the authority.
@@ -2100,11 +2446,13 @@ function notifyCountySelected(id) {
 
 function notifyLegend() {
   if (!legendSubs.size) return;
-  const spec = VARIABLES[state.variable];
+  // The ACTIVE family's registry: the wheel is drawn for any cyclic variable,
+  // and `date` is one of those on a family js/color.js has never heard of.
+  const spec = variablesOf(currentInterface())[state.variable] || {};
   const info = {
     variable: state.variable,
-    cyclic: spec.cyclic,
-    label: spec.label,
+    cyclic: !!spec.cyclic,
+    label: spec.label || '',
     ramps: ramps(),
     noData: NO_DATA(),
   };

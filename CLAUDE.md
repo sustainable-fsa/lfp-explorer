@@ -66,15 +66,15 @@ Specifics that bite in this repo:
   The why, the reference table, and the rescale constants live in the
   `js/projection.js` header.
 
-## Where we left off (2026-08-20, PR 2 of the four-interface expansion)
+## Where we left off (2026-08-20, PR 3 of the four-interface expansion)
 
 The app is mid-way through the **four-interface expansion** (approved plan:
 the administration story in four acts — 1 · Grazing periods, 2 · Drought
 monitor (USDM weekly), 3 · LFP eligibility, 4 · Disaster designations — one
 PR per interface, shared year/county/camera/theme surviving every switch).
-**PR 1 (framework + nClimGrid) is merged; PR 2 (`feat/usdm-interface`) is
-complete and green** (verify.mjs prints its own count — currently 299/299;
-axe clean 2 themes × 2 viewports × 8 states; html-validate clean):
+**PRs 1–2 are merged; PR 3 (`feat/eligibility-interface`) is complete and
+green** (verify.mjs prints its own count — currently 430; axe clean
+2 themes × 2 viewports × 9 states; html-validate clean):
 
 - The **interface framework** (PR 1): "What to show" switcher (top of the
   drawer, absent-until-shipped), `?view=` / `?dataset=` params (elided at
@@ -99,24 +99,41 @@ axe clean 2 themes × 2 viewports × 8 states; html-validate clean):
   attribution drawn into exported posters. Year domain re-authors per
   interface (USDM reaches 2000); an out-of-domain shared year clamps AND
   announces.
+- **3 · LFP eligibility** (PR 3): `fsa-lfp-eligibility/1` × three archives —
+  FSA official (FOIA, default; its record ends at 2025 and the shared year
+  clamps onto it with a "has not published" announcement), FSA weekly web,
+  and Derived-from-USDM (11 MB; a `source` picker for its four
+  county-aggregation conventions, defaulting to FSA LFP boundaries like the
+  Drought monitor). FSA-keyed — no crosswalk in the paint path; the parallel
+  `fips` column is card provenance. Two variables: **Months** (the new
+  frozen DF ramp `assets/colors-df.json` — slate index 0 = "months not
+  stated", lazily loaded, `build_df_ramp()` reproduces it byte-for-byte) and
+  **Qualifying date** (the romaO wheel; undated 2008–2011 rows paint the
+  slate). `?variable=` now validates per interface. "All types (worst
+  case)" sentinel; event-level table; derived exports carry a
+  "not an official FSA determination" credit. Key data facts: months = `pf`
+  never `df` on official/web (df is uncapped); `pf`/`mepm` are
+  determination-level values repeated on every event; official ≡ web
+  paint-identically for shared years (web's value is 2026 + the weekly
+  snapshots); the payloads carry no county names (the geometry gazetteer
+  names rows).
 - **Satellites are descriptor-driven** (PR 2): card-content.js and
   table-view.js are generic lifecycle shells delegating to
   `iface.cardBody`/`iface.table.*`; export.js dispatches title/filename/
-  legend painting per descriptor. `js/data.js` stays an NGP-shaped facade
-  ONLY — app.js holds the active instance and mirrors into the facade just
-  for NGP datasets (documented at the declaration).
+  legend painting per descriptor (+ `export.legendLines` since PR 3).
+  `js/data.js` stays an NGP-shaped facade ONLY — app.js holds the active
+  instance and mirrors into the facade just for NGP datasets (documented at
+  the declaration).
 - Earlier shipped state still holds: two-drawer layout (kit v0.2.0),
   reveal-push, EPSG:5070 client-side pre-projection, runtime payload fetch
   (manifest: `tools/payloads.txt`).
 
 Open threads, in rough priority order:
 
-1. **PR 3 — LFP eligibility interface** (fsa-lfp-eligibility/1 × 3 archives +
-   the derived archive's 4 aggregation conventions; new CVD-safe
-   drought-factor ramp asset; drought-only — Fire needs an archive-side
-   payload addition first). Then **PR 4 — Disaster designations**. The verify
-   section template (`verifyInterfaceSection`) and a11y state pattern are
-   proven now.
+1. **PR 4 — Disaster designations** (fsa-disasters/1: two-table normalized,
+   Secretarial/Presidential, Primary/Contiguous, junk values rendered
+   verbatim in the table only). Fire events for eligibility remain out of
+   scope until the archive adds them to a payload.
 2. **Annual maintenance tripwire**: both descriptors declare
    `years: {min, max}` (currently max 2026). When the USDM archive rolls into
    a new year, `applyYearDomain` console.warns and the console-clean gate

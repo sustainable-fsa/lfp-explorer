@@ -132,7 +132,9 @@ main {
    them into the navbar; in a 272px column full width is the right answer and
    those caps are gone. */
 
-#type-select {
+#type-select,
+#elig-type-select,
+#elig-source {
   min-height: 34px;
   max-width: 15rem;
   padding: 0.35rem 0.5rem;
@@ -145,15 +147,36 @@ main {
   cursor: pointer;
   transition: var(--transition);
 }
-#type-select:hover { border-color: var(--accent-line); }
-#type-select[disabled] { opacity: 0.45; cursor: not-allowed; }
+#type-select:hover,
+#elig-type-select:hover,
+#elig-source:hover { border-color: var(--accent-line); }
+#type-select[disabled],
+#elig-type-select[disabled],
+#elig-source[disabled] { opacity: 0.45; cursor: not-allowed; }
 
 /* The menu is the full width of the drawer column. Scoped to #drawer rather
    than written into the rule above so the box above stays reusable if the
    select ever appears anywhere else. */
-#drawer #type-select {
+#drawer #type-select,
+#drawer #elig-type-select,
+#drawer #elig-source {
   width: 100%;
   max-width: none;
+}
+
+/* The aggregation picker is a control INSIDE the dataset section — it belongs
+   to one of that section's three buttons — so it needs the separation from the
+   note above it that a section boundary would otherwise have given it. Its
+   label is visible (unlike the type select's, whose section title says the same
+   word), because "Aggregation" is not a word the eyebrow above it repeats. */
+#elig-source-wrap {
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+#elig-source-wrap > .control-label {
+  display: block;
+  margin-bottom: 0.25rem;
 }
 
 /* A caption under a control: what the switcher does not offer yet, and why the
@@ -176,13 +199,23 @@ main {
    these groups stack instead, with the fused radii and the shared border
    rotated a quarter turn; every other .seg-btns in the app keeps the kit's
    geometry. min-height is deliberately NOT set here, so the kit's own 40px
-   touch target (theme §6) still wins on a pointerless device. */
+   touch target (theme §6) still wins on a pointerless device.
+
+   The eligibility interface's COLOR-BY group is in this list too, and it is the
+   one that is not a scoping group: its two labels ("Payment months",
+   "Qualifying date") are the quantities themselves, and nothing shorter says
+   which of them is the payable one. The grazing periods' three-word group keeps
+   the kit's row. */
 #view-seg .seg-btns,
 #ngp-dataset-seg .seg-btns,
-#usdm-dataset-seg .seg-btns { flex-direction: column; }
+#usdm-dataset-seg .seg-btns,
+#elig-dataset-seg .seg-btns,
+#elig-variable-seg .seg-btns { flex-direction: column; }
 #view-seg .seg-btn,
 #ngp-dataset-seg .seg-btn,
-#usdm-dataset-seg .seg-btn {
+#usdm-dataset-seg .seg-btn,
+#elig-dataset-seg .seg-btn,
+#elig-variable-seg .seg-btn {
   height: auto;
   padding: 6px 10px;
   border-right-width: 1px;
@@ -192,12 +225,16 @@ main {
 }
 #view-seg .seg-btn:first-child,
 #ngp-dataset-seg .seg-btn:first-child,
-#usdm-dataset-seg .seg-btn:first-child {
+#usdm-dataset-seg .seg-btn:first-child,
+#elig-dataset-seg .seg-btn:first-child,
+#elig-variable-seg .seg-btn:first-child {
   border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 #view-seg .seg-btn:last-child,
 #ngp-dataset-seg .seg-btn:last-child,
-#usdm-dataset-seg .seg-btn:last-child {
+#usdm-dataset-seg .seg-btn:last-child,
+#elig-dataset-seg .seg-btn:last-child,
+#elig-variable-seg .seg-btn:last-child {
   border-radius: 0 0 var(--radius-md) var(--radius-md);
   border-bottom-width: 1px;
 }
@@ -391,7 +428,9 @@ main {
 /* WCAG 2.5.5 — match the kit's touch sizing on the one control it does not
    ship. */
 @media (hover: none) {
-  #type-select { min-height: 40px; }
+  #type-select,
+  #elig-type-select,
+  #elig-source { min-height: 40px; }
 }
 
 /* ============================================================================
@@ -426,14 +465,28 @@ main {
 /* ── 9. Card span chart + table twin ─────────────────────────────────────── */
 
 .span-figure,
-.usdm-figure {
+.usdm-figure,
+.elig-figure {
   margin: 0.35rem 0 0;
 }
 .span-figure svg,
-.usdm-figure svg {
+.usdm-figure svg,
+.elig-figure svg {
   display: block;
   width: 100%;
   height: auto;
+}
+
+/* The cross-archive sentence under the eligibility chart: what ANOTHER archive
+   says about the same county, year and type. Prose, not a value — so it gets
+   the UI font and the muted color, exactly like a `.card-note` row in the
+   readout above it (§5), and it is only ever drawn when a second payload is
+   already in hand. */
+.card-compare {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
 /* The <details> twin. Closed by default: the chart is the fast read, and a

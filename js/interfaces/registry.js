@@ -20,16 +20,18 @@
    harness's probe table mirrors it — so adding an interface is a descriptor
    plus one line here, never a search for hardcoded slugs.
 
-   Two are shipped: grazing periods, then the drought monitor — the order the
-   Livestock Forage Program is administered in, which is also the order the
-   story reads in. The rest (LFP eligibility, disaster designations) land as
-   their own descriptors, in `order`, and the switcher grows by itself. Nothing
-   here is a placeholder: an unshipped interface has no entry and therefore no
-   disabled teaser button.
+   Three are shipped: grazing periods, then the drought monitor, then LFP
+   eligibility — the order the Livestock Forage Program is administered in
+   (when may livestock graze here · how dry was it · what did that qualify the
+   county for), which is also the order the story reads in. The rest (disaster
+   designations) land as their own descriptors, in `order`, and the switcher
+   grows by itself. Nothing here is a placeholder: an unshipped interface has no
+   entry and therefore no disabled teaser button.
    ========================================================================== */
 
 import { NGP } from './ngp.js';
 import { USDM } from './usdm.js';
+import { ELIGIBILITY } from './eligibility.js';
 
 /**
  * Every shipped interface, in switcher order. Frozen: the app reads this list
@@ -38,7 +40,7 @@ import { USDM } from './usdm.js';
  *
  * @type {ReadonlyArray<object>}
  */
-export const INTERFACES = Object.freeze([NGP, USDM]);
+export const INTERFACES = Object.freeze([NGP, USDM, ELIGIBILITY]);
 
 /** The interface a session with no `?view=` and no stored preference lands on.
     Its slug is NEVER emitted into the URL (clean-URL discipline, HOUSE-STYLE
