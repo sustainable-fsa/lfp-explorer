@@ -1,11 +1,11 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/table-view.js
+   LFP Explorer · js/table-view.js
    The on-demand data table: every county the map is currently painting, as
    markup, in a modal dialog.
 
-   ES module, no build step. Imports ./data.js and the kit's core for the modal
-   plumbing; the app arrives as the frozen context object app.js hands features
-   at the seam.
+   ES module, no build step. Imports the kit's core for the modal plumbing and
+   the two registry readings; the app arrives as the frozen context object
+   app.js hands features at the seam.
 
    ── Why this exists ────────────────────────────────────────────────────────
    The choropleth is a WebGL canvas: to a screen reader it is a rectangle. The
@@ -14,19 +14,31 @@
    them with their own eyes, copy them into a spreadsheet (HOUSE-STYLE §5.2).
    It is not a summary of the map. It is the map's data.
 
+   ── What this file owns, and what it does not ──────────────────────────────
+   It owns the DIALOG and the TABLE's accessibility: the sr-only <caption>, one
+   `scope="col"` per header, a `<th scope="row">` per row, county codes in
+   `<code>`, and the scrolling body's role/name/tabindex (WCAG 2.1.1). None of
+   that depends on what the columns mean.
+
+   The columns and the rows are the active interface's
+   (`iface.table.columns(sel)` / `.rows(data, xw, sel, names)`): a drought class
+   is not a start date, and a family that answers in FIPS must be allowed to say
+   "FIPS code" in its own header. Rows come back as flat objects keyed by the
+   columns' `key`, and three column flags carry the a11y intent — `rowHeader`,
+   `code`, `num` — so this file never has to guess which column is the name and
+   which is a number.
+
    ── Why it is built on open, and only once per view ────────────────────────
    Three thousand rows is ~19,000 elements. Building them at boot would cost
    every visitor the price of a feature most will not open; rebuilding them on
    every year-slider frame would cost it hundreds of times. So the table is
-   built when the dialog opens, and only if the (dataset, year, type) it was
-   built for has changed since — reopening an unchanged view reuses the markup.
-   The DATASET is part of that key because two datasets answer the same
-   (year, type) with different rows; leaving it out would show a reader the
-   previous dataset's numbers under the new dataset's caption.
+   built when the dialog opens, and only if the selection it was built for has
+   changed since — reopening an unchanged view reuses the markup. What counts as
+   "changed" is the interface's own answer (`table.cacheKey`), because only it
+   knows whether a week, a year or a pasture type is part of its identity.
    ========================================================================== */
 
 import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
-import { countyName, getYearType } from './data.js';
 import { interfaceOf, viewSelection } from './interfaces/registry.js';
 
 /** Above this, a rebuild is worth warning the user about — measured on the
@@ -51,52 +63,12 @@ function el(name, attrs, text) {
 }
 
 /**
- * Every row the table shows, sorted the way a reader scans it: state, then
- * county. Exported for the smoke test; pure but for the data module.
- *
- * @param {number} year
- * @param {string} type
- * @returns {Array<{id: string, county: string, state: string, rec: object}>}
- */
-export function tableRows(year, type) {
-  const recs = getYearType(year, type);
-  const rows = [];
-  for (const [id, rec] of recs) {
-    const nm = countyName(id);
-    rows.push({
-      id,
-      county: nm ? nm.county : id,
-      state: nm ? nm.state : '',
-      rec,
-    });
-  }
-  rows.sort((a, b) => a.state.localeCompare(b.state, 'en')
-    || a.county.localeCompare(b.county, 'en')
-    // Two counties can share a name inside a state (they do not today); the id
-    // is the tiebreak so the order is total and the table is stable.
-    || a.id.localeCompare(b.id, 'en'));
-  return rows;
-}
-
-/* The columns of a grazing-period table. Still a constant, not a descriptor
-   leaf: PR 1 has one interface, and every dataset in it answers with the same
-   six fields. When a second interface arrives (a drought class is not a start
-   date) these move onto the descriptor beside its caption. The code column's
-   label is resolved per dataset at build time: the climatology's rows are in
-   its own key space (Census FIPS), and captioning them "FSA code" would be a
-   false claim about eight states' worth of leading-zero identifiers. */
-const COLUMNS = Object.freeze([
-  'County', 'State', 'FSA code', 'Start', 'End', 'Duration (weeks)',
-]);
-
-/**
- * @param {Array<object>} rows from tableRows()
+ * @param {Array<object>} rows from the interface's table.rows()
+ * @param {Array<object>} columns from the interface's table.columns()
  * @param {string} caption the sentence that names this table
- * @param {string} codeLabel header for the county-code column — 'FSA code' or
- *   'FIPS code', following the active dataset's key space
  * @returns {DocumentFragment}
  */
-function buildTable(rows, caption, codeLabel) {
+function buildTable(rows, columns, caption) {
   const frag = document.createDocumentFragment();
   const table = el('table', { class: 'data-table' });
 
@@ -107,8 +79,8 @@ function buildTable(rows, caption, codeLabel) {
 
   const thead = el('thead');
   const hrow = el('tr');
-  for (const label of COLUMNS) {
-    hrow.appendChild(el('th', { scope: 'col' }, label === 'FSA code' ? codeLabel : label));
+  for (const col of columns) {
+    hrow.appendChild(el('th', { scope: 'col' }, col.label));
   }
   thead.appendChild(hrow);
   table.appendChild(thead);
@@ -116,16 +88,22 @@ function buildTable(rows, caption, codeLabel) {
   const tbody = el('tbody');
   for (const row of rows) {
     const tr = el('tr');
-    tr.appendChild(el('th', { scope: 'row' }, row.county));
-    tr.appendChild(el('td', null, row.state));
-    const code = el('td');
-    // A <code> because it IS a code: five characters, leading zeros load
-    // bearing, never a number (kit AGENTS.md §10).
-    code.appendChild(el('code', null, row.id));
-    tr.appendChild(code);
-    tr.appendChild(el('td', null, row.rec.startLabel));
-    tr.appendChild(el('td', null, row.rec.endLabel));
-    tr.appendChild(el('td', { class: 'num' }, String(row.rec.duration_weeks)));
+    for (const col of columns) {
+      const value = row[col.key] == null ? '' : String(row[col.key]);
+      if (col.rowHeader) {
+        tr.appendChild(el('th', { scope: 'row' }, value));
+        continue;
+      }
+      if (col.code) {
+        const cell = el('td');
+        // A <code> because it IS a code: five characters, leading zeros load
+        // bearing, never a number (kit AGENTS.md §10).
+        cell.appendChild(el('code', null, value));
+        tr.appendChild(cell);
+        continue;
+      }
+      tr.appendChild(el('td', col.num ? { class: 'num' } : null, value));
+    }
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -161,24 +139,45 @@ export function initTableView({ button, dialog, captionEl, bodyEl, ctx } = {}) {
   let builtFor = null;      // the selection key the current markup was built for
   let lastBuildMs = 0;
 
-  /** What makes one built table different from another: the dataset, the
-      program year and the type. */
-  function keyOf(sel) {
-    return sel.dataset + '|' + sel.year + '|' + sel.type;
+  function selection() {
+    return (ctx.getSelection && ctx.getSelection()) || viewSelection(ctx);
+  }
+
+  /** The interface's own answer to "is this the same table I already built?" */
+  function keyOf(iface, sel) {
+    return typeof iface.table.cacheKey === 'function'
+      ? iface.table.cacheKey(sel)
+      : sel.dataset + '|' + sel.year + '|' + sel.type;
+  }
+
+  /**
+   * Name one county id, geometry gazetteer first.
+   *
+   * Handed to the interface's rows() because a family whose PAYLOAD is keyed by
+   * FIPS but whose ROWS are FSA counties (the drought monitor, after the
+   * crosswalk join) has no gazetteer of its own for the ids it is reporting —
+   * the polygons do. A family answering in its own key space ignores this and
+   * uses its payload's names, which is the only correct choice there.
+   */
+  function names(id) {
+    const counties = ctx.getCounties && ctx.getCounties();
+    return (counties && counties.names.get(String(id))) || null;
   }
 
   function build() {
-    const sel = viewSelection(ctx);
-    // Rows come from the ACTIVE dataset, in its own key space — the table is
-    // the map's data, not a summary of it. The caption is the descriptor's, so
-    // the dialog subtitle, the sr-only <caption> and the scroll region's name
-    // all name the same thing the legend and the live region do.
-    const rows = tableRows(sel.year, sel.type);
-    const caption = interfaceOf(ctx).table.caption(sel, rows.length);
-    const codeLabel = ctx.getData().keySpace === 'fips' ? 'FIPS code' : 'FSA code';
+    const iface = interfaceOf(ctx);
+    const sel = selection();
+    // Rows come from the ACTIVE dataset, through the ACTIVE interface — the
+    // table is the map's data, not a summary of it. The caption is the
+    // descriptor's too, so the dialog subtitle, the sr-only <caption> and the
+    // scroll region's name all name the same thing the legend and the live
+    // region do.
+    const columns = iface.table.columns(sel);
+    const rows = iface.table.rows(ctx.getData(), ctx.getCrosswalk(), sel, names);
+    const caption = iface.table.caption(sel, rows.length);
 
     const started = (typeof performance === 'object') ? performance.now() : 0;
-    bodyEl.replaceChildren(buildTable(rows, caption, codeLabel));
+    bodyEl.replaceChildren(buildTable(rows, columns, caption));
     lastBuildMs = started ? performance.now() - started : 0;
 
     // The body scrolls (css/app.css §10), and a scrollable region has to be
@@ -190,14 +189,14 @@ export function initTableView({ button, dialog, captionEl, bodyEl, ctx } = {}) {
     bodyEl.setAttribute('aria-label', caption);
 
     if (captionEl) captionEl.textContent = caption;
-    builtFor = keyOf(sel);
+    builtFor = keyOf(iface, sel);
     return caption;
   }
 
   async function open() {
     let caption = captionEl ? captionEl.textContent : '';
 
-    if (builtFor !== keyOf(viewSelection(ctx))) {
+    if (builtFor !== keyOf(interfaceOf(ctx), selection())) {
       // Only warn when this device has already proved it is slow enough to
       // need warning: a pill that appears and vanishes inside one frame is
       // worse than no pill.

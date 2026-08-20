@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* ============================================================================
-   FSA Normal Grazing Periods · tools/verify.mjs
+   LFP Explorer · tools/verify.mjs
    The deploy gate. Boots the app on a local static server and drives every
    route a user has, asserting that each one does the thing it exists to do —
    and that the console stays silent the whole way through.
@@ -226,7 +226,14 @@ async function open({
     await page.screenshot({ path: join(CONFIG.screenshotDir, name + '.png') });
   };
 
-  return { ctx, page, errors, ready, clean, shot, downloads: downloadList };
+  // `downloads` is the LIST (always an array, so never a flag); the flag is
+  // separate, because a caller that did not ask for downloads must not have its
+  // export step run — an empty array is truthy, and the section template used
+  // to read it as "this session can download".
+  return {
+    ctx, page, errors, ready, clean, shot,
+    downloads: downloadList, acceptsDownloads: downloads,
+  };
 }
 
 /* ── In-page probes ──────────────────────────────────────────────────────────
@@ -244,20 +251,28 @@ async function open({
  * compares "the view" can compare one flat object. Both shapes `getViewState()`
  * may hand back are accepted — the whole per-view map, or just the active
  * view's slice — so this probe does not have to be edited if that seam is
- * tightened later. */
+ * tightened later.
+ *
+ * A HALF-BOOTED PAGE IS AN ANSWER, not an exception. A page whose boot failed
+ * has no map and no geometry index, and reading a centre off it used to throw
+ * out of the middle of a section — which aborted the process and took the
+ * summary, and every assertion after it, with it (the same reasoning as the
+ * crosswalk probe in §7). Nulls travel back instead; the comparisons that use
+ * them fail as named checks with the nulls printed. */
 const snapshot = (page) => page.evaluate(async () => {
   const app = await import(new URL('js/app.js', document.baseURI).href);
   const c = app.ngpContext();
   const state = c.getState();
   const vs = typeof c.getViewState === 'function' ? c.getViewState() : null;
   const slice = vs && (typeof vs.dataset === 'string' ? vs : vs[state.view]);
+  const map = c.getMap();
   return {
     state: { ...state, dataset: (slice && slice.dataset) || null },
     viewState: slice || null,
     vintage: c.getVintage(),
     geometryCount: c.getCounties() ? c.getCounties().index.size : 0,
-    center: c.getMap().getCenter().toArray(),
-    zoom: c.getMap().getZoom(),
+    center: map ? map.getCenter().toArray() : [null, null],
+    zoom: map ? map.getZoom() : null,
     markers: { ...document.documentElement.dataset },
   };
 });
@@ -310,10 +325,23 @@ const resourceNames = (page) => page.evaluate(
  * `aria-pressed` is read rather than a class, because aria-pressed is what the
  * kit styles a seg button from (HOUSE-STYLE): if the attribute is wrong the
  * button LOOKS wrong, so there is no second source of truth to check against.
+ *
+ * DATASET BUTTONS ARE COUNTED PER VIEW, not per document. Every view's dataset
+ * seg is in the markup at all times — `syncSections()` hides the ones that do
+ * not belong to the active view — so from PR 2 on `[data-dataset]` matches five
+ * buttons and two of them are pressed, one in each view's own remembered state.
+ * Reading them all would make "the dataset seg offers both grazing-period
+ * datasets, with one pressed" false the moment a second view exists, and it
+ * would be false about the app rather than about a bug. The filter is the
+ * `hidden` attribute on the owning `[data-view]` section, not a client rect: on
+ * a phone the whole drawer is `visibility: hidden` and every control in it
+ * would otherwise read as out of play.
  */
 const viewControls = (page) => page.evaluate(() => {
   const el = (id) => document.getElementById(id);
-  const pressed = (sel) => Array.from(document.querySelectorAll(sel))
+  const live = (n) => !n.closest('[data-view][hidden]');
+  const inPlay = (sel) => Array.from(document.querySelectorAll(sel)).filter(live);
+  const pressed = (sel) => inPlay(sel)
     .filter((b) => b.getAttribute('aria-pressed') === 'true');
   const note = el('year-note');
   const text = (n) => (n ? (n.textContent || '').trim() : null);
@@ -321,13 +349,19 @@ const viewControls = (page) => page.evaluate(() => {
   const bodyState = (id) => { const n = el(id); return n ? !n.hidden : null; };
   return {
     views: pressed('[data-view-btn]').map((b) => b.dataset.viewBtn),
-    viewBtns: document.querySelectorAll('[data-view-btn]').length,
+    viewBtns: inPlay('[data-view-btn]').length,
     datasets: pressed('[data-dataset]').map((b) => b.dataset.dataset),
-    datasetBtns: document.querySelectorAll('[data-dataset]').length,
+    datasetBtns: inPlay('[data-dataset]').length,
     types: Array.from(document.querySelectorAll('#type-select option'))
       .map((o) => o.value),
     type: el('type-select') ? el('type-select').value : null,
     year: el('year-range') ? el('year-range').value : null,
+    /** The year slider's DOMAIN, not just its value: a view whose data starts
+        in 2000 re-authors min/max on the way in and hands them back on the way
+        out, and a stale domain is invisible until someone drags to a year the
+        active payload has never heard of. */
+    yearMin: el('year-range') ? el('year-range').min : null,
+    yearMax: el('year-range') ? el('year-range').max : null,
     yearDisabled: el('year-range') ? el('year-range').disabled : null,
     noteShown: visible(note),
     noteText: text(note),
@@ -354,6 +388,10 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
   const map = c.getMap();
   let colored = 0;
   let hash = 5381;
+  // No map or no geometry means nothing is painted, which is a signature too —
+  // and one that fails every "the paint changed" comparison rather than
+  // throwing the run away.
+  if (!map || !c.getCounties()) return { colored: 0, hash: 0 };
   for (const id of c.getCounties().index.keys()) {
     const st = map.getFeatureState({ source: src, id });
     const color = (st && st.color) || '';
@@ -365,10 +403,12 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
   return { colored, hash };
 }, sourceId);
 
-/** The paint color of one county, straight out of feature state. */
+/** The paint color of one county, straight out of feature state. Null if there
+    is no map to ask — see snapshot() on why a broken boot does not throw. */
 const colorOf = (page, id, sourceId) => page.evaluate(async ([i, src]) => {
   const app = await import(new URL('js/app.js', document.baseURI).href);
-  const st = app.ngpContext().getMap().getFeatureState({ source: src, id: i });
+  const map = app.ngpContext().getMap();
+  const st = map && map.getFeatureState({ source: src, id: i });
   return (st && st.color) || null;
 }, [id, sourceId]);
 
@@ -384,6 +424,34 @@ const slideYear = (page, year) => page.evaluate((y) => {
 const settleFrames = (page) => page.evaluate(() => new Promise((r) => {
   requestAnimationFrame(() => requestAnimationFrame(r));
 }));
+
+/**
+ * What a screen reader has just been told.
+ *
+ * The kit's `createLiveRegion()` appends one `div.sr-only[aria-live=polite]` to
+ * <body> and the app announces into it; `createToast()` makes a SECOND polite
+ * region for the visible pill, which is a different message to a different
+ * reader. Excluding the toast is what keeps "the live region said N counties"
+ * from passing on "switching boundaries…".
+ */
+const liveText = (page) => page.evaluate(() => Array.from(
+  document.querySelectorAll('[aria-live="polite"]:not(.sfsa-toast)'))
+  .map((n) => (n.textContent || '').trim()).filter(Boolean).join(' | '));
+
+/**
+ * A boundary-vintage swap, waited out.
+ *
+ * Any year move across 2015 kicks off a debounced archive fetch and shows the
+ * transient pill; a signature read before it lands is a read of the old
+ * geometry. The main run asserts the pill and the swap in their own section —
+ * this is the version for the sections that merely need to GET to a year.
+ */
+const settleVintage = async (page) => {
+  await page.waitForFunction(() => document.getElementById('app-note').hidden,
+    null, { timeout: CONFIG.switchMs }).catch(() => {});
+  await page.waitForTimeout(500);
+  await settleFrames(page);
+};
 
 /** A drawer slide is 0.2s of CSS transition and THEN the app's post-transition
     `map.resize()` (240ms, so the resize lands on the final geometry rather than
@@ -489,25 +557,35 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
      This is the guarantee Lighthouse cannot express: the app now knows about
      more than one dataset, and the LCP it is measured on is the one where
      exactly one of them has been fetched. Everything else — the nClimGrid
-     climatology, the FIPS↔FSA crosswalk — is lazy, fetched on the toggle that
-     needs it. A speculative prefetch added "for smoothness" would fail here,
-     and would also cost the best-practices score a console error if it 404'd.
-     Resource entries, not request interception: this is what the page's own
-     performance timeline says it went and got. */
+     climatology, the three USDM county sets, the FIPS↔FSA crosswalk — is lazy,
+     fetched on the switch or toggle that needs it. A speculative prefetch added
+     "for smoothness" would fail here, and would also cost the best-practices
+     score a console error if it 404'd. Resource entries, not request
+     interception: this is what the page's own performance timeline says it went
+     and got.
+
+     The lazy list is DERIVED from the probe table rather than typed: it is
+     every dataset in the app except the default view's default one, so a fifth
+     payload is covered here by the commit that adds it to config.mjs. */
   {
     const NGP = CONFIG.interfaces.ngp;
     const fetched = await resourceNames(page);
     const has = (needle) => fetched.filter((n) => n.includes(needle));
     const official = has(NGP.datasets.fsa.payload);
-    const lazy = [
-      ...has(NGP.datasets.nclimgrid.payload),
-      ...has(CROSSWALK.path.split('/').pop()),
-    ];
+    const lazy = [...has(CROSSWALK.path.split('/').pop())];
+    let lazyCount = 0;
+    for (const iface of Object.values(CONFIG.interfaces)) {
+      for (const ds of Object.values(iface.datasets)) {
+        if (iface.isDefault && ds.isDefault) continue;
+        lazyCount++;
+        lazy.push(...has(ds.payload));
+      }
+    }
     check('the boot path fetched the FSA official grazing-period payload',
       official.length > 0, `${fetched.length} resources, none named `
       + JSON.stringify(NGP.datasets.fsa.payload));
-    check('…and NOTHING ELSE: every other dataset and the crosswalk stay lazy '
-      + 'until something asks for them (the LCP guarantee)',
+    check(`…and NOTHING ELSE: all ${lazyCount} other datasets and the crosswalk `
+      + 'stay lazy until something asks for them (the LCP guarantee)',
     lazy.length === 0, lazy.join(' | '));
   }
 
@@ -1518,6 +1596,64 @@ section('▸ Drawer fixture — ?drawer=closed boots collapsed');
    6. COMPACT 375×720 — the phone.
    ══════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * THE TOUCH-TARGET CONTRACT, hoisted out of the measurement so a second view's
+ * controls can be measured on exactly the same terms.
+ *
+ * Every entry is a selector and the size the KIT's own `@media (hover: none)`
+ * block promises for it — not a flat number, because a design-system decision
+ * is not this app's defect. (40/44 are the house's WCAG 2.5.5-AAA convention;
+ * 2.5.8 Target Size (Minimum) at AA asks 24×24.)
+ *
+ * `.sfsa-drawer-tab` is deliberately absent: the kit sets it `display: none`
+ * below the compact breakpoint, so it has no client rects here and would
+ * self-skip to a vacuous pass. Its 24px `@media (hover: none)` width is a
+ * desktop-with-a-touchscreen concern, and the phone's stand-in — `#btn-drawer`
+ * — is measured as a `.nav-btn`.
+ */
+const TOUCH_CONTRACT = [
+  ['.nav-btn, .seg-btn', 40],
+  ['#type-select', 40],
+  ['.card-close, .modal-close', 44],
+  ['.sfsa-combobox input[type="search"]', 40],
+  ['#year-range', 40],
+  /* The view switcher by id as well as by class: it is the one control that
+     decides which of the app's bodies of data a phone visitor can reach, so it
+     is named here rather than left to inherit `.seg-btn`. */
+  ['#btn-view-ngp', 40],
+  ['#btn-view-usdm', 40],
+];
+
+/** The drought monitor's own controls. Measured in a SECOND pass, after a
+    switch to that view: they live in a `[data-view="usdm"]` section, so on the
+    grazing-period view they have no client rects and the pass above would skip
+    them into a vacuous pass. */
+const USDM_TOUCH_CONTRACT = [
+  ['#week-range', 40],
+  ['#btn-week-prev', 40],
+  ['#btn-week-next', 40],
+  ['#btn-usdm-fsa-lfp', 40],
+  ['#btn-usdm-reported', 40],
+  ['#btn-usdm-census', 40],
+];
+
+/** Measure every visible element the contract names. Invisible ones are
+    skipped — which is why every caller also checks WHAT it measured. */
+const measureTargets = (page, contract) => page.evaluate((rules) => {
+  const out = [];
+  for (const [sel, min] of rules) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (!el.getClientRects().length) continue;
+      const r = el.getBoundingClientRect();
+      out.push({
+        id: el.id || String(el.className).split(' ')[0],
+        w: Math.round(r.width), h: Math.round(r.height), min,
+      });
+    }
+  }
+  return out;
+}, contract);
+
 section('▸ Compact 375×720 (touch)');
 {
   const s = await open({ viewport: CONFIG.viewports.compact, touch: true });
@@ -1682,39 +1818,11 @@ section('▸ Compact 375×720 (touch)');
     stacked.drawerOpen && stacked.sheetOpen, JSON.stringify(stacked));
   await s.shot('17b-compact-drawer-over-sheet');
 
-  /* Every interactive control on the phone, measured against the size the KIT's
-     own @media (hover: none) block promises for it rather than against a flat
-     number — a design-system decision is not this app's defect, and the
-     measurement is printed either way so a reader can disagree with the kit in
-     the open. (The 40/44 numbers are the house's WCAG 2.5.5-AAA convention;
-     2.5.8 Target Size (Minimum) at AA asks 24×24.)
-
-     `.sfsa-drawer-tab` is deliberately absent from the list: the kit sets it
-     `display: none` below the compact breakpoint, so it has no client rects
-     here and would self-skip to a vacuous pass. Its 24px `@media (hover: none)`
-     width is a desktop-with-a-touchscreen concern, and the phone's stand-in —
-     `#btn-drawer` — is measured as a `.nav-btn` below. */
-  const targets = await page.evaluate(() => {
-    const contract = [
-      ['.nav-btn, .seg-btn', 40],
-      ['#type-select', 40],
-      ['.card-close, .modal-close', 44],
-      ['.sfsa-combobox input[type="search"]', 40],
-      ['#year-range', 40],
-    ];
-    const out = [];
-    for (const [sel, min] of contract) {
-      for (const el of document.querySelectorAll(sel)) {
-        if (!el.getClientRects().length) continue;
-        const r = el.getBoundingClientRect();
-        out.push({
-          id: el.id || String(el.className).split(' ')[0],
-          w: Math.round(r.width), h: Math.round(r.height), min,
-        });
-      }
-    }
-    return out;
-  });
+  /* Every interactive control on the phone, measured against TOUCH_CONTRACT
+     above — the size the KIT's own @media (hover: none) block promises for each
+     one. The measurement is printed either way, so a reader can disagree with
+     the kit in the open. */
+  const targets = await measureTargets(page, TOUCH_CONTRACT);
   const undersized = targets.filter((m) => m.w < m.min || m.h < m.min);
   console.log('    touch targets: '
     + targets.map((m) => `${m.id} ${m.w}×${m.h}`).join(', '));
@@ -1746,6 +1854,64 @@ section('▸ Compact 375×720 (touch)');
     await page.evaluate(() => document.getElementById('county-card').hidden));
 
   s.clean('compact');
+
+  /* ── The second view's controls, on the phone ────────────────────────────
+     LAST in this section, and after both surfaces are shut, so nothing above
+     depends on the state this leaves behind. A week scrubber is the app's first
+     control that is neither a button nor a select, and a range input with two
+     icon step buttons beside it is exactly the shape that ends up 24px tall on
+     a phone. It cannot be measured from the grazing-period view — the drought
+     monitor's sections are `[hidden]` there, and an invisible element skips the
+     measurement and passes vacuously — so this reopens the drawer, switches
+     view for real, and asserts both that nothing is undersized AND that every
+     control the contract names was actually on screen to be measured. */
+  // A raw .tap() here has crashed real runs: the tap lands right after the
+  // sheet-close map.resize(), and on software WebGL that repaint can stall the
+  // renderer long enough for Playwright's scroll-into-view handshake to time
+  // out. Settle the frame loop first, give the tap its own bounded timeout,
+  // and retry once after another settle — a still-failing tap fails the named
+  // check below with a reason instead of eating the whole summary (the same
+  // rule clickControl encodes for clicks).
+  await settleFrames(page);
+  let drawerTapped = await page.locator('#btn-drawer').tap({ timeout: 15000 })
+    .then(() => true).catch(() => false);
+  if (!drawerTapped) {
+    await settleFrames(page);
+    drawerTapped = await page.locator('#btn-drawer').tap({ timeout: 15000 })
+      .then(() => true).catch(() => false);
+  }
+  await settleDrawer(page);
+  const usdmSeq = await viewSeq(page);
+  const switched = drawerTapped
+    && await clickControl(page, CONFIG.interfaces.usdm.switchSel);
+  const arrived = switched && await awaitViewSeq(page, usdmSeq);
+  check('a phone visitor can reach the drought monitor from the drawer', arrived,
+    !drawerTapped ? '#btn-drawer never accepted the tap (renderer busy after the sheet-close resize?)'
+      : switched ? `data-ngp-view-seq stayed at ${usdmSeq}`
+        : `${CONFIG.interfaces.usdm.switchSel} was not clickable at 375px`);
+  const usdmTargets = await measureTargets(page, USDM_TOUCH_CONTRACT);
+  const usdmUndersized = usdmTargets.filter((m) => m.w < m.min || m.h < m.min);
+  const wanted = USDM_TOUCH_CONTRACT.map(([sel]) => sel.replace('#', ''));
+  const measured = new Set(usdmTargets.map((m) => m.id));
+  const unmeasured = wanted.filter((id) => !measured.has(id));
+  console.log('    drought-monitor touch targets: '
+    + usdmTargets.map((m) => `${m.id} ${m.w}×${m.h}`).join(', '));
+  check('the drought monitor\'s own controls meet the same touch sizes — the '
+    + 'week scrubber, its two step buttons and the three dataset buttons, all '
+    + 'of them really on screen rather than skipped for being hidden',
+  arrived && usdmUndersized.length === 0 && unmeasured.length === 0,
+  [arrived ? '' : 'the view switch never completed, so the sizes below are '
+    + 'whatever was on screen',
+    usdmUndersized.map((m) => `${m.id} ${m.w}×${m.h} < ${m.min}`).join(', '),
+    unmeasured.length ? 'never measured: ' + unmeasured.join(', ') : '']
+    .filter(Boolean).join(' | '));
+  check('the phone does not scroll sideways with the week scrubber in the drawer',
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1),
+    await page.evaluate(() => `scrollWidth ${document.documentElement.scrollWidth} > `
+      + `innerWidth ${window.innerWidth}`));
+  await s.shot('17c-compact-usdm');
+  s.clean('compact drought monitor');
   await s.ctx.close();
 }
 
@@ -1756,13 +1922,27 @@ section('▸ Compact 375×720 (touch)');
 /**
  * Drive one non-default view end to end, from the probe table entry alone.
  *
- * NOT CALLED IN PR 1, and that is deliberate rather than an oversight: there
- * is exactly one view today, so step 1 would be a no-op click on an
- * already-pressed button and every later step would restate what §7 below
- * already asserts by hand for the default view. It lands now so that PR 2's
- * diff is one probe-table entry plus one call — the shape of what a view owes
- * the gates is frozen here, where it can be reviewed once instead of argued
- * three times.
+ * Written in PR 1 against no caller and first exercised in PR 2 by the drought
+ * monitor, which is where three of its steps turned out to be written against
+ * markup and conventions that did not exist:
+ *
+ *   · THE CATEGORICAL LEGEND. The kit's `swatches()` builds
+ *     `li.sfsa-legend-item > span.sfsa-legend-label` and appends the no-data
+ *     chip as one more row of the same list (style v0.2.0 ui/legend.js). The
+ *     template looked for `[data-legend-item]`, which nothing has ever emitted,
+ *     and would have reported "0 of 6 classes labelled" for a correct legend.
+ *     It now reads the kit's own markup and holds the no-data chip to its
+ *     documented place: LAST, and named in words.
+ *   · ORACLES CAN FAIL TO EXIST. A row-count oracle reaches into the live
+ *     decoder, and before the view is up there is nothing to reach. Returning
+ *     a number OR a string (the reason) lets a missing oracle SKIP with a
+ *     diagnosis instead of failing as `rows === undefined` — see the field list
+ *     in tools/config.mjs.
+ *   · WHERE extraChecks LIVES. A view's own controls have to be asserted with
+ *     the paint-signature and marker probes at the top of this file, and
+ *     tools/config.mjs is a data file that must not assert. So the body may
+ *     also be passed in at the call site; the probe table still holds every
+ *     selector, format and fixture it reads.
  *
  * The steps, in order, each ending where the plan says it should:
  *   1  switch          aria-pressed follows, the marker advances
@@ -1782,11 +1962,14 @@ section('▸ Compact 375×720 (touch)');
  *   12 clean() + shot
  *
  * @param {object} iface an entry from CONFIG.interfaces.
- * @param {{session: object, bootResources: string[]}} opts the booted session
- *   from open() (with `downloads: true` if step 9 is wanted) and the resource
- *   list read at boot, for step 3.
+ * @param {{session: object, bootResources: string[],
+ *          extraChecks: ?function}} opts the booted session from open() (with
+ *   `downloads: true` if step 9 is wanted), the resource list read at boot for
+ *   step 3, and the view's own control checks if they are not on the entry.
  */
-async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
+async function verifyInterfaceSection(iface, {
+  session, bootResources = [], extraChecks = iface.extraChecks,
+}) {
   const { page, clean, shot } = session;
   const dflt = DEFAULT_INTERFACE;
   const ds = Object.values(iface.datasets).find((d) => d.isDefault)
@@ -1827,9 +2010,13 @@ async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
   `${sigBefore.colored} @${sigBefore.hash} → ${sigAfter.colored} @${sigAfter.hash}`);
   if (typeof iface.paintOracle === 'function') {
     const expect = await iface.paintOracle(page);
-    check('every county with data in this view carries a colour, and no county '
-      + 'without data kept one (no stale paint across the switch)',
-    sigAfter.colored === expect, `${sigAfter.colored} painted, ${expect} expected`);
+    if (typeof expect === 'number') {
+      check('every county with data in this view carries a colour, and no county '
+        + 'without data kept one (no stale paint across the switch)',
+      sigAfter.colored === expect, `${sigAfter.colored} painted, ${expect} expected`);
+    } else {
+      skip(`${iface.slug}: painted count against the data`, String(expect));
+    }
   } else {
     skip(`${iface.slug}: painted count against the data`,
       'this view\'s probe-table entry defines no paintOracle');
@@ -1846,27 +2033,47 @@ async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
       && (now.legend.key || '').length > 20,
     JSON.stringify(now.legend));
   if (Array.isArray(iface.legend.items)) {
+    /* The kit's own markup, not a data- attribute of ours: swatches() emits
+       `li.sfsa-legend-item` rows and appends the no-data chip as the LAST one
+       (ui/legend.js — "no data is a category, and it is always last"). */
     const items = await page.evaluate(() => Array.from(
-      document.querySelectorAll('#legend-swatches [data-legend-item]'))
+      document.querySelectorAll('#legend-swatches .sfsa-legend-item'))
       .map((n) => (n.textContent || '').trim()));
+    const classes = iface.legend.items;
     check(`${iface.label}: the categorical legend labels every class in words `
       + '(colour is never the only channel)',
-    items.length === iface.legend.items.length
-      && iface.legend.items.every((t, i) => (items[i] || '').includes(t)),
+    items.length === classes.length + (iface.legend.noData ? 1 : 0)
+      && classes.every((t, i) => (items[i] || '').includes(t)),
     JSON.stringify(items));
+    if (iface.legend.noData) {
+      check(`${iface.label}: "no data" is a NAMED category on the end of that `
+        + 'list, not an unexplained grey',
+      (items[items.length - 1] || '').includes(iface.legend.noData),
+      JSON.stringify(items[items.length - 1] || null));
+    }
   }
   clean(`view ${iface.slug} switch`);
 
   /* 6 · The view's own controls. */
-  if (typeof iface.extraChecks === 'function') {
-    await iface.extraChecks({ page, check, skip, clean, shot, iface });
+  if (typeof extraChecks === 'function') {
+    await extraChecks({ page, check, skip, clean, shot, iface });
   }
 
-  /* 7 · Card. */
-  await page.evaluate(async (id) => {
+  /* 7 · Card.
+     The selection goes THROUGH THE APP, so a view whose wiring is half-landed
+     throws here — inside a page.evaluate, which rejects in Node and used to
+     abort the process, taking the summary and every later section with it. A
+     throw is turned into this step's own failed check instead, naming the
+     app-side error. */
+  const selected = await page.evaluate(async (id) => {
     const app = await import(new URL('js/app.js', document.baseURI).href);
     app.ngpContext().selectCounty(id);
-  }, iface.county.id);
+    return true;
+  }, iface.county.id).catch((err) => String(err).split('\n')[0]);
+  if (selected !== true) {
+    check(`${iface.label}: selecting ${iface.county.name} through the app does `
+      + 'not throw', false, String(selected));
+  }
   await page.waitForFunction(() => !document.getElementById('county-card').hidden,
     null, { timeout: 8000 }).catch(() => {});
   const card = await page.evaluate(() => ({
@@ -1897,8 +2104,12 @@ async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
   }));
   if (typeof iface.tableOracle === 'function') {
     const expect = await iface.tableOracle(page);
-    check(`${iface.label}: the table is this view's data, row for row`,
-      table.rows === expect, `${table.rows} rows vs ${expect} records`);
+    if (typeof expect === 'number') {
+      check(`${iface.label}: the table is this view's data, row for row`,
+        table.rows === expect, `${table.rows} rows vs ${expect} records`);
+    } else {
+      skip(`${iface.slug}: table row count against the data`, String(expect));
+    }
   } else {
     skip(`${iface.slug}: table row count against the data`,
       'this view\'s probe-table entry defines no tableOracle');
@@ -1911,7 +2122,7 @@ async function verifyInterfaceSection(iface, { session, bootResources = [] }) {
   clean(`view ${iface.slug} card and table`);
 
   /* 9 · Export. Needs a context opened with downloads: true. */
-  if (session.downloads) {
+  if (session.acceptsDownloads) {
     const pending = page.waitForEvent('download', { timeout: 120000 })
       .catch(() => null);
     await page.locator('#btn-export').click();
@@ -2298,6 +2509,632 @@ section('▸ View switcher + NGP datasets — FSA official ↔ nClimGrid climato
     + JSON.stringify(settledSnap.markers.ngpViewError || null));
   s.clean('rapid dataset toggle');
 
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   8. THE DROUGHT MONITOR — the second interface, driven by the template.
+
+   One body of data, three ways of counting counties, and a control the app has
+   never had before: a week inside the year. Everything structural — the switch,
+   the lazy fetch, the legend body, the card, the table, the poster, the state
+   round trip — is the section template above, from the probe table entry alone.
+   What is below is only what this view ADDS, and every one of those checks is
+   about a claim a screenshot cannot make:
+
+     · a range input that repaints the map without a fetch (so the transition
+       marker must NOT move — a week scrub is not a view change);
+     · three datasets that disagree about what a county is, where the
+       disagreement is the POINT and has to be counted out loud rather than
+       quietly dropped (Connecticut, on the NDMC-reported set);
+     · a year domain that is re-authored on the way in and handed back on the
+       way out, with a shared year outside the other view's range clamped and
+       ANNOUNCED rather than silently moved.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** The week control's selectors, flattened for the in-page probe: Playwright
+    serialises evaluate() arguments as data, and the probe-table entry carries
+    RegExps (which do not survive the trip). The patterns are applied HERE, in
+    Node, against the strings the probe brings back. */
+const WEEK = CONFIG.interfaces.usdm.week;
+const WEEK_SELS = {
+  sectionSel: WEEK.sectionSel, rangeSel: WEEK.rangeSel, outSel: WEEK.outSel,
+  prevSel: WEEK.prevSel, nextSel: WEEK.nextSel,
+  rangeId: WEEK.rangeSel.replace('#', ''),
+};
+
+/** Everything the week control, its URL param and its stored state say, in one
+    round trip. `exists: false` is an answer, not a crash: the checks that
+    depend on the control then skip with a reason instead of throwing a
+    Playwright stack trace out of the middle of the section. */
+const weekProbe = (page) => page.evaluate((s) => {
+  const r = document.querySelector(s.rangeSel);
+  const o = document.querySelector(s.outSel);
+  const sec = document.querySelector(s.sectionSel);
+  const prev = document.querySelector(s.prevSel);
+  const next = document.querySelector(s.nextSel);
+  const url = new URL(location.href);
+  const label = (n) => (n
+    ? (n.getAttribute('aria-label') || (n.textContent || '')).trim() : null);
+  return {
+    exists: !!r,
+    hasPrev: !!prev,
+    hasNext: !!next,
+    value: r ? r.value : null,
+    min: r ? r.min : null,
+    max: r ? r.max : null,
+    step: r ? r.step : null,
+    disabled: r ? !!r.disabled : null,
+    /** WCAG 1.3.1/4.1.2: a bare range is an unnamed control. Either form
+        counts — an sr-only <label for> (what the app does for the year) or an
+        aria-label. */
+    named: r ? !!(r.getAttribute('aria-label')
+      || document.querySelector(`label[for="${s.rangeId}"]`)) : null,
+    outTag: o ? o.tagName.toLowerCase() : null,
+    outFor: o ? o.getAttribute('for') : null,
+    out: o ? (o.textContent || '').trim() : null,
+    prevLabel: label(prev),
+    nextLabel: label(next),
+    sectionHidden: sec ? sec.hidden : null,
+    weekParam: url.searchParams.get('week'),
+    datasetParam: url.searchParams.get('dataset'),
+    viewParam: url.searchParams.get('view'),
+    seq: Number(document.documentElement.dataset.ngpViewSeq || 0),
+    stored: (() => {
+      try { return Object.keys(localStorage); } catch (e) { return []; }
+    })(),
+    storedDataset: (() => {
+      try { return localStorage.getItem('sfsa-ngp-dataset-usdm'); }
+      catch (e) { return 'unavailable'; }
+    })(),
+  };
+}, WEEK_SELS);
+
+/** "Jul 24, 2012 · week 30 of 52" → {n: 30, of: 52}. The <output> is the
+    harness's canonical week number: `?week` is 1-based WITHIN THE YEAR, and
+    reading the printed number keeps every assertion independent of whether the
+    range input carries that number or an absolute week index. */
+function weekNumber(out) {
+  const m = CONFIG.interfaces.usdm.week.outWeek.exec(out || '');
+  return m ? { n: Number(m[1]), of: Number(m[2]) } : null;
+}
+
+/**
+ * Move the scrubber the way a pointer does, to the Nth week OF THE YEAR.
+ *
+ * `min` is week 1 of the selected year whichever units the input uses — 1 if it
+ * counts weeks within the year, the year's first absolute index if it counts
+ * along the whole record — so `min + (n - 1)` is week n either way. `max` (with
+ * n = null) is the default: the last week the record holds for this year.
+ *
+ * Returns false if there is no scrubber to move, rather than throwing: a
+ * missing control is a named failure of its own check, not a reason for the
+ * sections after it to go unreported.
+ */
+const scrubWeek = (page, n) => page.evaluate(([s, k]) => {
+  const r = document.querySelector(s.rangeSel);
+  if (!r) return false;
+  r.value = k === null ? r.max : String(Number(r.min) + (k - 1));
+  r.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}, [WEEK_SELS, n]);
+
+/** The year domain the ACTIVE decoder actually covers. The ceiling is never a
+    literal in this file: the USDM record grows a week every Tuesday. */
+const dataYears = (page) => page.evaluate(async () => {
+  const app = await import(new URL('js/app.js', document.baseURI).href);
+  const d = app.ngpContext().getData();
+  const ys = (d && typeof d.years === 'function' ? d.years() : []) || [];
+  return { min: ys[0] ?? null, max: ys[ys.length - 1] ?? null, n: ys.length };
+});
+
+/** A week scrub's repaint, waited out: the app throttles it to a frame (like
+    the year slider) and debounces the announcement to ~350ms. */
+const settleWeek = async (page) => {
+  await page.waitForTimeout(600);
+  await settleFrames(page);
+};
+
+/**
+ * The drought monitor's own controls — step 6 of the section template.
+ *
+ * Lives here rather than in the probe table because every check below needs the
+ * paint-signature, marker and live-region probes at the top of this file, and
+ * tools/config.mjs is a data file that must not assert (its own header says so).
+ * The selectors, formats, fixtures and oracles it reads are all in the entry.
+ */
+async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
+  const DS = iface.datasets;
+
+  /* ── 8a. The week scrubber ──────────────────────────────────────────────── */
+  section('▸ Drought monitor — the week scrubber');
+  const w0 = await weekProbe(page);
+  check('the drought monitor ships a week-within-year scrubber: a range input, '
+    + 'an <output> bound to it, and a step button on either side',
+  w0.exists && w0.outTag === 'output' && w0.outFor === WEEK_SELS.rangeId
+    && w0.hasPrev && w0.hasNext,
+  JSON.stringify({ range: w0.exists, out: w0.outTag, for: w0.outFor,
+    prev: w0.hasPrev, next: w0.hasNext }));
+
+  if (!w0.exists) {
+    skip('the week scrubber drives the map', `${WEEK.rangeSel} is not in the page`);
+  } else {
+    check('the scrubber and its two step buttons are NAMED, not left as an '
+      + 'unlabelled slider and two icons',
+    w0.named && /previous week/i.test(w0.prevLabel || '')
+      && /next week/i.test(w0.nextLabel || ''),
+    JSON.stringify({ named: w0.named, prev: w0.prevLabel, next: w0.nextLabel }));
+    check('the <output> reads as a DATE and a place in the year — "Jul 24, 2012 '
+      + '· week 30 of 52" — because "week 30" is not a date and a date alone '
+      + 'does not say how far through the year it is',
+    WEEK.outFormat.test(w0.out || '')
+      && /[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}/.test(w0.out || ''),
+    JSON.stringify(w0.out));
+    check('the scrubber opens on the LATEST week the record holds for this year, '
+      + 'and a default says nothing in the URL',
+    w0.value === w0.max && w0.weekParam === null,
+    JSON.stringify({ value: w0.value, max: w0.max, week: w0.weekParam }));
+
+    /* One scrub, and everything that has to move with it. */
+    const sigBefore = await paintSignature(page, CONFIG.sourceId);
+    const seqBefore = await viewSeq(page);
+    await scrubWeek(page, 10);
+    await settleWeek(page);
+    const w1 = await weekProbe(page);
+    const sigAfter = await paintSignature(page, CONFIG.sourceId);
+    const n1 = weekNumber(w1.out);
+    check('scrubbing repaints the choropleth (feature-state signature changed) '
+      + '— the drought map is a different map every week',
+    sigBefore.hash !== sigAfter.hash,
+    `${sigBefore.colored} @${sigBefore.hash} → ${sigAfter.colored} @${sigAfter.hash}`);
+    check('the <output> followed the thumb to week 10 of the selected year',
+      !!n1 && n1.n === 10, JSON.stringify(w1.out));
+    check('the week is mirrored into the URL as a 1-based week WITHIN THE YEAR '
+      + '(?week=10), not as an index into the whole record',
+    w1.weekParam === '10', page.url());
+    check('a week scrub does NOT bump data-ngp-view-seq: that marker sequences '
+      + 'fetch-involving transitions, and a scrub is a synchronous repaint',
+    w1.seq === seqBefore, `seq ${seqBefore} → ${w1.seq}`);
+    const said = await liveText(page);
+    check('the live region names the week once the scrub comes to rest (the '
+      + 'canvas has no text a screen reader can reach)',
+    /week of/i.test(said)
+      && said.includes((/[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}/.exec(w1.out) || [''])[0]),
+    JSON.stringify(said.slice(0, 160)));
+    check('the week is a SELECTION, not a preference: nothing in localStorage '
+      + 'holds it (a returning visitor gets the latest week, not last month\'s)',
+    !w1.stored.some((k) => /week/i.test(k)), JSON.stringify(w1.stored));
+
+    /* The keyboard, on the focused range — WCAG 2.1.1 for a control whose
+       whole job is to move one step at a time. */
+    await page.locator(WEEK.rangeSel).focus();
+    await page.keyboard.press('ArrowRight');
+    await settleWeek(page);
+    const right = weekNumber((await weekProbe(page)).out);
+    await page.keyboard.press('ArrowLeft');
+    await settleWeek(page);
+    const left = weekNumber((await weekProbe(page)).out);
+    check('ArrowRight on the focused scrubber steps one week forward and '
+      + 'ArrowLeft steps back (10 → 11 → 10)',
+    !!right && !!left && right.n === 11 && left.n === 10,
+    JSON.stringify({ right: right && right.n, left: left && left.n }));
+
+    /* The two step buttons: the same move for a thumb that cannot grab a
+       12-pixel-wide week. Clicked softly (clickControl) — a missing step button
+       is one named failure, not the end of the run. */
+    await clickControl(page, WEEK.nextSel);
+    await settleWeek(page);
+    const nextW = await weekProbe(page);
+    await clickControl(page, WEEK.prevSel);
+    await settleWeek(page);
+    const prevW = await weekProbe(page);
+    const nextN = weekNumber(nextW.out);
+    const prevN = weekNumber(prevW.out);
+    check('Next week and Previous week move the same one week, and the URL '
+      + 'follows both ways',
+    !!nextN && !!prevN && nextN.n === 11 && prevN.n === 10
+      && nextW.weekParam === '11' && prevW.weekParam === '10',
+    JSON.stringify({ next: nextN && nextN.n, nextParam: nextW.weekParam,
+      prev: prevN && prevN.n, prevParam: prevW.weekParam }));
+
+    /* Back to the default, which must take the param with it. */
+    await scrubWeek(page, null);
+    await settleWeek(page);
+    const home = await weekProbe(page);
+    const homeN = weekNumber(home.out);
+    check('scrubbing back to the latest week DROPS ?week — a param at its '
+      + 'default is a permanent smudge on every link shared afterwards',
+    home.weekParam === null && !!homeN && homeN.n === homeN.of,
+    `week=${home.weekParam}, output ${JSON.stringify(home.out)}`);
+    clean('week scrubber');
+    await shot('19-usdm-week');
+  }
+
+  /* ── 8b. Three county keys for one drought map ───────────────────────────
+     The three datasets are the same USDM, counted against three ideas of what
+     a county is. Switching between them is a fetch, a re-join through the
+     crosswalk and a recolor, so each one waits on the marker; and each one has
+     to be HONEST about what it could not reach — which is the whole reason FSA
+     LFP boundaries is the default and NDMC-reported is not. */
+  section('▸ Drought monitor — three county keys, and what each one cannot reach');
+  let prevSig = await paintSignature(page, CONFIG.sourceId);
+  for (const ds of [DS.reported, DS.census, DS['fsa-lfp']]) {
+    const seq = await viewSeq(page);
+    const clicked = await clickControl(page, ds.sel);
+    const bumped = clicked && await awaitViewSeq(page, seq);
+    const vc = await viewControls(page);
+    const snap = await snapshot(page);
+    const sig = await paintSignature(page, CONFIG.sourceId);
+    const probe = await weekProbe(page);
+    check(`the ${JSON.stringify(ds.label)} toggle completes on data-ngp-view-seq `
+      + '(fetch, crosswalk re-join, recolor, feature-state flush)',
+    bumped, clicked ? `data-ngp-view-seq stayed at ${seq}`
+      : `${ds.sel} was not clickable — the drought-monitor dataset seg is missing`);
+    check(`${ds.label}: it is the one pressed button of the view's three, and no `
+      + 'grazing-period dataset button is in play',
+    vc.datasets.length === 1 && vc.datasets[0] === ds.id && vc.datasetBtns === 3,
+    `${vc.datasetBtns} button(s) in play, pressed ${JSON.stringify(vc.datasets)}`);
+    check(`${ds.label}: the app is on it by its own account, with no transition `
+      + 'error left behind',
+    snap.state.dataset === ds.id && snap.markers.ngpViewError === undefined,
+    JSON.stringify({ dataset: snap.state.dataset,
+      error: snap.markers.ngpViewError || null }));
+    check(ds.isDefault
+      ? `${ds.label} is the default, so ?dataset is DROPPED rather than rewritten`
+      : `?dataset=${ds.id} appears — a non-default dataset is shareable state`,
+    probe.datasetParam === (ds.isDefault ? null : ds.id), page.url());
+    check(`${ds.label}: the choropleth repainted onto it — three county keys are `
+      + 'three different maps, not one map relabelled',
+    sig.hash !== prevSig.hash,
+    `${prevSig.colored} @${prevSig.hash} → ${sig.colored} @${sig.hash}`);
+    const expect = await iface.paintOracle(page);
+    if (typeof expect === 'number') {
+      check(`${ds.label}: every FSA county this week's classes reach carries a `
+        + 'colour, and nothing else does',
+      sig.colored === expect, `${sig.colored} painted, ${expect} expected`);
+    } else {
+      skip(`${ds.label}: painted count against the crosswalked data`, String(expect));
+    }
+    check(`${ds.label}: the choice is remembered for the next visit `
+      + '(sfsa-ngp-dataset-usdm)',
+    probe.storedDataset === ds.id,
+    'stored ' + JSON.stringify(probe.storedDataset));
+
+    /* The unmatched count — the reason the default is what it is. */
+    const unmatched = await iface.unmatchedOracle(page);
+    const said = await liveText(page);
+    const claim = /(\d+)\s+reported areas could not be matched to an FSA county/i
+      .exec(said);
+    if (typeof unmatched !== 'number') {
+      skip(`${ds.label}: the unmatched-area count`, String(unmatched));
+    } else if (ds.id === 'reported') {
+      check(`NDMC reported: the live region COUNTS the reported areas the FSA `
+        + `crosswalk cannot reach (${unmatched} of them — Connecticut is keyed `
+        + 'as its nine planning regions for the whole record, and no FSA county '
+        + 'covers them), rather than dropping them silently',
+      unmatched === DS.reported.unmatchedAtDefaultYear && !!claim
+        && Number(claim[1]) === unmatched,
+      `oracle says ${unmatched} (expected ${DS.reported.unmatchedAtDefaultYear}), `
+        + `the live region says ${JSON.stringify(said.slice(0, 200))}`);
+    } else if (ds.isDefault) {
+      check('FSA LFP boundaries: nothing is left over to report — FSA\'s own LFP '
+        + 'geometry is keyed the way this map is, which is why it is the default',
+      unmatched === 0 && !claim,
+      `oracle says ${unmatched}, live region `
+        + JSON.stringify(said.slice(0, 200)));
+    }
+    clean(`usdm dataset → ${ds.id}`);
+    await shot(`19b-usdm-${ds.id}`);
+    prevSig = sig;
+  }
+
+  /* ── 8c. The shared year, re-authored ───────────────────────────────────
+     The year is the visitor's, not the view's — but the two views do not cover
+     the same years, and the USDM record starts eight years before FSA's first
+     program year. So the slider's DOMAIN belongs to whichever view is on
+     screen, and a year the next view has never heard of has to be moved and
+     SAID rather than silently accepted. */
+  section('▸ Drought monitor — the shared year, re-authored and clamped');
+  {
+    const dflt = DEFAULT_INTERFACE;
+    const vc = await viewControls(page);
+    const years = await dataYears(page);
+    check(`the year slider is re-authored to the USDM record: min `
+      + `${iface.yearDomain.min}, and a ceiling read from the payload rather `
+      + 'than typed into a harness (the record grows every Tuesday)',
+    vc.yearMin === String(iface.yearDomain.min)
+      && years.min === iface.yearDomain.min
+      && vc.yearMax === String(years.max) && vc.yearDisabled === false,
+    JSON.stringify({ slider: [vc.yearMin, vc.yearMax], data: years,
+      disabled: vc.yearDisabled }));
+
+    /* A year only this view has, then a switch to the view that does not. */
+    await slideYear(page, 2004);
+    await settleVintage(page);
+    const at2004 = await snapshot(page);
+    check('2004 is reachable on the drought monitor — eight years before FSA '
+      + 'published a grazing period',
+    at2004.state.year === 2004 && at2004.vintage === 'dd17',
+    JSON.stringify({ year: at2004.state.year, vintage: at2004.vintage }));
+
+    const saidBefore = await liveText(page);
+    const seq = await viewSeq(page);
+    await clickControl(page, dflt.switchSel);
+    await awaitViewSeq(page, seq);
+    await settleVintage(page);
+    const home = await viewControls(page);
+    const homeSnap = await snapshot(page);
+    const saidAfter = await liveText(page);
+    check(`switching to ${dflt.label} CLAMPS the out-of-domain year to `
+      + `${dflt.yearDomain.min}, the first program year FSA published, and puts `
+      + 'the domain back with it',
+    homeSnap.state.year === dflt.yearDomain.min
+      && home.year === String(dflt.yearDomain.min)
+      && home.yearMin === String(dflt.yearDomain.min),
+    JSON.stringify({ year: homeSnap.state.year, slider: home.year,
+      min: home.yearMin }));
+    /* The clamp has to be SAID, and "said" cannot mean "the ordinary
+       view-switch sentence happens to contain 2008" — every grazing-period
+       announcement contains its year. So the live region has to have changed,
+       to name the year the app moved to, AND to acknowledge the move; the
+       vocabulary that counts as acknowledging it is the copy contract on the
+       probe-table entry (yearDomain.clampSays), which is where a wording change
+       is one line. */
+    check('…and the clamp is ANNOUNCED rather than silent: the live region '
+      + 'changed, names the year the app moved to, and says that it moved',
+    saidAfter !== saidBefore && saidAfter.includes(String(dflt.yearDomain.min))
+      && dflt.yearDomain.clampSays.test(saidAfter),
+    `live region says ${JSON.stringify(saidAfter.slice(0, 220))} — it must name `
+      + `${dflt.yearDomain.min} and match ${dflt.yearDomain.clampSays}`);
+
+    const seqBack = await viewSeq(page);
+    await clickControl(page, iface.switchSel);
+    await awaitViewSeq(page, seqBack);
+    const back = await viewControls(page);
+    check('switching back re-authors the USDM domain again, and the clamped '
+      + 'year stays clamped — the app moved the visitor once, not twice',
+    back.yearMin === String(iface.yearDomain.min)
+      && back.year === String(dflt.yearDomain.min),
+    JSON.stringify({ min: back.yearMin, year: back.year }));
+    clean('year domain re-author');
+  }
+
+  /* ── 8d. The week survives a round trip ─────────────────────────────────
+     A year both views hold, so nothing is clamped and the only thing that can
+     change is the week itself. */
+  section('▸ Drought monitor — the week is remembered across a view switch');
+  {
+    const dflt = DEFAULT_INTERFACE;
+    await slideYear(page, 2012);
+    await settleVintage(page);
+    await scrubWeek(page, 10);
+    await settleWeek(page);
+    const before = await weekProbe(page);
+    const beforeN = weekNumber(before.out);
+
+    const seq = await viewSeq(page);
+    await clickControl(page, dflt.switchSel);
+    await awaitViewSeq(page, seq);
+    const away = await weekProbe(page);
+    check('while the grazing periods are on screen the drought monitor\'s ?week '
+      + 'is dropped from the URL — only the active view\'s params are emitted',
+    before.weekParam === '10' && away.weekParam === null
+      && away.viewParam === null,
+    `?week was ${JSON.stringify(before.weekParam)} on the drought monitor and is `
+      + `${JSON.stringify(away.weekParam)} here — ${page.url()}`);
+
+    const seqBack = await viewSeq(page);
+    await clickControl(page, iface.switchSel);
+    await awaitViewSeq(page, seqBack);
+    const again = await weekProbe(page);
+    const againN = weekNumber(again.out);
+    check('and switching back restores the week the visitor left it on, output '
+      + 'and URL together (session memory, not a reset to the latest week)',
+    !!beforeN && !!againN && againN.n === beforeN.n && again.weekParam === '10',
+    JSON.stringify({ before: beforeN && beforeN.n, again: againN && againN.n,
+      param: again.weekParam }));
+    clean('week across a view switch');
+  }
+}
+
+section('▸ View usdm — the drought monitor, end to end');
+{
+  const USDM = CONFIG.interfaces.usdm;
+  /* A FRESH context, opened for downloads so the template's export step runs,
+     and the boot resource list read BEFORE anything is switched — step 3's
+     lazy-fetch proof is a comparison against it. */
+  const s = await open({ downloads: true });
+  check('the drought-monitor page reaches ngpReady on the boot payload', s.ready);
+  s.clean('usdm section boot');
+  const bootResources = await resourceNames(s.page);
+  await verifyInterfaceSection(USDM, {
+    session: s, bootResources, extraChecks: usdmExtraChecks,
+  });
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   9. DEEP LINK ?view=usdm&year=2012&week=30&county=30063 — on the §2 model.
+
+   Every param of a shared drought-monitor link, honoured on LOAD rather than
+   by replaying the interactions that would have produced it. The week is the
+   interesting one: it is the app's only param that means nothing without the
+   year beside it, and the app has to resolve "week 30 of 2012" against the
+   payload's own Tuesday grid before it can paint anything.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Deep link ?view=usdm&year=2012&week=30&county=30063');
+{
+  const USDM = CONFIG.interfaces.usdm;
+  const E = USDM.deepLinkExpect;
+  const s = await open({ query: USDM.deepLink });
+  const { page } = s;
+  check('the deep-linked drought-monitor page reaches ngpReady', s.ready);
+
+  const snap = await snapshot(page);
+  const vc = await viewControls(page);
+  const w = await weekProbe(page);
+  const n = weekNumber(w.out);
+  /* The card's VALUES, one per <dd>, not the concatenated text of the whole
+     list: `#card-rows`.textContent runs the terms and their values together
+     ("Drought classNone — drought-free"), which leaves no word boundary in
+     front of the class name a check wants to find. */
+  const card = await page.evaluate(() => ({
+    open: !document.getElementById('county-card').hidden,
+    title: (document.getElementById('card-title').textContent || '').trim(),
+    terms: Array.from(document.querySelectorAll('#card-rows dt'))
+      .map((n) => (n.textContent || '').trim()),
+    values: Array.from(document.querySelectorAll('#card-rows dd'))
+      .map((n) => (n.textContent || '').trim()),
+  }));
+
+  check('?view=usdm boots straight onto the drought monitor: the marker, the '
+    + 'pressed switcher button, and only its own drawer sections',
+  snap.markers.ngpView === USDM.slug && snap.state.view === USDM.slug
+    && vc.views.length === 1 && vc.views[0] === USDM.slug
+    && vc.sections.every((sec) => (sec.view === USDM.slug) === !sec.hidden),
+  JSON.stringify({ marker: snap.markers.ngpView, pressed: vc.views,
+    sections: vc.sections }));
+  check(`the year is ${E.year} on the USDM domain (min ${USDM.yearDomain.min}), `
+    + `drawn on the ${E.vintage} boundaries that were in force for it`,
+  vc.year === String(E.year) && vc.yearMin === String(USDM.yearDomain.min)
+    && snap.vintage === E.vintage,
+  JSON.stringify({ year: vc.year, min: vc.yearMin, vintage: snap.vintage }));
+  check(`?week=${E.week} resolved against the payload's own Tuesday grid: `
+    + `"${E.label} · week ${E.week} of ${E.weeks}" — ${E.year} holds ${E.weeks} `
+    + 'Tuesdays, Jan 3 through Dec 25',
+  !!n && n.n === E.week && n.of === E.weeks && (w.out || '').includes(E.label),
+  JSON.stringify(w.out));
+  check('the week param survives the boot it described (a shared week is still '
+    + 'that week after the app has rewritten the URL)',
+  w.weekParam === String(E.week), page.url());
+  check('the default dataset stays out of a deep link — no ?dataset for FSA LFP '
+    + 'boundaries',
+  w.datasetParam === null, page.url());
+  check('the card is open on the linked county, naming the week it is showing '
+    + 'and reading out that week\'s drought class in words',
+  card.open && card.title.includes(USDM.county.name)
+    && card.values.some((v) => v.includes(E.label))
+    && card.values.some((v) => /^(D[0-4]|None)\b|not in this week/i.test(v)),
+  JSON.stringify({ title: card.title, terms: card.terms, values: card.values }));
+  check('the swatches legend is the visible body, and neither continuous one is',
+    vc.legend.swatches === true && vc.legend.wheel === false
+      && vc.legend.bar === false, JSON.stringify(vc.legend));
+  const painted = await paintSignature(page, CONFIG.sourceId);
+  const expect = await USDM.paintOracle(page);
+  if (typeof expect === 'number') {
+    check('the choropleth painted for the deep-linked week, county for county',
+      painted.colored === expect, `${painted.colored} painted, ${expect} expected`);
+  } else {
+    skip('the deep-linked week painted the counties its classes reach',
+      String(expect));
+  }
+  s.clean('usdm deep link');
+  await s.shot('20-usdm-deep-link');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   10. TWO VIEWS, TWO MEMORIES — an excursion changes nothing it did not touch.
+
+   The app is now two bodies of data over one map, and the promise the switcher
+   makes is that leaving a view does not disturb it: the grazing-period view's
+   dataset, its season dictionary, its variable and its year are all still there
+   when the visitor comes back, and the drought monitor's dataset and week are
+   still there when they go the other way. What is SHARED — the county, the
+   camera, the theme, the year — moves with the visitor by design.
+
+   §8's template step 10 compares the per-view state objects. This section is
+   the same claim asserted against the CONTROLS, from the most distinctive state
+   the grazing-period view has: the climatology, which brings its own type
+   dictionary and a disabled year slider with it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Two views, two memories — an NGP state survives a USDM excursion');
+{
+  const NGP = CONFIG.interfaces.ngp;
+  const USDM = CONFIG.interfaces.usdm;
+  const s = await open();
+  const { page } = s;
+  check('the state-memory page reaches ngpReady', s.ready);
+
+  /* Put the grazing-period view somewhere no default could be mistaken for. */
+  await slideYear(page, 2012);
+  await settleVintage(page);
+  await page.locator('#btn-var-start').click();
+  await page.waitForTimeout(300);
+  const seq0 = await viewSeq(page);
+  await clickControl(page, NGP.datasets.nclimgrid.sel);
+  await awaitViewSeq(page, seq0);
+  const before = await viewControls(page);
+  const beforeSnap = await snapshot(page);
+  check('setup: grazing periods on the nClimGrid climatology, 2012, coloured by '
+    + 'season start — a disabled year slider, its note, and a season dictionary',
+  before.datasets[0] === 'nclimgrid' && before.yearDisabled === true
+    && before.noteShown && beforeSnap.state.year === 2012
+    && beforeSnap.state.variable === 'start',
+  JSON.stringify({ dataset: before.datasets, disabled: before.yearDisabled,
+    year: beforeSnap.state.year, variable: beforeSnap.state.variable }));
+
+  const seq1 = await viewSeq(page);
+  const wentOut = await clickControl(page, USDM.switchSel);
+  const arrived = wentOut && await awaitViewSeq(page, seq1);
+  const out = await viewControls(page);
+  check('the drought monitor takes the map over', arrived,
+    wentOut ? `data-ngp-view-seq stayed at ${seq1}` : 'the switcher was not clickable');
+  check('it RE-ENABLES the year slider the climatology had disabled, and takes '
+    + 'that note down with it — a weekly record has years',
+  out.yearDisabled === false && !out.noteShown,
+  JSON.stringify({ disabled: out.yearDisabled, note: out.noteShown }));
+
+  /* Move the drought monitor's own two pieces of state. */
+  const seq2 = await viewSeq(page);
+  await clickControl(page, USDM.datasets.census.sel);
+  await awaitViewSeq(page, seq2);
+  await scrubWeek(page, 12);
+  await settleWeek(page);
+  const excursion = await weekProbe(page);
+
+  /* And back. */
+  const seq3 = await viewSeq(page);
+  await clickControl(page, NGP.switchSel);
+  await awaitViewSeq(page, seq3);
+  const after = await viewControls(page);
+  const afterSnap = await snapshot(page);
+  check('the grazing-period view comes back exactly as it was left: the '
+    + 'climatology dataset, its own season, the start variable, and the year '
+    + 'slider disabled under its note again',
+  after.datasets.length === 1 && after.datasets[0] === 'nclimgrid'
+    && after.type === before.type && after.types.length === before.types.length
+    && afterSnap.state.variable === 'start' && after.yearDisabled === true
+    && after.noteShown,
+  JSON.stringify({ dataset: after.datasets, type: after.type,
+    types: after.types.length, variable: afterSnap.state.variable,
+    disabled: after.yearDisabled, note: after.noteShown }));
+  check('…and the shared year is untouched: an excursion that never moved the '
+    + 'year did not move it',
+  afterSnap.state.year === 2012, 'year is ' + afterSnap.state.year);
+  check('the URL is the grazing-period view\'s again — no ?view, no ?week, and '
+    + '?dataset back on the climatology it was reading',
+  !new URL(page.url()).searchParams.has('view')
+    && !new URL(page.url()).searchParams.has('week')
+    && new URL(page.url()).searchParams.get('dataset') === 'nclimgrid',
+  page.url());
+
+  const seq4 = await viewSeq(page);
+  await clickControl(page, USDM.switchSel);
+  await awaitViewSeq(page, seq4);
+  const returned = await weekProbe(page);
+  const returnedN = weekNumber(returned.out);
+  const excursionN = weekNumber(excursion.out);
+  check('and the drought monitor remembers ITS two pieces of state — the Census '
+    + 'county set and the week the visitor left it on',
+  returned.datasetParam === 'census' && !!returnedN && !!excursionN
+    && returnedN.n === excursionN.n && returned.weekParam === '12',
+  JSON.stringify({ dataset: returned.datasetParam, week: returned.weekParam,
+    output: returned.out }));
+  s.clean('two views, two memories');
+  await s.shot('21-two-views');
   await s.ctx.close();
 }
 

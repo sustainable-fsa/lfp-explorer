@@ -1,23 +1,31 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/export.js
+   LFP Explorer · js/export.js
    The branded PNG export, and the `?export=` convention that makes it
    headless-scriptable.
 
    ES module, no build step. The heavy lifting is the kit's ui/export.js — an
    off-screen MapLibre map captured at poster resolution, then the house chrome
    composed around it on a canvas. What lives here is the app's half: which
-   colors to paint, what the poster says, and how to draw this app's two
-   legends with canvas primitives.
+   colors to paint, what the poster says, and how to draw this app's three
+   legend bodies with canvas primitives.
 
    ── The legend is drawn TWICE, on purpose ──────────────────────────────────
-   Once in the DOM (js/legend-wheel.js, the kit's colorbar) and once here in
-   canvas calls. Rasterising the live SVG would be shorter and is a trap: a
-   foreignObject/SVG round trip taints the canvas in Safari and silently drops
-   web fonts everywhere else, and `toBlob()` on a tainted canvas throws
+   Once in the DOM (js/legend-wheel.js, the kit's colorbar and swatches) and
+   once here in canvas calls. Rasterising the live SVG would be shorter and is a
+   trap: a foreignObject/SVG round trip taints the canvas in Safari and silently
+   drops web fonts everywhere else, and `toBlob()` on a tainted canvas throws
    SecurityError — at which point the export fails for exactly the users who
    cannot be asked to screenshot instead. The wheel's ANGLE MATH is imported
-   from js/legend-wheel.js rather than re-derived, so the two pictures cannot
-   drift apart; only the drawing calls differ.
+   from js/legend-wheel.js rather than re-derived, and the swatch chips' colors
+   and labels are the same descriptor leaf the DOM legend reads, so the two
+   pictures cannot drift apart; only the drawing calls differ.
+
+   ── Which painter runs is the descriptor's call ─────────────────────────────
+   `iface.legend.kind(sel)` decides — wheel, bar or swatches — exactly as it
+   does for the drawer. What each painter needs beyond that (the ramps, the
+   chip labels, a required attribution) comes from the descriptor too, so a new
+   data family adds a legend by declaring one, not by editing this file's
+   branches.
 
    ── `?export=light` / `?export=high-contrast` ──────────────────────────────
    A URL param that forces a theme, waits for the fonts, runs the export, and
@@ -46,14 +54,21 @@ import {
     typo must fall through to "do nothing", never to a default export. */
 const EXPORT_THEMES = Object.freeze(['light', 'high-contrast']);
 
+/** The poster's headline, for a context whose descriptor does not name one.
+    Every shipped interface does. */
 const TITLE = 'FSA Normal Grazing Periods';
 
 /* Fonts the legend painters use. The kit preloads exactly 900 34px / 500 22px
    / 400 16px Roboto before its own first fillText; a size it does not name is
    the same face and the same file, but the contract says load what you draw
-   with, so these are loaded before composeBranded is called. */
+   with, so these are loaded before composeBranded is called.
+
+   FONT_FINE is the floor of the attribution's fit-shrink (see
+   drawSwatchLegend): every size between it and FONT_BODY resolves to the same
+   resident face, and loading both endpoints is what makes that true. */
 const FONT_BODY = '400 16px Roboto';
 const FONT_WHEEL = '400 11px Roboto';
+const FONT_FINE = '400 12px Roboto';
 
 /* Legend band geometry, in composeBranded's logical units. The band handed to
    drawLegend is 1504 × 96 at the default capture size. */
@@ -64,6 +79,13 @@ const CHIP = 22;                 // the "no data" swatch, square
 
 const BAR_W = 420;
 const BAR_H = 22;
+
+/* Swatch legend geometry. The chips run in one row across the top of the band;
+   a required attribution takes the two lines under them, right-aligned. */
+const SWATCH = 20;               // a class chip, square
+const SWATCH_GAP = 26;           // between one chip's label and the next chip
+const SWATCH_LABEL_PAD = 9;      // chip to its own label
+const ATTR_MIN_PX = 12;          // the fit-shrink floor (FONT_FINE)
 
 /** The app context, captured at init — features never import app.js back. */
 let appCtx = null;
@@ -83,21 +105,24 @@ let appCtx = null;
 /* ── Filename ────────────────────────────────────────────────────────────── */
 
 /**
- * The download name. Sortable, greppable, and unambiguous about which of the
- * sixteen pasture types (or three climatological seasons) it holds.
+ * The download name for one selection: the descriptor's, in full.
  *
- * The stem comes from the descriptor — `fsa-ngp_<year>` for FSA's own
- * determinations, `fsa-ngp-nclimgrid` for the climatology, which has no year —
- * and the tail is the same everywhere, because the type and the color-by
- * variable are what a reader is trying to tell two posters apart by.
+ * A poster's name is a fact about its family's controls — grazing periods are
+ * told apart by pasture type and color-by variable, a drought map by its week —
+ * so `iface.export.filename(sel)` owns the whole string. The two-argument form
+ * below is the fallback for a descriptor that only names its stem, which is the
+ * shape PR 1 shipped: `<stem>_<type-slug>_<variable>.png`, byte for byte the
+ * scheme posters already in circulation are named by.
  *
- * @param {string} part the descriptor's export.filenamePart(sel)
- * @param {string} type pasture type / season name
- * @param {string} variable start | end | duration
+ * @param {object} iface the interface descriptor
+ * @param {object} sel the selection
  * @returns {string}
  */
-export function exportFilename(part, type, variable) {
-  return part + '_' + typeSlug(type) + '_' + variable + '.png';
+export function exportFilename(iface, sel) {
+  const ex = iface.export || {};
+  if (typeof ex.filename === 'function') return ex.filename(sel);
+  const part = typeof ex.filenamePart === 'function' ? ex.filenamePart(sel) : 'export';
+  return part + '_' + typeSlug(sel.type) + '_' + sel.variable + '.png';
 }
 
 /* ── Legend painters ─────────────────────────────────────────────────────── */
@@ -225,25 +250,90 @@ function drawWheelLegend(ctx2d, rect, variable, noDataLabel) {
 }
 
 /**
+ * A categorical scale: one labelled chip per class, then the no-data chip, then
+ * — for a dataset whose licence or its producer requires one — the attribution,
+ * right-aligned on the two lines under the chips.
+ *
+ * The labels are drawn, always. A hue-only categorical scheme has nothing left
+ * in grayscale, so the words ARE the legend (HOUSE-STYLE §6); a poster is the
+ * one place the reader cannot hover to find out.
+ */
+function drawSwatchLegend(ctx2d, rect, items, noDataLabel, attribution) {
+  const c = tokens();
+  const rowY = rect.y + SWATCH / 2 + 2;
+
+  ctx2d.font = FONT_BODY;
+  ctx2d.textBaseline = 'middle';
+  ctx2d.textAlign = 'left';
+
+  let x = rect.x;
+  for (const item of items) {
+    ctx2d.fillStyle = item.color;
+    ctx2d.fillRect(x, rowY - SWATCH / 2, SWATCH, SWATCH);
+    // EVERY chip is outlined, not just the no-data one: the palest class of a
+    // categorical scheme is nearly the poster's own ground (a drought-free
+    // county is deliberately a warm off-white), and an unoutlined pale square is
+    // not a square at all. Outlining only that one would make it read as the
+    // "absent" chip, which is precisely the confusion the palette avoids.
+    ctx2d.strokeStyle = c.border;
+    ctx2d.lineWidth = 1;
+    ctx2d.strokeRect(x + 0.5, rowY - SWATCH / 2 + 0.5, SWATCH - 1, SWATCH - 1);
+    ctx2d.fillStyle = c.text;
+    ctx2d.fillText(item.label, x + SWATCH + SWATCH_LABEL_PAD, rowY);
+    x += SWATCH + SWATCH_LABEL_PAD + ctx2d.measureText(item.label).width + SWATCH_GAP;
+  }
+  drawNoDataChip(ctx2d, x, rowY, c, noDataLabel);
+
+  if (!attribution || !attribution.length) return;
+  ctx2d.textAlign = 'right';
+  const right = rect.x + rect.width;
+  attribution.forEach((line, i) => {
+    // Fit-shrink: the required NDMC sentence is longer than the band at 16px,
+    // and it is quoted VERBATIM — so the TYPE gives way, never the words. Every
+    // size between the floor and 16px is the same resident face (see FONT_FINE),
+    // so no further font load is needed here.
+    ctx2d.font = FONT_BODY;
+    const width = ctx2d.measureText(line).width;
+    if (width > rect.width) {
+      const size = Math.max(ATTR_MIN_PX, Math.floor(16 * (rect.width / width)));
+      ctx2d.font = '400 ' + size + 'px Roboto';
+    }
+    ctx2d.fillStyle = i === 0 ? c.text : c.muted;
+    ctx2d.fillText(line, right, rect.y + 44 + i * 21);
+  });
+  ctx2d.textAlign = 'left';
+}
+
+/**
  * The drawLegend callback for the active selection. Which body to draw is the
  * descriptor's call (`legend.kind`), so the poster and the drawer can never
- * disagree about whether this variable is cyclic.
+ * disagree about whether this variable is cyclic — or categorical.
  *
  * @param {object} iface the interface descriptor
  * @param {object} sel the selection from selectionOf()
  * @returns {(ctx2d: CanvasRenderingContext2D, rect: object) => void}
  */
 function legendPainter(iface, sel) {
-  const kind = iface.legend && iface.legend.kind
-    ? iface.legend.kind(sel)
+  const legend = iface.legend || {};
+  const kind = legend.kind
+    ? legend.kind(sel)
     : ((VARIABLES[sel.variable] && VARIABLES[sel.variable].cyclic) ? 'wheel' : 'bar');
-  const noDataLabel = (iface.legend && iface.legend.noDataLabel)
-    ? iface.legend.noDataLabel(sel)
+  const noDataLabel = legend.noDataLabel
+    ? legend.noDataLabel(sel)
     : 'No reported grazing period';
+  const items = (kind === 'swatches' && typeof legend.items === 'function')
+    ? legend.items(sel) : null;
+  const attribution = (iface.export && typeof iface.export.attribution === 'function')
+    ? iface.export.attribution(sel) : null;
 
   return (ctx2d, rect) => {
-    if (kind === 'wheel') drawWheelLegend(ctx2d, rect, sel.variable, noDataLabel);
-    else drawDurationLegend(ctx2d, rect, noDataLabel);
+    if (kind === 'swatches' && items && items.length) {
+      drawSwatchLegend(ctx2d, rect, items, noDataLabel, attribution);
+    } else if (kind === 'wheel') {
+      drawWheelLegend(ctx2d, rect, sel.variable, noDataLabel);
+    } else {
+      drawDurationLegend(ctx2d, rect, noDataLabel);
+    }
   };
 }
 
@@ -290,13 +380,14 @@ export async function runExport(ctx = appCtx) {
   const iface = interfaceOf(ctx);
   const sel = viewSelection(ctx);
   const colors = colorsFor(ctx, iface, sel);
-  const filename = exportFilename(iface.export.filenamePart(sel), sel.type, sel.variable);
+  const filename = exportFilename(iface, sel);
 
   // Load every face the legend painters draw with BEFORE composeBranded: a
   // canvas does not wait for a font the way the DOM does, and a missed load is
   // silent — the glyphs are simply the system sans, forever.
   if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
-    await Promise.all([FONT_BODY, FONT_WHEEL].map((f) => document.fonts.load(f).catch(() => {})));
+    await Promise.all([FONT_BODY, FONT_WHEEL, FONT_FINE]
+      .map((f) => document.fonts.load(f).catch(() => {})));
   }
 
   const { canvas, dispose } = await captureCompositeMap({
@@ -313,7 +404,11 @@ export async function runExport(ctx = appCtx) {
 
   try {
     const blob = await composeBranded(canvas, {
-      title: TITLE,
+      // The title is the FAMILY's, not the app's: one page shows several, and a
+      // drought map headed "FSA Normal Grazing Periods" would be a lie that
+      // outlives the tab it came from.
+      title: (iface.export && typeof iface.export.title === 'function')
+        ? iface.export.title(sel) : TITLE,
       subtitle: iface.export.subtitle(sel),
       credit: iface.export.credit(sel),
       drawLegend: legendPainter(iface, sel),

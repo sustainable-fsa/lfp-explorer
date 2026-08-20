@@ -1,5 +1,5 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/color.js
+   LFP Explorer · js/color.js
    The data palettes: one cyclic ramp for dates, one sequential ramp for
    duration, and the "no data" fill.
 

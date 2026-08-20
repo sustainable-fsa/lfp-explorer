@@ -59,7 +59,14 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: the app is two interfaces now. The axe pass grew a state (a
+    # view switch, its payload and the crosswalk, per theme × viewport), and the
+    # behavioural run drives a second view end to end — switch, three dataset
+    # toggles, a week scrubber, a deep link and a state-memory round trip, each
+    # one a real fetch of a ~4.5 MB payload over the network on a GPU-less
+    # runner. The number is a backstop against a hang, not a budget: a healthy
+    # run is well under it, and it moves when a PR adds an interface.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/data.js
+   LFP Explorer · js/data.js
    The data layer's FACADE: one module-level view of whichever grazing-period
    dataset the app is currently reading.
 

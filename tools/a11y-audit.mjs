@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* ============================================================================
-   FSA Normal Grazing Periods · tools/a11y-audit.mjs
+   LFP Explorer · tools/a11y-audit.mjs
    Axe over the app in BOTH themes at TWO viewports and in every interaction
    state below. Serious/critical violations fail the run — the kit's rule
    (AGENTS.md §6: "the axe workflow failing on serious/critical is a hard stop,
@@ -51,6 +51,13 @@
                         boots, and on the phone the off-canvas overlay plus its
                         scrim, which exist only after a tap
          card           a county selected, the detail card open over the map
+         usdm-view      the second interface: the drought monitor, with its own
+                        drawer sections (a week scrubber and a three-way dataset
+                        seg), a categorical swatches legend where the other view
+                        has a colour ramp, and a card whose picture is a
+                        1,389-week heatmap instead of a span chart. None of that
+                        markup exists on the default view, so a run that never
+                        switched would audit half the app
          table          the data-table <dialog>, ~3,000 rows of markup
 
      · Violations are merged by rule id ACROSS states and each is reported with
@@ -74,8 +81,8 @@
 import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
 import {
-  INIT_LS, PAGE_PATH as PAGE, READY_MS, THEMES, VIEWPORTS, renderEvidence,
-  serveWorkspace, workspaceRoot,
+  INIT_LS, INTERFACES, PAGE_PATH as PAGE, READY_MS, THEMES, VIEWPORTS,
+  renderEvidence, serveWorkspace, workspaceRoot,
 } from './config.mjs';
 
 /** Default: the workspace root, two levels up from tools/ (tools/ → repo →
@@ -94,6 +101,14 @@ const AUDIT_VIEWPORTS = [
 
 /** After ngpReady: the font swap, the legend, the map's first frames. */
 const SETTLE_MS = 1500;
+
+/** How long a VIEW SWITCH may take before the state is called unreachable: a
+    second interface's payload (~4.5 MB) plus the FIPS↔FSA crosswalk plus the
+    re-join and recolor, on a runner with no GPU. Generous for the same reason
+    READY_MS is — the failure it catches is "never", not "slow". Verify.mjs owns
+    the same number under its own name (CONFIG.switchMs); this harness does not
+    import it, because a settle window is a harness's own opinion. */
+const SWITCH_MS = 45000;
 
 const server = serveWorkspace(root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -213,6 +228,47 @@ const STATES = [
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.getElementById('county-card').hidden,
         null, { timeout: 5000 });
+    },
+  },
+  {
+    name: 'usdm-view',
+    /* The drought monitor, with a county open on it. Reached the way a visitor
+       reaches it — through the drawer, which on `narrow` means opening the
+       overlay first and putting it back before the card, exactly as the `card`
+       state does (see closeDrawerIfOverlay).
+
+       Waited on by the app's own view marker rather than by a timeout: the
+       switch fetches a payload and the crosswalk, re-joins and recolors, and an
+       axe pass taken mid-transition would audit a page with the new legend over
+       the old paint. */
+    async enter(page) {
+      await openDrawer(page);
+      await page.locator(INTERFACES.usdm.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.usdm.slug, { timeout: SWITCH_MS });
+      await closeDrawerIfOverlay(page);
+      await selectCounty(page, INTERFACES.usdm.county.id);
+      await page.waitForFunction(() => !document.getElementById('county-card').hidden,
+        null, { timeout: 5000 });
+      // The card's picture on this view is the full-record weekly heatmap; its
+      // <figcaption> and table twin are what axe has to see.
+      await page.waitForSelector('#card-content figure svg', { timeout: 10000 });
+    },
+    /* Escape for the card (not #card-close — at 375px that button is not
+       hit-testable, and tools/verify.mjs owns that finding), then back to the
+       default view so the `table` state below is the grazing-period table it
+       has always been. */
+    async exit(page) {
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => document.getElementById('county-card').hidden,
+        null, { timeout: 5000 }).catch(() => {});
+      await openDrawer(page);
+      await page.locator(INTERFACES.ngp.switchSel).click({ timeout: 5000 });
+      await page.waitForFunction(
+        (slug) => document.documentElement.dataset.ngpView === slug,
+        INTERFACES.ngp.slug, { timeout: SWITCH_MS });
+      await closeDrawerIfOverlay(page);
     },
   },
   {

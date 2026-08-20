@@ -23,6 +23,11 @@
    reading it as the second is the one misuse this interface can invite, so the
    legend key, the subtitle and the credit all carry the provenance.
 
+   The card's picture makes the comparison directly: the span chart always
+   draws FSA's OWN all-years series, and once the climatology is in hand the
+   county's climatological season is drawn behind it as a reference band. See
+   cardBody() and js/interfaces/ngp-chart.js.
+
    ── Why the descriptor is functions and not a table ────────────────────────
    The declarative half (ids, labels, URLs, schemas, key spaces) is data. The
    other half is PROSE — the legend key, the tooltip, the card rows, the live
@@ -43,8 +48,10 @@
    ========================================================================== */
 
 import { VARIABLES } from '../color.js';
+import { typeSlug } from '../decoders/common.js';
 import { makeNgpData } from '../decoders/ngp-web.js';
 import { toFsaMap } from '../decoders/crosswalk.js';
+import { programOffset, renderSpanFigure } from './ngp-chart.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -106,6 +113,86 @@ const MD_FMT = new Intl.DateTimeFormat('en-US', {
 function datasetById(id) {
   for (const ds of DATASETS) if (ds.id === id) return ds;
   return DATASETS[0];
+}
+
+/* ── The instances this interface has seen ───────────────────────────────────
+   Every leaf below is handed the instance the app is CURRENTLY painting from.
+   One thing this interface draws needs the other one: the card's span chart is
+   always FSA's own series (a chart of a climatology's single nominal year says
+   nothing), and its reference band is the climatology's. So each instance is
+   noted the first time it arrives here, and the card reads whichever it needs.
+
+   A Map rather than two variables because the datasets[] list is the authority
+   on how many there are; keyed by dataset id, identified by the two facts that
+   distinguish the payloads (key space and nominal years) — the same test
+   applyPending() uses, and the same one the `expect` fingerprints guard.
+
+   NOTHING here fetches. A band appears when the reader has already loaded the
+   climatology (by toggling to it at least once); until then the chart is the
+   chart it has always been. That is deliberate: the card must not turn a county
+   click into a 5 MB download. */
+const seen = new Map();
+
+function remember(data) {
+  if (!data || typeof data.keySpace !== 'string') return;
+  const ds = DATASETS.find((d) => d.keySpace === data.keySpace
+    && !!d.nominalYears === !!data.nominalYears);
+  if (ds) seen.set(ds.id, data);
+}
+
+/** The FSA official instance, or null before boot has painted once. */
+function official() {
+  return seen.get('fsa') || null;
+}
+
+/** The climatology instance, or null until the reader has loaded it. */
+function climatology() {
+  return seen.get('nclimgrid') || null;
+}
+
+/**
+ * Which of the climatology's three seasons a type name belongs to.
+ *
+ * A substring rule, not a lookup table: FSA's sixteen pasture types name the
+ * forage regime in the type itself ("Cool Season Improved Pasture"), and the
+ * climatology's three seasons are those regimes. Everything that is neither
+ * explicitly cool nor explicitly warm — native pasture, the small grains, the
+ * forage sorghums — is a full-season regime under NAP-190's method.
+ *
+ * Deliberately NOT the registry's TYPE_ALIASES: those are the three CANONICAL
+ * pairs, used to carry a selection across a dataset toggle, and they say
+ * nothing about the other thirteen types. This maps all sixteen onto a season,
+ * which is what a reference band needs.
+ *
+ * @param {string} type a name from either dictionary
+ * @returns {string} 'Cool Season' | 'Warm Season' | 'Full Season'
+ */
+function seasonFor(type) {
+  const name = String(type || '');
+  if (name.includes('Cool Season')) return 'Cool Season';
+  if (name.includes('Warm Season')) return 'Warm Season';
+  return 'Full Season';
+}
+
+/**
+ * The OFFICIAL type whose series the card should chart for this selection.
+ *
+ * On the official dataset that is simply the selected type. On the climatology
+ * the selection is a season, which FSA's dictionary does not contain, so the
+ * chart shows the official type that belongs to the same forage regime —
+ * preferring the dataset's own default when it qualifies, so "Full Season"
+ * charts Native Pasture rather than whichever small grain sorts first.
+ *
+ * @returns {string|null} null only when the official dictionary is empty
+ */
+function officialTypeFor(sel, data) {
+  const have = data ? data.types() : [];
+  if (!have.length) return null;
+  if (have.includes(sel.type)) return sel.type;
+  const want = seasonFor(sel.type);
+  const dflt = DATASETS[0].defaultType;
+  if (have.includes(dflt) && seasonFor(dflt) === want) return dflt;
+  return have.find((t) => seasonFor(t) === want) || have[0];
 }
 
 /** True when the selection is the climatology. Asked of the DESCRIPTOR's own
@@ -203,6 +290,9 @@ function recordFor(data, xw, sel, id) {
  * @returns {{colors: Map<string, string>, unmatchedFips: string[]}}
  */
 function colorsFor(data, xw, sel) {
+  // Every paint goes through here, which makes it the one place guaranteed to
+  // see each dataset the moment it reaches the screen — see `seen` above.
+  remember(data);
   const s = spec(sel);
   const colors = new Map();
   const recs = data ? data.getYearType(sel.year, sel.type) : new Map();
@@ -400,6 +490,107 @@ function cardRows(data, xw, sel, id) {
   return rows;
 }
 
+/* ── The card's picture ──────────────────────────────────────────────────── */
+
+/**
+ * The climatology's season for one FSA county, as day offsets on the span
+ * chart's axis — or null when there is nothing to draw.
+ *
+ * The offsets are measured against the climatology's own nominal year, which is
+ * the same arithmetic the bars use against their program years. The two
+ * calendars differ by at most a leap day, i.e. by less than a pixel on a
+ * 140-unit axis.
+ *
+ * @returns {{lo: number, hi: number, rec: object}|null}
+ */
+function climatologyBand(xw, sel, id) {
+  const clim = climatology();
+  if (!clim || !xw) return null;
+  const season = seasonFor(sel.type);
+  if (!clim.types().includes(season)) return null;
+  const rec = recordFor(clim, xw, {
+    ...sel, dataset: 'nclimgrid', year: clim.nominalYear, type: season,
+  }, id);
+  if (!rec) return null;
+  const lo = programOffset(rec.start, clim.nominalYear);
+  const hi = programOffset(rec.end, clim.nominalYear);
+  return { lo, hi, rec, season };
+}
+
+/**
+ * The card's second half: FSA's whole reported series for this county as a span
+ * chart, the climatology's season behind it when that payload is in hand, and
+ * the same numbers under both as a table.
+ *
+ * ALWAYS the official series, in both dataset modes. A climatology has one
+ * nominal year: a chart of one bar says nothing and a table of one row says
+ * less, so what the reader gets on that dataset is FSA's history with the
+ * counterfactual drawn across it — which is the comparison the second dataset
+ * exists to make.
+ *
+ * The container is the app's; the lifecycle (when to call this, what to skip,
+ * remembering that the reader opened the table) is js/card-content.js's.
+ *
+ * @param {HTMLElement} container #card-content
+ * @param {object} data the ACTIVE decoder instance (may be the climatology)
+ * @param {object|null} xw the crosswalk, when loaded
+ * @param {object} sel the selection
+ * @param {string} id 5-character FSA county id
+ * @returns {null} this body has no per-frame update of its own
+ */
+function cardBody(container, data, xw, sel, id) {
+  remember(data);
+  const inst = official();
+  if (!inst) {
+    // Boot has not painted yet (or the official payload failed): an empty box
+    // is better than a chart of nothing pretending to be a chart of something.
+    container.replaceChildren();
+    return null;
+  }
+
+  const type = officialTypeFor(sel, inst);
+  const yearList = inst.years();
+  const series = inst.getCountySeries(id, type);
+  const nm = inst.countyName(id);
+  const place = nm ? nm.county + ', ' + nm.state : String(id);
+
+  const band = climatologyBand(xw, sel, id);
+  let caption = type + ' grazing period span by year, ' + yearList[0] + '–'
+    + yearList[yearList.length - 1] + ', for ' + place
+    + '. Full values in the table below.';
+  if (band) caption += ' The shaded band is the ' + ERA + ' climatology.';
+
+  renderSpanFigure(container, {
+    series,
+    yearList,
+    year: sel.year,
+    place,
+    caption,
+    band: band ? { lo: band.lo, hi: band.hi } : null,
+    clim: band ? {
+      term: 'Climatology (' + ERA + ')',
+      startLabel: MD_FMT.format(band.rec.start),
+      endLabel: MD_FMT.format(band.rec.end),
+      weeks: band.rec.duration_weeks,
+    } : null,
+  });
+  return null;
+}
+
+/**
+ * What this interface adds to the card's render key, beyond the county, view,
+ * dataset, year and type the app already keys on.
+ *
+ * The band's presence: it appears the first time the climatology is loaded, and
+ * a card that is already open for the right county in the right year would
+ * otherwise keep the bandless picture until something else changed.
+ *
+ * @returns {string}
+ */
+function cardKey() {
+  return climatology() ? 'band' : 'no-band';
+}
+
 /* ── The live region ─────────────────────────────────────────────────────── */
 
 /**
@@ -434,6 +625,78 @@ function liveSentence(sel, shown, total, missingGeometry) {
 
 /* ── The data table ──────────────────────────────────────────────────────── */
 
+/**
+ * The table's columns, in reading order. `key` names the field on a row object
+ * from tableRows(); the three flags are how js/table-view.js keeps the a11y
+ * contract without knowing what the numbers mean — `rowHeader` becomes
+ * `<th scope="row">`, `code` wraps the cell in a `<code>` (five characters,
+ * leading zeros load bearing, never a number), `num` right-aligns it.
+ *
+ * The code column's LABEL follows the key space, because the climatology's rows
+ * are in its own (Census FIPS) and captioning them "FSA code" would be a false
+ * claim about eight states' worth of leading-zero identifiers.
+ *
+ * @returns {Array<{label: string, key: string, rowHeader?: boolean,
+ *                  code?: boolean, num?: boolean}>}
+ */
+function tableColumns(sel) {
+  return [
+    { label: 'County', key: 'county', rowHeader: true },
+    { label: 'State', key: 'state' },
+    { label: isClimatology(sel) ? 'FIPS code' : 'FSA code', key: 'id', code: true },
+    { label: 'Start', key: 'start' },
+    { label: 'End', key: 'end' },
+    { label: 'Duration (weeks)', key: 'duration', num: true },
+  ];
+}
+
+/**
+ * Every row the table shows, sorted the way a reader scans it: state, then
+ * county, then id.
+ *
+ * Rows are in the ACTIVE dataset's own key space — the table is the map's data,
+ * not a re-derivation of it — so the names come from the payload's own
+ * gazetteer rather than from the geometry's. On the climatology those keys are
+ * FIPS, and a FIPS id that happens to spell an FSA code must not borrow that
+ * county's name.
+ *
+ * @param {object} data the active decoder instance
+ * @param {object|null} xw the crosswalk (unused here: both datasets answer in
+ *        their own key space, and the table says which)
+ * @param {object} sel
+ * @returns {Array<object>} one flat object per row, keyed by tableColumns()
+ */
+function tableRows(data, xw, sel) {
+  const recs = data ? data.getYearType(sel.year, sel.type) : new Map();
+  const climate = isClimatology(sel);
+  const rows = [];
+  for (const [id, rec] of recs) {
+    const nm = data.countyName(id);
+    rows.push({
+      id,
+      county: nm ? nm.county : id,
+      state: nm ? nm.state : '',
+      start: climate ? MD_FMT.format(rec.start) : rec.startLabel,
+      end: climate ? MD_FMT.format(rec.end) : rec.endLabel,
+      duration: String(rec.duration_weeks),
+    });
+  }
+  rows.sort((a, b) => a.state.localeCompare(b.state, 'en')
+    || a.county.localeCompare(b.county, 'en')
+    // Two counties can share a name inside a state (they do not today); the id
+    // is the tiebreak so the order is total and the table is stable.
+    || a.id.localeCompare(b.id, 'en'));
+  return rows;
+}
+
+/** What makes one built table different from another. The DATASET is part of it
+    because two datasets answer the same (year, type) with different rows, and a
+    stale table under a fresh caption is the one failure that modal must not
+    have. */
+function tableCacheKey(sel) {
+  return sel.dataset + '|' + sel.year + '|' + sel.type;
+}
+
 /** The sentence that names the table — the dialog's visible subtitle, the
     table's own sr-only <caption>, and the scroll region's accessible name, all
     from here so they cannot drift. */
@@ -450,12 +713,27 @@ function tableCaption(sel, nRows) {
 
 /* ── The poster ──────────────────────────────────────────────────────────── */
 
+/** The poster's headline. One family, one title, both datasets — what differs
+    between them is the subtitle and the credit. */
+function exportTitle() {
+  return 'FSA Normal Grazing Periods';
+}
+
 /** Everything before `_<type-slug>_<variable>.png` in the download name. The
     official scheme is unchanged from the day it shipped — posters already in
     circulation are named this way and the name is how they sort. The
     climatology carries no year, because it has none. */
 function exportFilenamePart(sel) {
   return isClimatology(sel) ? 'fsa-ngp-nclimgrid' : 'fsa-ngp_' + sel.year;
+}
+
+/** The whole download name. Assembled here rather than in js/export.js because
+    the tail is a fact about this family's controls: a reader tells two of these
+    posters apart by the pasture type and the color-by variable, which is not
+    true of a family that has neither. */
+function exportFilename(sel) {
+  return exportFilenamePart(sel) + '_' + typeSlug(sel.type) + '_'
+    + sel.variable + '.png';
 }
 
 /** The poster's one-line subtitle, under the title. */
@@ -519,9 +797,23 @@ function applyPending(data, pending) {
 export const NGP = Object.freeze({
   id: 'ngp',
   label: 'Grazing periods',
+  /** The map container's accessible name while this family is on screen —
+      role="application" needs a label that says what the application IS, and
+      "grazing periods" and "drought classes" are different applications. */
+  mapLabel: 'Choropleth map of USDA FSA normal grazing periods by county',
   order: 1,
   datasets: DATASETS,
   variables: VARIABLES,
+  /** The program years this family covers, for the shared year slider. Declared
+      rather than derived because the app has to validate `?year=` before any
+      payload has landed; applyYearDomain() re-authors the slider from the
+      arrived payload and warns if the archive has moved away from this. */
+  years: Object.freeze({ min: 2008, max: 2026 }),
+  /** Which shared controls this family answers to. The drawer sections are
+      hidden by `data-view`; this is the same fact for the code paths that
+      cannot read the DOM — whether to resolve a type against a dictionary,
+      whether to emit `?type=`/`?variable=`, whether there is a week to scrub. */
+  controls: Object.freeze({ type: true, variable: true, week: false }),
   reduceFips,
   colorsFor,
   legend: Object.freeze({
@@ -531,10 +823,19 @@ export const NGP = Object.freeze({
   }),
   tooltip,
   cardRows,
+  cardBody,
+  cardKey,
   liveSentence,
-  table: Object.freeze({ caption: tableCaption }),
+  table: Object.freeze({
+    columns: tableColumns,
+    rows: tableRows,
+    caption: tableCaption,
+    cacheKey: tableCacheKey,
+  }),
   export: Object.freeze({
+    title: exportTitle,
     filenamePart: exportFilenamePart,
+    filename: exportFilename,
     subtitle: exportSubtitle,
     credit: exportCredit,
   }),

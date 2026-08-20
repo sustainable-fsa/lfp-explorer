@@ -2,7 +2,9 @@
 
 **Normal Grazing Periods (NGPs)** define the historical timeframe during which forage is typically available for livestock grazing under non-drought conditions. The USDA Farm Service Agency (FSA) uses them to determine eligibility and payment amounts under the [Livestock Forage Disaster Program (LFP)](https://www.fsa.usda.gov/resources/programs/livestock-forage-disaster-program-lfp): a county qualifies only when drought occurs *during* its normal grazing period for a given pasture type, and the period's length caps the payment. This map draws every period FSA reported from **2008 through 2026** — 244,890 records across 3,095 FSA counties and 16 pasture types — one county polygon per FSA service area, exactly as FSA reports it. For the program rules themselves, see [FSA Handbook 1-LFP, Amendment 4](https://www.fsa.usda.gov/Internet/FSA_File/1lfp_a4.pdf).
 
-**Two datasets, one map.** Alongside FSA's official periods, the **Dataset** control offers the [nClimGrid climatology](https://sustainable-fsa.com/nclimgrid-normal-grazing-period/) — what grazing periods *would be* if the method in FSA Notice NAP-190 were applied to NOAA's 1991–2020 climate normals for every CONUS county. It is a counterfactual for comparison, not FSA's numbers: one set of periods for all years (so the year slider rests while it is shown), three season types (Full, Cool, and Warm Season) instead of FSA's sixteen forage types, and Census county geography rather than FSA service areas (see *Two county keys* below). Grazing periods are the first of several LFP data families this explorer will host; the *What to show* section at the top of the controls panel is where the others will appear.
+**Two datasets, one map.** Alongside FSA's official periods, the **Dataset** control offers the [nClimGrid climatology](https://sustainable-fsa.com/nclimgrid-normal-grazing-period/) — what grazing periods *would be* if the method in FSA Notice NAP-190 were applied to NOAA's 1991–2020 climate normals for every CONUS county. It is a counterfactual for comparison, not FSA's numbers: one set of periods for all years (so the year slider rests while it is shown), three season types (Full, Cool, and Warm Season) instead of FSA's sixteen forage types, and Census county geography rather than FSA service areas (see *Two county keys* below).
+
+**What to show.** The *What to show* section at the top of the controls panel switches between the LFP data families this explorer hosts. Two are here, in the order the program reads them: **1 · Grazing periods**, the window in which a drought can count at all, and **2 · Drought monitor**, the weekly drought classes that have to fall inside that window for a county to qualify (see *The Drought Monitor* below). County eligibility and the disaster designations behind it are the other half of the story, and will appear in the same list as they land. Each family brings its own controls, legend, and county card; what you have selected — the county, the year, the map position, the theme — carries across when you switch.
 
 ## Using the map
 
@@ -36,8 +38,9 @@ Single-key shortcuts (`/`) can be turned off by adding `?kbd=off` to the map's U
 
 ## What a blank county means
 
-An uncolored county means one of two distinct things (three, on the
-climatology).
+An uncolored county on the grazing-period view means one of two distinct things
+(three, on the climatology). The drought monitor has its own two cases — see
+*The Drought Monitor* below.
 
 **No polygon.** The island territories are not drawn, because neither FSA boundary archive includes them. Their grazing periods are still in the data and in the downloadable files — they simply have no shape to paint.
 
@@ -46,6 +49,26 @@ climatology).
 **No climatological season**, on the nClimGrid dataset only. The reanalysis derives a season only where the NAP-190 rules define one for that county's climate — not every county has all three seasons, and Alaska, Hawaii, and the territories are outside the CONUS climate grid entirely.
 
 **Which boundaries a year is drawn on.** County boundaries are fetched at run time from the FSA administrative boundary archives, and **the vintage follows the program year**: [`fsa-counties-dd17`](https://data.sustainable-fsa.com/fsa-counties-dd17/) for 2008–2014 and [`fsa-counties-dd22`](https://data.sustainable-fsa.com/fsa-counties-dd22/) for 2015 onward. FSA re-drew eight county footprints between the two handbook digests — Shoshone County, ID was split out of the Benewah and Kootenai offices; Sioux County, NE was consolidated into `31165`; King County, WA into `53033`; and Richmond City, VA was split out of Henrico. Each year is therefore drawn on the boundaries that were in force for it, and the two vintages are never mixed within a year. Drawing an early year on current boundaries would leave the territory of a since-split county blank even though its grazing period was reported, under the office that then administered it.
+
+## The Drought Monitor
+
+**What it is.** The [U.S. Drought Monitor](https://droughtmonitor.unl.edu/) (USDM) is a weekly national drought assessment — one map a week, drawn by a rotating author from dozens of indicators plus local expert input, sorting the country into **None** (normal or wet), **D0** *Abnormally Dry*, **D1** *Moderate*, **D2** *Severe*, **D3** *Extreme*, and **D4** *Exceptional* drought. Each map is valid for the Tuesday it names and published that Thursday. Maps have appeared every week since **January 4, 2000**, and this view holds all of them: 1,389 weeks as of August 2026, one continuous record you can scrub through.
+
+**Why the map paints the worst class.** The drought classes matter to LFP because of one statutory phrase. A county qualifies when the Monitor rates it at the required intensity **in any area of the county** for the required number of consecutive weeks during that county's normal grazing period ([7 U.S.C. § 1531(d)(3)](https://www.law.cornell.edu/uscode/text/7/1531)). There is no minimum area, no county average, and no weighting by acres or animals: a single corner of a county at D4 is a D4 county as far as the program is concerned. So this map colors each county by **the worst drought class touching any part of it that week** — the rule the program applies, not a cartographic simplification of it. Eligibility turns on *runs* of such weeks rather than any single map, which is what the county card's full-record heatmap is for: one row per year, one cell per week, for the county you have selected.
+
+**Pick a week.** On this view the **year** slider covers 2000 to the present and a second **week** slider steps through the weeks inside that year. The readout beneath it names the map's Tuesday and its place in the year — *Jul 24, 2012 · week 30 of 52* — and the **Previous week** and **Next week** buttons step one map at a time, as do the arrow keys when either slider has focus. The week is remembered for as long as your visit lasts, never longer: come back tomorrow and you arrive on the latest map. The address bar carries it as `?week=` (a week number *within* the year), so a shared link reproduces the exact map you were reading.
+
+**Three ways to count a county.** The USDM is drawn without regard to political boundaries, so turning it into county numbers is an act of aggregation — and there is more than one defensible way to do it. The **Dataset** control offers three, all of them the same weekly maps underneath:
+
+- **FSA LFP boundaries** *(the default)* — the county-by-week statistics FSA itself keeps, on FSA's own Livestock Forage Program boundaries, obtained under FOIA request **2025-FSA-08431-F** and archived at [usdm-counties-fsa-lfp](https://sustainable-fsa.com/usdm-counties-fsa-lfp/). These are the numbers the program runs on, and they are keyed to the geography this map draws — which is why they are what you see first.
+- **NDMC reported** — NDMC's own published county statistics, retrieved from its [data service](https://droughtmonitor.unl.edu/DmData/DataDownload/WebServiceInfo.aspx) and archived at [usdm-counties-reported](https://sustainable-fsa.com/usdm-counties-reported/). One consequence of using them is visible on the map: NDMC keys Connecticut as its nine **planning regions** (09110–09190) for the entire record, and no FSA county covers those, so Connecticut is uncolored on this dataset. It is counted, not quietly dropped — the announcement under the map says how many reported areas could not be placed on an FSA county.
+- **Census counties** — the weekly maps intersected with the Census county boundaries in force for each week, archived at [usdm-counties](https://sustainable-fsa.com/usdm-counties/). This is the only one of the three that is not complete by construction: a county that did not exist in a given week is genuinely absent from that week, which is the clearest illustration of the distinction below.
+
+**Two kinds of uncolored county.** A **pale** county is *drought-free*: the Monitor covered it that week and found no drought anywhere in it (class **None**). A **gray** county is *not in that week's county set*: the dataset holds no row for it, because the county did not exist under that week's boundaries, because the source never carried it, or — on the NDMC-reported set — because its key cannot be matched to an FSA county at all. The first is an answer; the second is a gap. The legend names both, the county card says which one you are looking at in words, and the announcement to screen readers counts them separately.
+
+**How these numbers reach FSA counties.** All three datasets are keyed to Census-style FIPS codes and this map always draws FSA service areas, so all three arrive through the crosswalk described under *Two county keys* below. A Census county's class is copied to every FSA county that covers it, and where one FSA office administers several Census counties the **worst** class among them wins — the same any-area logic, one level up. The county card lists each constituent county's own class, so the reduction never hides a disagreement.
+
+**Credit where it is due.** The U.S. Drought Monitor is jointly produced by the National Drought Mitigation Center at the University of Nebraska-Lincoln, the United States Department of Agriculture, and the National Oceanic and Atmospheric Administration. Map data courtesy of NDMC. Aggregation and map courtesy of the Montana Climate Office. All analytical authorship of the weekly maps belongs to their named USDM authors; the county aggregations archived here are the Montana Climate Office's work, released under CC0, and — apart from FSA's own LFP boundary statistics — they are **not** an FSA product.
 
 ## About the data
 
@@ -72,6 +95,8 @@ If you use this data in published work, please cite:
 > DOI: <https://doi.org/10.5281/zenodo.15252842>
 
 For the nClimGrid climatology dataset, cite its own archive: <https://sustainable-fsa.com/nclimgrid-normal-grazing-period/>.
+
+For the drought monitor, cite the U.S. Drought Monitor itself (NDMC, USDA, and NOAA) together with the county aggregation you used: [usdm-counties-fsa-lfp](https://sustainable-fsa.com/usdm-counties-fsa-lfp/), [usdm-counties-reported](https://sustainable-fsa.com/usdm-counties-reported/), or [usdm-counties](https://sustainable-fsa.com/usdm-counties/). Each archive carries its own suggested citation and a machine-readable `CITATION.cff`.
 
 ## License
 

@@ -1,5 +1,5 @@
 /* ============================================================================
-   FSA Normal Grazing Periods · js/projection.js
+   LFP Explorer · js/projection.js
    Client-side pre-projection of the county composite into EPSG:5070 (NAD83 /
    CONUS Albers Equal Area), rendered through a dummy lng/lat space.
 

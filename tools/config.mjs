@@ -149,15 +149,35 @@ export const MARKERS = Object.freeze({
  *               whatever that dataset makes true about the controls
  *               (`nominalYears` disables the year slider and unhides its
  *               note; `types` is how many options its dictionary offers).
- *   legend      which body each variable is expected to show.
+ *   legend      which body each variable is expected to show, and — for a
+ *               categorical view — the class labels and the no-data label the
+ *               swatches must print in words.
+ *   yearDomain  the first year the view's data covers. The LAST year is never
+ *               a literal here: it grows with the archive (the USDM record
+ *               gains a week every Tuesday), so the harness reads it from the
+ *               live decoder and only the floor is frozen.
  *   exportName  the download filename regex for the view's default dataset.
  *   deepLink    a query string every param of which the view must honour on
- *               load.
- *   tableOracle (PR 2+) async (page) → expected row count, read from the
- *               decoder rather than from a number typed here.
- *   extraChecks (PR 2+) async ({page, check, clean, shot}) → the view's own
- *               controls (a week scrubber, a source picker), each followed by
- *               a repaint witness and a clean().
+ *               load, with `deepLinkExpect` naming what that link must produce.
+ *   tableOracle async (page) → expected row count, read from the DECODER
+ *               rather than from a number typed here. The convention for every
+ *               oracle in this table: return a NUMBER, or a STRING saying why
+ *               it could not be computed — the harness turns the string into a
+ *               named skip instead of comparing a row count against null.
+ *   paintOracle async (page) → how many counties should carry a colour.
+ *   week        (a view with a time control inside the year) its selectors and
+ *               the format its <output> owes a reader.
+ *   unmatchedOracle async (page) → how many source areas this view's join
+ *               cannot reach, for the count the live region must say out loud.
+ *   extraChecks the view's own controls (a week scrubber, a source picker),
+ *               each followed by a repaint witness and a clean(). NULL here
+ *               when those checks need the harness's own paint-signature and
+ *               marker probes: this file holds DATA and probes, never
+ *               assertions (see the header), so the assertion body lives in
+ *               tools/verify.mjs beside those probes and is passed to the
+ *               section template at the call site. The selectors, formats and
+ *               fixtures it reads still live here, in the entry — which is the
+ *               part that has to be right for a NEW view to be gated.
  */
 export const INTERFACES = Object.freeze({
   ngp: Object.freeze({
@@ -199,12 +219,233 @@ export const INTERFACES = Object.freeze({
     legend: Object.freeze({
       kinds: Object.freeze({ start: 'wheel', end: 'wheel', duration: 'bar' }),
     }),
+    /** 2008 is the first program year FSA published, and the payload's own
+        `expect: { year0: 2008 }`. The ceiling is the archive's, not a literal.
+
+        `clampSays` is the COPY CONTRACT for arriving here from a view that
+        covers earlier years: the shared year is the visitor's, so moving it has
+        to be said out loud, and a sentence that merely happens to mention 2008
+        (every grazing-period announcement does) is not saying it. The exact
+        wording is the app's to choose — this pattern only insists that the
+        announcement acknowledges a MOVE. Widen it here if the copy changes. */
+    yearDomain: Object.freeze({
+      min: 2008,
+      clampSays: /adjust|clamp|moved|nearest|closest|earliest|instead|outside|out of|does not (?:cover|go|reach)|only (?:goes|covers|reaches)|first (?:program )?year/i,
+    }),
     exportName: /^fsa-ngp_\d{4}_[a-z0-9-]+_(start|end|duration)\.png$/,
     deepLink: '?county=30063&year=2012&type=native-pasture&variable=start',
     tableOracle: null,
+    paintOracle: null,
+    extraChecks: null,
+  }),
+
+  usdm: Object.freeze({
+    slug: 'usdm',
+    label: 'Drought monitor',
+    isDefault: false,
+    switchSel: '#btn-view-usdm',
+    sectionSel: '#view-seg',
+    /** The same county as the default view, deliberately: a state-memory round
+        trip can only prove the SELECTION is the visitor's rather than the
+        view's if both views can show it. Missoula is in all three USDM county
+        sets and in both boundary vintages. */
+    county: Object.freeze({ id: '30063', name: 'Missoula' }),
+
+    /* Three answers to one question, and the difference between them is a
+       fact about how the USDM is keyed rather than a modelling choice. All
+       three are FIPS-keyed, so all three arrive through the crosswalk. */
+    datasets: Object.freeze({
+      'fsa-lfp': Object.freeze({
+        id: 'fsa-lfp',
+        isDefault: true,
+        label: 'FSA LFP boundaries',
+        sel: '#btn-usdm-fsa-lfp',
+        payload: 'usdm-counties-fsa-lfp.json',
+        keySpace: 'fips',
+        /** FSA's own FOIA'd LFP boundary statistics: rectangular (every county
+            in every week) and CT-clean, which is why it is the default. */
+        rectangular: true,
+      }),
+      reported: Object.freeze({
+        id: 'reported',
+        isDefault: false,
+        label: 'NDMC reported',
+        sel: '#btn-usdm-reported',
+        payload: 'usdm-counties-reported.json',
+        keySpace: 'fips',
+        rectangular: true,
+        /** MEASURED, and the reason this dataset is not the default: NDMC keys
+            Connecticut as the nine planning regions 09110–09190 for the whole
+            record, and the FSA crosswalk has no row for any of them. So on a
+            dd22 year exactly nine reported areas cannot reach an FSA county,
+            and the app must COUNT them out loud rather than drop them. The
+            harness still computes the number from the payload — this literal
+            is what the live region is checked to be talking about, not the
+            source of truth. (On a dd17 year it is eleven: Alaska's 02063 and
+            02066 post-date that vintage's crosswalk too.) */
+        unmatchedAtDefaultYear: 9,
+      }),
+      census: Object.freeze({
+        id: 'census',
+        isDefault: false,
+        label: 'Census counties',
+        sel: '#btn-usdm-census',
+        payload: 'usdm-counties.json',
+        keySpace: 'fips',
+        /** Vintage-matched TIGER, so it is the one NON-rectangular set: a
+            county absent from a week is a real '.' in the series, and the
+            harness's absent-county copy is checked against this one. */
+        rectangular: false,
+      }),
+    }),
+
+    /** One variable, so one legend body — the categorical swatches the kit
+        ships, into the `#legend-swatches` container PR 1 authored. The labels
+        are the legend (a hue-only scheme has nothing left in grayscale), so
+        they are frozen here in the order they must appear. `noData` is the
+        outlined chip the kit appends LAST. */
+    legend: Object.freeze({
+      kind: 'swatches',
+      items: Object.freeze(['None', 'D0 Abnormally dry', 'D1 Moderate',
+        'D2 Severe', 'D3 Extreme', 'D4 Exceptional']),
+      noData: "Not in this week's county set",
+    }),
+
+    /** 2000-01-04 is the first USDM week ever published; the ceiling moves
+        every Tuesday, so the harness reads it from the decoder. */
+    yearDomain: Object.freeze({ min: 2000 }),
+
+    /** The week-within-year scrubber: the one control this view adds, and the
+        only one in the app whose repaint is synchronous (no fetch, so no
+        `data-ngp-view-seq` bump — see MARKERS). `outFormat` is the contract
+        with the <output>: a human-readable Tuesday AND the week's place in its
+        year, because "week 30" alone is not a date and "Jul 24, 2012" alone
+        does not say how far through the year it is. */
+    week: Object.freeze({
+      sectionSel: '#week-section',
+      rangeSel: '#week-range',
+      outSel: '#week-out',
+      prevSel: '#btn-week-prev',
+      nextSel: '#btn-week-next',
+      outFormat: /·\s*week\s+\d+\s+of\s+\d+/,
+      /** The <output> is the harness's canonical week number: `?week` is
+          1-based WITHIN THE YEAR, and reading the printed "week N of M" makes
+          every assertion below independent of whether the range input happens
+          to carry that number or an absolute week index. */
+      outWeek: /week\s+(\d+)\s+of\s+(\d+)/i,
+      param: 'week',
+    }),
+
+    exportName: /^usdm_(fsa-lfp|reported|census)_\d{4}-\d{2}-\d{2}\.png$/,
+
+    deepLink: '?view=usdm&year=2012&week=30&county=30063',
+    /** What that link MUST produce, all four measured against the published
+        payloads rather than chosen: week 30 of 2012 is the Tuesday 2012-07-24
+        (the grid is week0 + 7j from 2000-01-04, and 2012's first Tuesday, Jan
+        3, lands exactly 626 weeks along it), and 2012 holds 52 Tuesdays —
+        Jan 3 through Dec 25. The frozen contract's illustrative "week 30 of
+        53" was 2008's count, not 2012's. A pre-2015 year draws on dd17. */
+    deepLinkExpect: Object.freeze({
+      year: 2012, week: 30, weeks: 52, label: 'Jul 24, 2012', vintage: 'dd17',
+    }),
+
+    /** Row for row, the crosswalked classes for the week on screen. Not a
+        round number, and not typed here: at the default week (the latest the
+        record holds) it is ~3,105 on FSA LFP boundaries and ~3,097 on the
+        NDMC-reported set, and it changes every Tuesday. */
+    tableOracle: async (page) => oracle(await usdmJoin(page), 'classed'),
+    paintOracle: async (page) => oracle(await usdmJoin(page), 'painted'),
+    /** How many reported areas the crosswalk cannot reach this week — the
+        number the live region has to say out loud. */
+    unmatchedOracle: async (page) => oracle(await usdmJoin(page), 'unmatched'),
+
+    /** See the `extraChecks` note in the field list above: the week scrubber,
+        the three dataset toggles and the year-domain re-author are asserted in
+        tools/verify.mjs § the drought monitor's own controls, which is where
+        the paint-signature and marker probes they need live. Everything those
+        assertions READ — selectors, the <output> format, the deep-link
+        fixture, the oracles — is in this entry. */
     extraChecks: null,
   }),
 });
+
+/**
+ * The USDM week, joined onto the FSA composite the way the map's own colours
+ * are, in one round trip — and INDEPENDENTLY of the descriptor that painted
+ * them. This is the oracle behind `tableOracle`, `paintOracle` and
+ * `unmatchedOracle`: it reads the live decoder and the live crosswalk through
+ * the app's context, walks the week's classes itself, and re-implements the
+ * one rule that matters (worst class wins over the FSA county's constituent
+ * FIPS counties). A "check" that called the descriptor's own colorsFor() would
+ * be comparing the app to itself.
+ *
+ * WHICH WEEK: the app's own selection if it carries one, else the number the
+ * <output> prints, resolved against the decoder's `weekRange(year)`. The
+ * fallback is there because the printed week is the CONTRACT (`?week` is
+ * 1-based within the year) while the range input's units are an
+ * implementation detail.
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<object>} counts, or `{error}` if the view is not up yet.
+ */
+function usdmJoin(page) {
+  // A THROW IS AN ANSWER. Every branch below reaches into the running app, and
+  // an app whose view wiring is half-landed throws from inside the evaluate —
+  // which rejects in Node and would abort the harness mid-section. The reason
+  // travels back as `{error}` instead, and the oracle's caller turns it into a
+  // named skip.
+  return page.evaluate(async () => {
+    try {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const c = app.ngpContext();
+      const data = typeof c.getData === 'function' ? c.getData() : null;
+      const xw = typeof c.getCrosswalk === 'function' ? c.getCrosswalk() : null;
+      if (!data) return { error: 'the app has no active decoder' };
+      if (!xw) return { error: 'the crosswalk has not been fetched' };
+      if (typeof data.classesFor !== 'function') {
+        return { error: 'the active decoder is not a USDM one (no classesFor)' };
+      }
+      const sel = typeof c.getSelection === 'function' ? c.getSelection() : {};
+      const idx = c.getCounties() ? c.getCounties().index : new Map();
+      const out = document.getElementById('week-out');
+      const m = /week\s+(\d+)\s+of\s+(\d+)/i.exec((out && out.textContent) || '');
+      const range = typeof data.weekRange === 'function' ? data.weekRange(sel.year) : null;
+      let j = Number.isInteger(sel.week) ? sel.week : null;
+      if (j === null && m && range) j = range[0] + Number(m[1]) - 1;
+      if (j === null) return { error: 'could not tell which week is on screen' };
+
+      const byFsa = new Map();
+      const unmatched = [];
+      for (const [fips, code] of data.classesFor(j)) {
+        const fsa = xw.toFsa(sel.vintage, fips);
+        if (!fsa.length) { unmatched.push(fips); continue; }
+        for (const id of fsa) {
+          const prev = byFsa.get(id);
+          byFsa.set(id, prev === undefined ? code : Math.max(prev, code));
+        }
+      }
+      let painted = 0;
+      for (const id of byFsa.keys()) if (idx.has(id)) painted++;
+      return {
+        j, week: m ? Number(m[1]) : null, weeks: m ? Number(m[2]) : null,
+        classed: byFsa.size, painted, unmatched: unmatched.length,
+        unmatchedSample: unmatched.slice(0, 5),
+        geometry: idx.size, dataset: sel.dataset, year: sel.year,
+        vintage: sel.vintage,
+      };
+    } catch (err) {
+      return {
+        error: 'the join threw inside the app: ' + String(err).split('\n')[0],
+      };
+    }
+  });
+}
+
+/** An oracle's answer, or the reason there isn't one — the string/number
+    convention documented in the probe table's field list. */
+function oracle(join, field) {
+  return join.error ? join.error : join[field];
+}
 
 /** The default view — the one whose slug is never emitted. */
 export const DEFAULT_INTERFACE = Object.values(INTERFACES)
