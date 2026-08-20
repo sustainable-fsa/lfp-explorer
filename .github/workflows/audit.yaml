@@ -59,18 +59,23 @@ concurrency:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    # 45, not 30: the app is three interfaces now. The axe pass has grown a
-    # state per interface (a view switch, its payload and — for a FIPS-keyed one
-    # — the crosswalk, per theme × viewport), and the behavioural run drives
-    # each non-default view end to end: switches, six dataset toggles, a week
-    # scrubber, an aggregation select, two variable toggles, three deep links
-    # and two state-memory round trips, each one a real payload fetch (~4.5 MB
-    # for a weekly USDM set, 11 MB for the derived eligibility archive) on a
-    # GPU-less runner. The number is a backstop against a hang, not a budget,
-    # and it is still the right one: measured on this workflow's own history,
-    # the whole job ran 7.2 minutes with one interface and 9.8 with two, so the
-    # third leaves the backstop four times the room it needs. It moves when a PR
-    # measures that it has to — not when the app grows.
+    # 45, not 30: the app is four interfaces now, which is all of them. The axe
+    # pass has grown a state per interface (a view switch, its payload and — for
+    # a FIPS-keyed one — the crosswalk, per theme × viewport; eleven states
+    # across two themes and two viewports is 44 passes), and the behavioural run
+    # drives every non-default view end to end: switches, six dataset toggles, a
+    # week scrubber, an aggregation select, two variable toggles, two seg pairs,
+    # four deep links and a four-stop state-memory round trip, most of them a
+    # real payload fetch (~4.5 MB for a weekly USDM set, 11 MB for the derived
+    # eligibility archive, 4 MB for the designations) on a GPU-less runner.
+    #
+    # The number is a backstop against a hang, not a budget, and it is still the
+    # right one. Measured on this workflow's own history the whole job ran 7.2
+    # minutes with one interface and 9.8 with two; measured locally at the fourth
+    # (Apple silicon, warm network) the two harnesses are 7.2 minutes of axe and
+    # 2.7 of behavioural verification for 509 checks, so even several times over
+    # on a runner the backstop has room to spare. It moves when a PR measures
+    # that it has to — not when the app grows.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

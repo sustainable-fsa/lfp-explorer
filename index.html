@@ -80,7 +80,7 @@
   </script>
 
   <title>LFP Explorer · Sustainable FSA</title>
-  <meta name="description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
+  <meta name="description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, the drought eligibility determinations they feed, and the USDA disaster designations around them, 2000–2026.">
   <meta name="author" content="Sustainable FSA">
   <meta name="theme-color" content="#B7410E">
 
@@ -88,7 +88,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Sustainable FSA">
   <meta property="og:title" content="LFP Explorer · Sustainable FSA">
-  <meta property="og:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
+  <meta property="og:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, the drought eligibility determinations they feed, and the USDA disaster designations around them, 2000–2026.">
   <meta property="og:url" content="https://sustainable-fsa.com/lfp-explorer/">
   <!-- Generated later in the build; referenced now so the card is complete the
        moment the file lands. -->
@@ -98,7 +98,7 @@
   <meta property="og:image:alt" content="A map of the United States with counties colored by the length of their FSA normal grazing period.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="LFP Explorer · Sustainable FSA">
-  <meta name="twitter:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, and the drought eligibility determinations they feed, 2000–2026.">
+  <meta name="twitter:description" content="An interactive county map of the data behind the USDA Livestock Forage Disaster Program: FSA normal grazing periods, the weekly U.S. Drought Monitor record, the drought eligibility determinations they feed, and the USDA disaster designations around them, 2000–2026.">
   <meta name="twitter:image" content="https://sustainable-fsa.com/lfp-explorer/brand/og-image.png">
 
   <!-- Favicons / app icons: kit-hosted and UNVERSIONED, per snippets/head.html
@@ -220,10 +220,12 @@
       <div class="sfsa-drawer-scroll">
         <!-- ══ What to show ═════════════════════════════════════════════════
              FIRST section in the drawer, because it scopes everything below
-             it: one segmented button per SHIPPED data family, in the order the
-             Livestock Forage Program is administered. Families that are not
-             here yet get no button — a disabled teaser is a promise the app
-             cannot keep — and the muted caption says so in words instead.
+             it: one segmented button per SHIPPED data family, numbered in the
+             order the Livestock Forage Program is administered — when may
+             livestock graze here, how dry was it, what did that qualify the
+             county for, and what wider disaster was declared around it. The
+             four of them are the whole chain, which is why there is no longer
+             a caption promising more.
              app.js owns aria-pressed (which IS the styling source of truth,
              HOUSE-STYLE §5.7). These buttons are deliberately NOT in app.js's
              dataControls: switching away from a family whose payload failed
@@ -237,8 +239,9 @@
                     data-view-btn="usdm" aria-pressed="false">2 · Drought monitor</button>
             <button type="button" class="nav-btn seg-btn" id="btn-view-eligibility"
                     data-view-btn="eligibility" aria-pressed="false">3 · LFP eligibility</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-view-disasters"
+                    data-view-btn="disasters" aria-pressed="false">4 · Disaster designations</button>
           </div>
-          <p class="control-note">More LFP data families coming.</p>
         </section>
 
         <!-- ══ Dataset — grazing periods ════════════════════════════════════
@@ -342,6 +345,45 @@
               Four defensible ways to read “any area of the county”; they
               disagree.
             </p>
+          </div>
+        </section>
+
+        <!-- ══ Declaration type — disaster designations ══════════════════════
+             Not a dataset and not a colour-by: one archive holds both
+             instruments, and this picks which of them the map is about. They
+             are different findings by different authorities with different
+             consequences, so the note says what each one unlocks rather than
+             leaving two proper nouns to speak for themselves.
+
+             The buttons carry the CHOICE's id and the value they select; app.js
+             wires every family's choices from those two attributes and owns
+             aria-pressed (js/app.js § Enumerated choices). -->
+        <section class="sfsa-drawer-section" id="dis-decltype-seg" data-view="disasters" hidden>
+          <h2 class="sfsa-drawer-title" id="dis-decltype-title">Declaration type</h2>
+          <div class="seg-btns" role="group" aria-labelledby="dis-decltype-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-dis-secretarial"
+                    data-choice="decl" data-value="secretarial" aria-pressed="true">Secretarial</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-dis-presidential"
+                    data-choice="decl" data-value="presidential" aria-pressed="false">Presidential</button>
+          </div>
+          <p class="control-note">
+            Secretary of Agriculture designations unlock FSA emergency loans;
+            Presidential declarations are FEMA's broader instrument.
+          </p>
+        </section>
+
+        <!-- ══ Disaster type — disaster designations ═════════════════════════
+             The whole app is about drought, so drought is the default; the
+             other twenty-one disaster types in the archive are one press away,
+             because a county's drought year reads differently next to the
+             hurricane, the freeze or the wildfire that also hit it. -->
+        <section class="sfsa-drawer-section" id="dis-scope-seg" data-view="disasters" hidden>
+          <h2 class="sfsa-drawer-title" id="dis-scope-title">Disaster type</h2>
+          <div class="seg-btns" role="group" aria-labelledby="dis-scope-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-dis-drought"
+                    data-choice="disaster" data-value="drought" aria-pressed="true">Drought</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-dis-all"
+                    data-choice="disaster" data-value="all" aria-pressed="false">All disasters</button>
           </div>
         </section>
 

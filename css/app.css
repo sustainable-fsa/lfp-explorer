@@ -205,7 +205,14 @@ main {
    one that is not a scoping group: its two labels ("Payment months",
    "Qualifying date") are the quantities themselves, and nothing shorter says
    which of them is the payable one. The grazing periods' three-word group keeps
-   the kit's row. */
+   the kit's row.
+
+   So do the disaster designations' two groups (#dis-decltype-seg,
+   #dis-scope-seg), and deliberately: "Secretarial / Presidential" and
+   "Drought / All disasters" are two short labels each, which the kit's fused
+   row holds at half the column apiece with room to spare. This paragraph exists
+   so the next reader does not add them to the list above for symmetry — the
+   list is for groups whose words do not fit, not for scoping groups as such. */
 #view-seg .seg-btns,
 #ngp-dataset-seg .seg-btns,
 #usdm-dataset-seg .seg-btns,
@@ -447,7 +454,7 @@ main {
    reason as the attribution clearance in §5.
 
    Contents:
-     8. Month wheel      9. Card span chart + table
+     8. Month wheel      9. Card body (chart, table twin, designation list)
     10. Data table modal
    ========================================================================== */
 
@@ -462,7 +469,7 @@ main {
    No rule needed here; this comment exists so the next reader does not "fix"
    it with a fixed font-size that would break the ring's proportions. */
 
-/* ── 9. Card span chart + table twin ─────────────────────────────────────── */
+/* ── 9. Card body: span chart, table twin, designation list ──────────────── */
 
 .span-figure,
 .usdm-figure,
@@ -546,6 +553,78 @@ main {
 .card-table .card-table-empty {
   color: var(--text-dim);
   font-style: italic;
+}
+
+/* The disaster designations' card body is a LIST rather than a picture, so it
+   has no figure and no <details> twin: what the archive holds for one county in
+   one year is text — a declaration number, an uncleaned disaster type, a
+   description somebody typed, and three dates two of which are often missing —
+   and semantic markup is already the accessible form of that
+   (js/interfaces/disasters.js § The card's second half).
+
+   TOKENS ONLY here, as everywhere in this file. The one colour these rules do
+   NOT set is the swatch's fill: that is the map's own Primary/Contiguous data
+   colour and js/interfaces/disasters.js sets it, like every other data colour in
+   this app. */
+.decl-caption {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+/* A tab stop, because on compact the card body scrolls and this list is the
+   only thing in it a keyboard could land on (js/interfaces/disasters.js says
+   why). The kit's global :focus-visible ring is the whole visible treatment;
+   the rule below only keeps the ring off the text. */
+.decl-list {
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.decl-list:focus-visible {
+  outline-offset: 3px;
+}
+.decl-item {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+.decl-item > p {
+  margin: 0;
+}
+.decl-head {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.decl-head code {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+/* The word and the colour together, never the colour alone (WCAG 1.4.1): the
+   swatch is a second channel for the label beside it, which is why it is
+   aria-hidden and why nothing here depends on its fill being legible. */
+.decl-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+.decl-swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border: 1px solid var(--ctrl-border);
+  border-radius: var(--radius-sm);
+}
+.decl-desc {
+  color: var(--text-secondary);
+}
+.decl-dates {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 10. Data table modal ─────────────────────────────────────────────────

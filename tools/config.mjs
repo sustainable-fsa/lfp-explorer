@@ -16,15 +16,17 @@
    directory, settle window, feature-state source id; the a11y run's own settle
    window — stays in that harness, where a reader looking for it will be.
 
-   WHAT `INTERFACES` IS FOR: the probe table. The app is growing from one view
-   ("interface", in the plan's language) to four, each with its own datasets,
+   WHAT `INTERFACES` IS FOR: the probe table. The app is one page over four
+   views ("interfaces", in the plan's language), each with its own datasets,
    legend body, export filename scheme and deep link. Every harness fact about
    a view lives in one entry here, so adding a view to the gates is adding a
-   literal — not editing assertions scattered through 1,700 lines. Three of the
-   four are here (`ngp`, `usdm`, `eligibility`), and the shape has now survived
-   two additions: what a new view needs is its own entry plus one call to the
-   section template, and what it must NOT need is a new assertion in a place a
-   reader would not look for it.
+   literal — not editing assertions scattered through 1,700 lines. All four are
+   here now (`ngp`, `usdm`, `eligibility`, `disasters`), and the shape survived
+   every one of the three additions: what a new view needed was its own entry
+   plus one call to the section template, and what it never needed was a new
+   assertion in a place a reader would not look for it. The fourth cost the
+   template two lines, both because it is the first view with ONE archive and
+   therefore no dataset control at all (see `payload` below).
 
    Ids, slugs and filenames in this file are FROZEN CONTRACT with the app: they
    are the same strings index.html authors and js/app.js reads. Change one here
@@ -132,8 +134,7 @@ export const MARKERS = Object.freeze({
    ══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * Everything the gates know about a view. `ngp`, `usdm` and `eligibility` are
- * here; `disasters` lands with its own PR.
+ * Everything the gates know about a view. All four are here.
  *
  * Fields:
  *   slug        `?view=` value. The default view emits NO param at all.
@@ -151,6 +152,12 @@ export const MARKERS = Object.freeze({
  *               whatever that dataset makes true about the controls
  *               (`nominalYears` disables the year slider and unhides its
  *               note; `types` is how many options its dictionary offers).
+ *               ABSENT on a view with one archive and therefore no dataset
+ *               control: `disasters` names its `payload` (and `payloadUrl`)
+ *               directly instead, and emits no `?dataset` at all. The two
+ *               places that walk datasets — the section template's lazy-fetch
+ *               step and the boot path's lazy list — read the entry itself
+ *               when the map is missing, which is the whole adaptation.
  *   legend      which body each variable is expected to show, and — for a
  *               categorical view — the class labels and the no-data label the
  *               swatches must print in words.
@@ -174,6 +181,18 @@ export const MARKERS = Object.freeze({
  *   lazyAssets  committed repo assets this view loads WITH the view rather than
  *               at boot (a second colour ramp). The lazy-boot assertion adds
  *               them to the list of things the boot path must not have fetched.
+ *   toggles     a view's two-way seg controls that are neither datasets nor
+ *               variables (the disaster designations' declaration type and
+ *               disaster scope): per toggle its section, its URL param, its
+ *               localStorage key, and one entry per option with the option's
+ *               seg button and whether it is the elided default.
+ *   fixture     the (year, county) the gates drive this view to, with what the
+ *               published payload says is there — measured, and the reason the
+ *               choice was made. A view whose default year happens to hold no
+ *               record for the probe county would otherwise assert the empty
+ *               half of a card.
+ *   junk        source values a view is required to reproduce VERBATIM rather
+ *               than clean up, with the rows to find them in.
  *   extraChecks the view's own controls (a week scrubber, a source picker),
  *               each followed by a repaint witness and a clean(). NULL here
  *               when those checks need the harness's own paint-signature and
@@ -656,6 +675,246 @@ export const INTERFACES = Object.freeze({
         selector, fixture and measured count they read is in this entry. */
     extraChecks: null,
   }),
+
+  disasters: Object.freeze({
+    slug: 'disasters',
+    label: 'Disaster designations',
+    isDefault: false,
+    switchSel: '#btn-view-disasters',
+    sectionSel: '#view-seg',
+
+    /** MISSOULA A FOURTH TIME, and for the fourth view the round-trip argument
+        is the whole point: a four-stop excursion can only prove the SELECTION is
+        the visitor's if every view can show the same county. Its designation
+        record is a real one — measured against the published payload
+        (2026-08-20), FSA designated Missoula for drought in nine program years,
+        and at the fixture year below it carries six Secretarial drought
+        designations, one of them Primary. */
+    county: Object.freeze({ id: '30063', name: 'Missoula' }),
+
+    /** ONE ARCHIVE, so no dataset control and no `?dataset` — the first view in
+        the app with nothing to toggle between. `payload` is the basename the
+        lazy-boot and lazy-fetch assertions look for; `payloadUrl` is the
+        relative path the app itself fetches, and the oracle below re-reads it
+        so its counts come from the archive rather than from the decoder that
+        painted them.
+
+        3,907 declaration amendments and 184,815 county rows: 2,959 Secretarial
+        declarations (136,366 county rows) and 948 Presidential ones (48,449).
+        FIPS-keyed, so every row arrives through the crosswalk. */
+    payload: 'fsa-disasters.json',
+    payloadUrl: '../fsa-disasters/fsa-disasters.json',
+    keySpace: 'fips',
+
+    /** TWO TWO-WAY SEGS, and neither is a dataset: both slice ONE archive.
+        The declaration type is the instrument (whose signature unlocks what),
+        the scope is the disaster type filter. Each elides its default and each
+        is remembered per view, exactly like a dataset id. */
+    toggles: Object.freeze({
+      decl: Object.freeze({
+        sectionSel: '#dis-decltype-seg',
+        param: 'decl',
+        storageKey: 'sfsa-ngp-decl-disasters',
+        /** The COPY CONTRACT for the note under this seg. Two signatures are
+            not two spellings of one thing: the Secretary's designation is what
+            opens FSA's emergency loans, and a Presidential declaration is the
+            Stafford Act instrument that brings FEMA. A visitor choosing between
+            them has to be told which is which. */
+        noteSays: /emergency loan/i,
+        noteAlsoSays: /FEMA|Stafford/i,
+        options: Object.freeze([
+          Object.freeze({ id: 'secretarial', label: 'Secretarial',
+            sel: '#btn-dis-secretarial', isDefault: true }),
+          Object.freeze({ id: 'presidential', label: 'Presidential',
+            sel: '#btn-dis-presidential', isDefault: false }),
+        ]),
+      }),
+      disaster: Object.freeze({
+        sectionSel: '#dis-scope-seg',
+        param: 'disaster',
+        storageKey: 'sfsa-ngp-disaster-disasters',
+        options: Object.freeze([
+          Object.freeze({ id: 'drought', label: 'Drought',
+            sel: '#btn-dis-drought', isDefault: true }),
+          Object.freeze({ id: 'all', label: 'All disasters',
+            sel: '#btn-dis-all', isDefault: false }),
+        ]),
+      }),
+    }),
+
+    /** MEASURED, and the fact that makes one corner of this view empty ON
+        PURPOSE: not one of the 48,449 Presidential county rows is coded for
+        drought. FEMA's instrument is not the drought instrument — the Stafford
+        Act declarations in this archive are storms, floods, fires and freezes —
+        so Presidential × Drought is an honestly empty map, and the harness holds
+        the app to saying so rather than to painting something. */
+    presidentialDroughtRows: 0,
+
+    /** Two roles, two colours, and the legend has to name both in words: the
+        scheme is hue-only (the archive's own red/orange), so in grayscale the
+        labels are the legend. `noData` is the phrase without its year — the app
+        appends the selected one, which is the point of the chip. */
+    legend: Object.freeze({
+      kind: 'swatches',
+      items: Object.freeze(['Primary', 'Contiguous']),
+      noData: 'No designation in',
+      /** The COPY CONTRACT for the key: a reader must be told that red is
+          named-in-the-designation, that orange is a neighbour with the same
+          access, and that grey is neither. The wording is the app's. */
+      keySays: /named|primary/i,
+      keyAlsoSays: /contiguous|neighbo/i,
+      keyNoDataSays: /not designated|no designation/i,
+    }),
+
+    /** THE YEAR DICTIONARY IS 17 STRINGS AND TWO OF THEM ARE NOT YEARS: `"0"`
+        (Presidential #4657, 84 county rows) and `"2011, 2012"` (Secretarial
+        #S3229, 10 rows). Whether the second one contributes a 2011 to the
+        domain is a judgement the payload does not settle — reading it as a range
+        gives a 2011 floor, dropping it as unparseable gives 2012 — so the
+        harness insists on the two things that are NOT judgements: the slider's
+        domain is exactly what the decoder hands back, and its floor is one of
+        those two answers rather than `0`. `max` is never a literal: the archive
+        gains a program year every autumn. */
+    yearDomain: Object.freeze({
+      min: 2011,
+      minIfJunkYearDropped: 2012,
+      junkYears: Object.freeze(['0', '2011, 2012']),
+      junkYearRows: 94,
+    }),
+
+    exportName: /^fsa-disasters_\d{4}_(secretarial|presidential)_(drought|all)\.png$/,
+
+    /** THE FIXTURE YEAR, chosen from the data rather than assumed — and 2021
+        rather than the app's default 2026 for two independent reasons.
+        MEASURED at 2021 on this view's defaults (Secretarial × drought):
+        2,802 county rows under 148 declarations, 1,164 distinct FIPS keys
+        reaching 1,168 FSA counties (918 Primary, 250 Contiguous), latest
+        approval 2022-05-25.
+          · Missoula has six designations there (five Contiguous and one
+            Primary, #S5071), so the card and its list are a real record. It has
+            NONE in 2026, and a deep link whose card reads "no designation" would
+            assert the empty half of the card.
+          · It is the only year whose SECRETARIAL DROUGHT slice — the two
+            defaults, so no toggling to reach it — carries malformed county keys
+            (see `junk`), which is what makes the verbatim and unmatched-count
+            checks assertions about the app's default state instead of about a
+            corner of it. */
+    fixture: Object.freeze({
+      year: 2021,
+      vintage: 'dd22',
+      rows: 2802,
+      declarations: 148,
+      fips: 1164,
+      designated: 1168,
+      primary: 918,
+      contiguous: 250,
+      latestApproval: '2022-05-25',
+      /** Missoula's own six, by declaration number, in approval order. The
+          county's role is Primary because Primary beats Contiguous — within a
+          county's rows and across the crosswalk alike. */
+      county: Object.freeze({
+        id: '30063',
+        role: 'Primary',
+        designations: 6,
+        primary: 1,
+        contiguous: 5,
+        numbers: Object.freeze(['S5000', 'S5022', 'S5029', 'S5039', 'S5071',
+          'S5085']),
+        /** Every one of the six has a null `decl_end` — 103,757 of the archive's
+            184,815 rows do — so this card is also the fixture for the copy that
+            has to stand in for a date that was never reported. */
+        endSays: /ongoing|not reported/i,
+      }),
+      /** What the other three corners of the two toggles hold at the same year,
+          so a repaint witness is a claim about numbers rather than a hope.
+          `presidential-drought` is empty for the archive's own reason above. */
+      slices: Object.freeze({
+        'secretarial-all': Object.freeze({ rows: 4754, designated: 1656 }),
+        'presidential-all': Object.freeze({ rows: 4705, designated: 1489 }),
+        'presidential-drought': Object.freeze({ rows: 0, designated: 0 }),
+      }),
+    }),
+
+    /** VALUES VERBATIM, IRREGULARITIES INCLUDED — the archive's own policy
+        (fsa-disasters README § the JSON payload), and therefore this app's. 72
+        of the 3,306 FIPS keys are not five digits: they are the FSA portal's
+        internal codes for tribal lands ("2810", "0010", "400", …), and 249
+        county rows carry one. They match no crosswalk row, so they are excluded
+        from the MAP and counted out loud — and they appear in the data table
+        exactly as the archive spells them, because that table is the archive's
+        text and not a cleanup of it.
+
+        The two below are the whole of that population at the fixture year on
+        this view's defaults. Each is a reservation the portal keys with a
+        four-digit code and names in the county column; the state column is
+        ordinary. (The other flavour of junk — a state column reading "Acoma" —
+        lives at 2017 on the Presidential side, which is two toggles and a year
+        away; it is described in help.md rather than gated here.) */
+    junk: Object.freeze({
+      rows: 2,
+      fipsKeys: Object.freeze(['2810', '2715']),
+      atFixture: Object.freeze([
+        Object.freeze({ fips: '2810', county: 'Pine Ridge',
+          state: 'South Dakota', role: 'Primary', declaration: 'S5094' }),
+        Object.freeze({ fips: '2715', county: 'Pauma and Yuima',
+          state: 'California', role: 'Primary', declaration: 'S5131' }),
+      ]),
+      /** The live region's own sentence about them. The number may honestly be
+          either the count of KEYS or the count of ROWS (they are both 2 here and
+          11 vs 22 on the Presidential slice), so the check accepts either and
+          this pattern is what makes it a sentence about matching rather than a
+          number that happens to appear. */
+      unmatchedSays: /could not be matched|unmatched|no (?:county )?boundary/i,
+    }),
+
+    /** The data table's columns, in order — eleven of them, because a
+        designation is not a value but a record: who named the county, under
+        which declaration, for what, and over which three dates. Named here so
+        the check can hold the table to the archive's own shape rather than to a
+        count of <th> elements. */
+    table: Object.freeze({
+      columns: Object.freeze(['County', 'State', 'FIPS', 'Role', 'Declaration',
+        'Type', 'Disaster', 'Description', 'Approved', 'Begin', 'End']),
+      /** 103,757 of the 184,815 rows carry no end date at all. A blank cell
+          would read as a value nobody entered; an em-dash reads as a date the
+          source does not have. */
+      nullDate: '—',
+    }),
+
+    deepLink: '?view=disasters&year=2021&county=30063',
+    /** What that link must produce, all of it measured above. */
+    deepLinkExpect: Object.freeze({
+      year: 2021, vintage: 'dd22', decl: 'secretarial', disaster: 'drought',
+      role: 'Primary', designations: 6,
+      number: 'S5071', approval: 'Sep 3, 2021',
+    }),
+
+    /** Row for row, the county designations the table owes — every row matching
+        (year, declaration type, scope), junk keys included, which is a LARGER
+        number than the map's because several declarations reach one county and
+        because some rows reach no county at all. `paintOracle` is the other one:
+        the FSA counties the crosswalk reaches that the composite can draw. */
+    tableOracle: async (page) => oracle(await disastersJoin(page), 'rows'),
+    paintOracle: async (page) => oracle(await disastersJoin(page), 'painted'),
+    /** The three counts the live region has to say out loud: how many counties
+        were named directly, how many qualify as neighbours, and how many source
+        rows reached no boundary at all. */
+    primaryOracle: async (page) => oracle(await disastersJoin(page), 'primary'),
+    contiguousOracle: async (page) => oracle(await disastersJoin(page), 'contiguous'),
+    unmatchedOracle: async (page) => oracle(await disastersJoin(page), 'unmatched'),
+    unmatchedRowsOracle: async (page) => oracle(await disastersJoin(page), 'unmatchedRows'),
+    /** Everything at once, for the checks that compare several counts from one
+        state of the app (and so must not re-read it four times). */
+    joinOracle: async (page) => disastersJoin(page),
+
+    /** The two seg toggles, the empty Presidential drought map, the verbatim
+        junk in the table, the unmatched count and the four-interface round trip
+        are asserted in tools/verify.mjs § the disaster designations — they need
+        that file's paint-signature, marker and live-region probes, and this file
+        must not assert. Every selector, fixture and measured count they read is
+        in this entry. */
+    extraChecks: null,
+  }),
 });
 
 /**
@@ -833,6 +1092,154 @@ function eligJoin(page, defaultSource = 'usdm-counties-fsa-lfp') {
   }, defaultSource);
 }
 
+/**
+ * The disaster designations for the year, declaration type and scope on screen,
+ * joined onto the FSA composite — the oracle behind every count this view is
+ * checked against.
+ *
+ * THIS ONE READS THE ARCHIVE, not the decoder. The other two oracles ask the
+ * live decoder for a slice and re-implement only the reduce; here the whole
+ * thing is recomputed from the published payload — fetched by the PAGE, so it is
+ * the same bytes and the same relative URL the app resolved — through the app's
+ * own crosswalk and geometry index. That is a stronger independence than the
+ * other two have (a decoder that indexed the wrong year would agree with itself
+ * but not with this), and it costs one 4 MB parse from localhost per call.
+ *
+ * WHICH SLICE: the two seg toggles, read from `aria-pressed` — the attribute the
+ * kit styles a seg button from, so if it is wrong the button LOOKS wrong and
+ * there is no second source of truth to prefer. The view state is the fallback
+ * for a run where the markup is not there yet, and the documented defaults
+ * (Secretarial, drought) are the fallback for that.
+ *
+ * THE ONE RULE IT RE-IMPLEMENTS is the reduce: Primary beats Contiguous, within
+ * a county's rows and again across the FIPS→FSA crosswalk, because a county
+ * named directly in any designation is a Primary county however many
+ * neighbouring roles it also holds.
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<object>} counts, or `{error}` if the view is not up yet.
+ */
+function disastersJoin(page) {
+  const E = INTERFACES.disasters;
+  const sels = {
+    url: E.payloadUrl,
+    secretarial: E.toggles.decl.options[0].sel,
+    presidential: E.toggles.decl.options[1].sel,
+    drought: E.toggles.disaster.options[0].sel,
+    all: E.toggles.disaster.options[1].sel,
+  };
+  // A THROW IS AN ANSWER — see usdmJoin above for why every branch here comes
+  // back as data, including the failures.
+  return page.evaluate(async (s) => {
+    try {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const c = app.ngpContext();
+      const xw = typeof c.getCrosswalk === 'function' ? c.getCrosswalk() : null;
+      if (!xw) return { error: 'the crosswalk has not been fetched' };
+      const sel = typeof c.getSelection === 'function' ? c.getSelection() : {};
+      const vs = typeof c.getViewState === 'function' ? c.getViewState() : {};
+      const slice = (vs && (typeof vs.decl === 'string' ? vs : vs.disasters)) || {};
+      const idx = c.getCounties() ? c.getCounties().index : new Map();
+      const vintage = (typeof c.getVintage === 'function' ? c.getVintage() : null)
+        || sel.vintage;
+      if (!vintage) {
+        return { error: 'the app does not say which boundary vintage is drawn' };
+      }
+      const year = sel.year;
+
+      const pressed = (q) => {
+        const b = document.querySelector(q);
+        return !!b && b.getAttribute('aria-pressed') === 'true';
+      };
+      const declType = pressed(s.presidential) ? 'Presidential'
+        : pressed(s.secretarial) ? 'Secretarial'
+          : (slice.decl === 'presidential' ? 'Presidential' : 'Secretarial');
+      const droughtOnly = pressed(s.all) ? false
+        : pressed(s.drought) ? true : slice.disaster !== 'all';
+
+      const res = await fetch(new URL(s.url, document.baseURI).href);
+      if (!res.ok) return { error: `the payload answered HTTP ${res.status}` };
+      const P = await res.json();
+      const yi = P.years.indexOf(String(year));
+      if (yi < 0) {
+        return { error: `the payload's year dictionary has no `
+          + `${JSON.stringify(String(year))}` };
+      }
+      const dt = P.decl_types.indexOf(declType);
+      if (dt < 0) return { error: `the payload has no ${declType} declarations` };
+      /* /DROUGHT/i, the archive README's own convention — one exact code today,
+         matched as a pattern because the dictionary is 22 uncleaned strings. */
+      const drought = new Set();
+      const re = new RegExp('DROUGHT', 'i');
+      P.disaster_types.forEach((t, i) => { if (re.test(t)) drought.add(i); });
+
+      const byFips = new Map();
+      const decls = new Set();
+      let rows = 0;
+      let junkRows = 0;
+      for (let i = 0; i < P.n; i++) {
+        const d = P.decl[i];
+        if (P.decl_year[d] !== yi || P.decl_type[d] !== dt) continue;
+        if (droughtOnly && !drought.has(P.disaster_type[i])) continue;
+        rows++;
+        decls.add(d);
+        const f = P.fips_codes[P.fips[i]];
+        if (!/^\d{5}$/.test(f)) junkRows++;
+        const rec = byFips.get(f) || { primary: 0, contiguous: 0 };
+        if (P.code[i] === 0) rec.primary++; else rec.contiguous++;
+        byFips.set(f, rec);
+      }
+
+      const byFsa = new Map();
+      const unmatchedKeys = [];
+      let unmatchedRows = 0;
+      for (const [f, rec] of byFips) {
+        const fsa = xw.toFsa(vintage, f);
+        if (!fsa || !fsa.length) {
+          unmatchedKeys.push(f);
+          unmatchedRows += rec.primary + rec.contiguous;
+          continue;
+        }
+        const role = rec.primary > 0 ? 'primary' : 'contiguous';
+        for (const id of fsa) {
+          byFsa.set(id, byFsa.get(id) === 'primary' ? 'primary' : role);
+        }
+      }
+      let primary = 0; let contiguous = 0;
+      let painted = 0; let primaryPainted = 0; let contiguousPainted = 0;
+      for (const [id, role] of byFsa) {
+        if (role === 'primary') primary++; else contiguous++;
+        if (idx.has(id)) {
+          painted++;
+          if (role === 'primary') primaryPainted++; else contiguousPainted++;
+        }
+      }
+      let latest = null;
+      for (const d of decls) {
+        const a = P.decl_approval[d];
+        if (a === null || a <= 0) continue;   // the 1899-12-30 spreadsheet zero
+        if (latest === null || a > latest) latest = a;
+      }
+      return {
+        year, declType, droughtOnly, vintage,
+        rows, declarations: decls.size, fips: byFips.size,
+        designated: byFsa.size, primary, contiguous,
+        painted, primaryPainted, contiguousPainted,
+        unmatched: unmatchedKeys.length, unmatchedRows,
+        unmatchedSample: unmatchedKeys.slice(0, 6), junkRows,
+        latestApproval: latest === null ? null
+          : new Date(Date.UTC(1970, 0, 1) + latest * 86400000)
+            .toISOString().slice(0, 10),
+        geometry: idx.size,
+      };
+    } catch (err) {
+      return {
+        error: 'the join threw inside the app: ' + String(err).split('\n')[0],
+      };
+    }
+  }, sels);
+}
+
 /** An oracle's answer, or the reason there isn't one — the string/number
     convention documented in the probe table's field list. A null field is a
     reason too: it means the app is in a state the oracle deliberately does not
@@ -853,8 +1260,9 @@ export const DEFAULT_INTERFACE = Object.values(INTERFACES)
 /**
  * The FIPS↔FSA crosswalk: a committed repo asset, not a staged payload.
  *
- * FIPS-keyed payloads — the nClimGrid climatology and all three USDM county
- * sets — are joined onto the FSA composite through this table, per vintage:
+ * FIPS-keyed payloads — the nClimGrid climatology, all three USDM county sets
+ * and the disaster designations — are joined onto the FSA composite through this
+ * table, per vintage:
  * dd17 and dd22 do not hold the same county footprints, so a vintage swap
  * re-joins. The eligibility archives are deliberately NOT among them; they
  * carry both keys already (an LFP determination is made against both), so that

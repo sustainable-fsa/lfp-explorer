@@ -459,6 +459,22 @@ const liveText = (page) => page.evaluate(() => Array.from(
   document.querySelectorAll('[aria-live="polite"]:not(.sfsa-toast)'))
   .map((n) => (n.textContent || '').trim()).filter(Boolean).join(' | '));
 
+/** liveText, but patient. The app DEFERS announcements (~350 ms of rest) so a
+    reader hears one composed sentence instead of a stutter of partials — which
+    means any read taken right after a transition races that timer and can
+    return the PREVIOUS view's sentence. Poll until `test(text)` accepts the
+    region or ~1.8 s passes, and hand back whatever it holds then; the caller's
+    check still judges the final text, so a genuinely missing announcement
+    still fails with the real evidence. */
+async function settledLiveText(page, test) {
+  let said = await liveText(page);
+  for (let i = 0; i < 15 && !test(said); i++) {
+    await page.waitForTimeout(120);
+    said = await liveText(page);
+  }
+  return said;
+}
+
 /**
  * A boundary-vintage swap, waited out.
  *
@@ -602,7 +618,12 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
     let lazyCount = 0;
     let lazyAssets = 0;
     for (const iface of Object.values(CONFIG.interfaces)) {
-      for (const ds of Object.values(iface.datasets)) {
+      /* A view with one archive has no `datasets` map — it names its payload on
+         the entry (tools/config.mjs § the probe table's field list), and that
+         payload is as lazy as any other. */
+      const sets = iface.datasets ? Object.values(iface.datasets)
+        : [{ id: iface.slug, isDefault: true, payload: iface.payload }];
+      for (const ds of sets) {
         if (iface.isDefault && ds.isDefault) continue;
         lazyCount++;
         lazy.push(...has(ds.payload));
@@ -1655,6 +1676,7 @@ const TOUCH_CONTRACT = [
   ['#btn-view-ngp', 40],
   ['#btn-view-usdm', 40],
   ['#btn-view-eligibility', 40],
+  ['#btn-view-disasters', 40],
 ];
 
 /** The drought monitor's own controls. Measured in a SECOND pass, after a
@@ -1685,6 +1707,19 @@ const ELIG_TOUCH_CONTRACT = [
   ['#btn-elig-date', 40],
 ];
 const ELIG_SOURCE_TOUCH_CONTRACT = [['#elig-source', 40]];
+
+/** The disaster designations' own controls, measured in a FOURTH pass for the
+    same reason: two two-way segs that live in `[data-view="disasters"]`
+    sections, so on any other view they have no client rects and the passes above
+    would skip them into a vacuous pass. Four buttons in two pairs is the
+    densest seg stack in the drawer, which is exactly the shape that ends up 32px
+    tall when a pair is asked to share a row at 375px. */
+const DIS_TOUCH_CONTRACT = [
+  ['#btn-dis-secretarial', 40],
+  ['#btn-dis-presidential', 40],
+  ['#btn-dis-drought', 40],
+  ['#btn-dis-all', 40],
+];
 
 /** Measure every visible element the contract names. Invisible ones are
     skipped — which is why every caller also checks WHAT it measured. */
@@ -2016,6 +2051,44 @@ section('▸ Compact 375×720 (touch)');
     await s.shot('17d-compact-eligibility');
     s.clean('compact LFP eligibility');
   }
+
+  /* ── The fourth view's controls, on the phone ────────────────────────────
+     The last of the four, and the only one whose controls are ALL seg buttons:
+     two two-way pairs, one for whose signature made the designation and one for
+     which disasters to count. Nothing here has to be toggled to be reached — the
+     four buttons are in the drawer the moment the view is — so this pass is the
+     simplest of the four and measures all of them at once. The drawer is still
+     open from the eligibility pass above. */
+  {
+    const DIS = CONFIG.interfaces.disasters;
+    const seq = await viewSeq(page);
+    const clicked = await clickControl(page, DIS.switchSel);
+    const arrived = clicked && await awaitViewSeq(page, seq);
+    const targets = await measureTargets(page, DIS_TOUCH_CONTRACT);
+    const undersizedDis = targets.filter((m) => m.w < m.min || m.h < m.min);
+    const want = DIS_TOUCH_CONTRACT.map(([sel]) => sel.replace('#', ''));
+    const got = new Set(targets.map((m) => m.id));
+    const missing = want.filter((id) => !got.has(id));
+    console.log('    disaster-designation touch targets: '
+      + targets.map((m) => `${m.id} ${m.w}×${m.h}`).join(', '));
+    check('a phone visitor can reach the disaster designations from the drawer, '
+      + 'and both of its seg pairs — declaration type and disaster scope — meet '
+      + 'the touch sizes the kit promises, all four really on screen',
+    arrived && undersizedDis.length === 0 && missing.length === 0,
+    [clicked ? '' : `${DIS.switchSel} was not clickable at 375px`,
+      arrived ? '' : `data-ngp-view-seq stayed at ${seq}`,
+      undersizedDis.map((m) => `${m.id} ${m.w}×${m.h} < ${m.min}`).join(', '),
+      missing.length ? 'never measured: ' + missing.join(', ') : '']
+      .filter(Boolean).join(' | '));
+    check('the phone does not scroll sideways with the designation controls in '
+      + 'the drawer',
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1),
+    await page.evaluate(() => `scrollWidth ${document.documentElement.scrollWidth} > `
+      + `innerWidth ${window.innerWidth}`));
+    await s.shot('17e-compact-disasters');
+    s.clean('compact disaster designations');
+  }
   await s.ctx.close();
 }
 
@@ -2076,8 +2149,14 @@ async function verifyInterfaceSection(iface, {
 }) {
   const { page, clean, shot } = session;
   const dflt = DEFAULT_INTERFACE;
-  const ds = Object.values(iface.datasets).find((d) => d.isDefault)
-    || Object.values(iface.datasets)[0];
+  /* A view may hold ONE archive and therefore have no dataset control at all —
+     the disaster designations do — in which case the entry names its payload
+     directly and there is no `?dataset` for this view to emit. Only step 3
+     (the lazy-fetch proof) needs the distinction, and it needs one field. */
+  const ds = iface.datasets
+    ? (Object.values(iface.datasets).find((d) => d.isDefault)
+      || Object.values(iface.datasets)[0])
+    : { id: null, isDefault: true, payload: iface.payload };
   section(`▸ View ${iface.slug} — ${iface.label}`);
 
   /* 1 · Switch. */
@@ -3523,7 +3602,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
         + 'uncapped number shown as a payment would overstate every award',
       /no cap|uncapped|not .{0,30}payable|recomputed/i.test(key),
       JSON.stringify(key.slice(0, 220)));
-      const said = await liveText(page);
+      const said = await settledLiveText(page, (t) => /recompute/i.test(t));
       check('…and the announcement says the same thing, so a screen-reader '
         + 'visitor is not the only one who has to infer it',
       /recompute/i.test(said) && /not (?:an )?(?:official )?FSA|not FSA/i.test(said),
@@ -3532,8 +3611,9 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
       check(`${ds.label}: the legend key describes payment months, which is what `
         + 'this archive actually carries',
       /month/i.test(key) && key.length > 40, JSON.stringify(key.slice(0, 220)));
-      const said = await liveText(page);
       const eligible = await iface.eligibleOracle(page);
+      const said = await settledLiveText(page, (t) => typeof eligible === 'number'
+        && (saysCount(t, eligible) || saysCount(t, sig.colored)));
       if (typeof eligible !== 'number') {
         skip(`${ds.label}: the announced eligible-county count`, String(eligible));
       } else {
@@ -4161,23 +4241,610 @@ section('▸ ?variable= belongs to the view that has it');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   14. THREE VIEWS, THREE MEMORIES — an excursion changes nothing it did not
-   touch, now across all three.
+   14. THE DISASTER DESIGNATIONS — the fourth interface, and the last.
 
-   §10 proved this for two. The third view is the one that tests it properly,
-   because it has four pieces of state of its own (archive, aggregation, pasture
-   type, variable) and because the middle of a three-stop trip is where a
-   "remember the last view" implementation passes a two-view test and loses the
-   first view's state on the way home.
+   The broader declarations around the program: what the Secretary of
+   Agriculture designated and what the President declared, county by county. It
+   is the first view in the app with ONE archive — nothing to toggle between, so
+   no dataset seg and no `?dataset` at all — and the first whose subject is
+   PAPERWORK rather than a measurement or a determination. Everything structural
+   is the section template again; what is below is what this view adds, and each
+   of these is a claim a screenshot cannot make:
+
+     · TWO SEGS THAT ARE NOT DATASETS. Both slice one archive: whose signature
+       made the designation, and whether to count only drought or every disaster
+       type the portal reports. Two params, two localStorage keys, four corners.
+     · ONE OF THOSE FOUR CORNERS IS EMPTY, and it is empty because of what the
+       instruments ARE rather than because of a bug: not one of the 48,449
+       Presidential county rows in this archive is coded for drought. The app has
+       to paint an honest nothing there.
+     · THE ARCHIVE'S JUNK IS THE ARCHIVE'S TEXT. 72 of 3,306 county keys are the
+       FSA portal's internal codes for tribal lands rather than FIPS codes. They
+       reach no boundary, so they are counted out loud and left off the map — and
+       they appear in the data table spelled exactly as the source spells them,
+       because that table is the archive and not a cleanup of it.
+     · A YEAR DICTIONARY WITH TWO NON-YEARS IN IT ("0" and "2011, 2012"), which
+       must not become a slider position.
    ══════════════════════════════════════════════════════════════════════════ */
 
-section('▸ Three views, three memories');
+const DIS = CONFIG.interfaces.disasters;
+
+/** Flattened for the in-page probe: RegExps do not survive Playwright's
+    serialisation, so only strings cross and every pattern is applied in Node. */
+const DIS_SELS = {
+  declSection: DIS.toggles.decl.sectionSel,
+  scopeSection: DIS.toggles.disaster.sectionSel,
+  secretarial: DIS.toggles.decl.options[0].sel,
+  presidential: DIS.toggles.decl.options[1].sel,
+  drought: DIS.toggles.disaster.options[0].sel,
+  all: DIS.toggles.disaster.options[1].sel,
+  declKey: DIS.toggles.decl.storageKey,
+  scopeKey: DIS.toggles.disaster.storageKey,
+};
+
+/**
+ * Everything the designation drawer, its two URL params and its stored state
+ * say, in one round trip — plus the card and the table, which on this view are
+ * the two places the archive's own text has to survive.
+ *
+ * A missing control comes back as `null`/`false` rather than throwing: the
+ * checks that need it then fail by name instead of ending the run.
+ */
+const disProbe = (page) => page.evaluate((s) => {
+  const el = (q) => document.querySelector(q);
+  const text = (n) => (n ? (n.textContent || '').trim() : null);
+  const pressed = (q) => {
+    const b = el(q);
+    return b ? b.getAttribute('aria-pressed') : null;
+  };
+  const url = new URL(location.href);
+  const ls = (k) => {
+    try { return localStorage.getItem(k); } catch (e) { return 'unavailable'; }
+  };
+  const notes = [s.declSection, s.scopeSection].flatMap((q) => Array.from(
+    document.querySelectorAll(q + ' .control-note')).map((n) => text(n)));
+  const tbody = el('#table-modal-body tbody');
+  return {
+    declSection: !!el(s.declSection),
+    declHidden: el(s.declSection) ? el(s.declSection).hidden : null,
+    scopeSection: !!el(s.scopeSection),
+    scopeHidden: el(s.scopeSection) ? el(s.scopeSection).hidden : null,
+    secretarial: pressed(s.secretarial),
+    presidential: pressed(s.presidential),
+    drought: pressed(s.drought),
+    all: pressed(s.all),
+    notes,
+    params: {
+      view: url.searchParams.get('view'),
+      decl: url.searchParams.get('decl'),
+      disaster: url.searchParams.get('disaster'),
+      dataset: url.searchParams.get('dataset'),
+      year: url.searchParams.get('year'),
+      county: url.searchParams.get('county'),
+      week: url.searchParams.get('week'),
+      type: url.searchParams.get('type'),
+      variable: url.searchParams.get('variable'),
+    },
+    stored: { decl: ls(s.declKey), disaster: ls(s.scopeKey) },
+    swatchLabels: Array.from(
+      document.querySelectorAll('#legend-swatches .sfsa-legend-item'))
+      .map((n) => text(n)),
+    card: {
+      open: !document.getElementById('county-card').hidden,
+      title: text(document.getElementById('card-title')),
+      terms: Array.from(document.querySelectorAll('#card-rows dt')).map(text),
+      values: Array.from(document.querySelectorAll('#card-rows dd')).map(text),
+      body: text(document.getElementById('card-content')),
+      /* A list, not a chart: this view's per-declaration entries are semantic
+         markup, which is its own accessible twin — so there is no <figure> to
+         pair with a <figcaption>, and the thing to count is list items. */
+      items: document.querySelectorAll('#card-content li').length,
+      figures: document.querySelectorAll('#card-content figure').length,
+    },
+    table: {
+      open: !!(document.getElementById('table-modal')
+        && document.getElementById('table-modal').open),
+      headers: Array.from(document.querySelectorAll('#table-modal-body thead th'))
+        .map(text),
+      rows: document.querySelectorAll('#table-modal-body tbody tr').length,
+      caption: text(document.getElementById('table-modal-caption')),
+      body: tbody ? (tbody.textContent || '') : '',
+    },
+  };
+}, DIS_SELS);
+
+/**
+ * The disaster designations' own controls — step 6 of the section template.
+ *
+ * Here rather than in the probe table for the documented reason: every check
+ * below needs the paint-signature, marker and live-region probes in this file,
+ * and tools/config.mjs must not assert. Every selector, fixture and measured
+ * count it reads is in that entry.
+ *
+ * It LEAVES THE VIEW AT THE FIXTURE YEAR, deliberately, because the template's
+ * card, table and poster steps run after it: the app's shared default year is
+ * 2026 and Missoula has no designation in 2026 at all, so a card opened there
+ * would assert the empty half of the card. Every other piece of state is put
+ * back at its default before this returns.
+ */
+async function disastersExtraChecks({ page, check, skip, clean, shot, iface }) {
+  const T = iface.toggles;
+  const F = iface.fixture;
+
+  /* ── 14a. The switcher is complete, and this view has nothing to toggle ──
+     Four views is the whole story the app set out to tell: the window a drought
+     has to fall inside, the drought, the determination, and the declarations
+     around it. And this one is the first with a single archive, so the absence of
+     a dataset control is a fact to assert rather than a gap to overlook — a
+     `?dataset` here would describe a control that does not exist. */
+  section('▸ Disaster designations — the switcher is complete');
+  {
+    const vc = await viewControls(page);
+    const p = await disProbe(page);
+    const views = Object.keys(CONFIG.interfaces).length;
+    check(`the view switcher offers all ${views} interfaces with this one pressed `
+      + '— the four acts of the program, in the order the program reads them',
+    vc.viewBtns === views && vc.views.length === 1
+      && vc.views[0] === iface.slug,
+    `${vc.viewBtns} button(s) in play, pressed ${JSON.stringify(vc.views)}`);
+    check('this view has NO dataset control and emits no ?dataset — one archive, '
+      + 'so there is nothing to choose between and nothing to say about it',
+    vc.datasetBtns === 0 && p.params.dataset === null,
+    `${vc.datasetBtns} dataset button(s) in play, ?dataset=`
+      + `${JSON.stringify(p.params.dataset)} — ${page.url()}`);
+    check('both of its own seg sections are in the drawer and in play: the '
+      + 'declaration type and the disaster scope',
+    p.declSection && p.declHidden === false
+      && p.scopeSection && p.scopeHidden === false,
+    JSON.stringify({ decl: [p.declSection, p.declHidden],
+      scope: [p.scopeSection, p.scopeHidden] }));
+    check('it opens on Secretarial designations for drought — the LFP corner of '
+      + 'this archive — with both defaults elided from the URL',
+    p.secretarial === 'true' && p.presidential === 'false'
+      && p.drought === 'true' && p.all === 'false'
+      && p.params.decl === null && p.params.disaster === null,
+    JSON.stringify({ pressed: [p.secretarial, p.presidential, p.drought, p.all],
+      params: p.params }));
+    check('the declaration-type seg says in words what the two instruments '
+      + 'actually do — the Secretary\'s designation opens FSA emergency loans, a '
+      + 'Presidential declaration brings FEMA under the Stafford Act — because '
+      + '"Secretarial" and "Presidential" alone are two words, not a choice',
+    p.notes.some((n) => T.decl.noteSays.test(n || ''))
+      && p.notes.some((n) => T.decl.noteAlsoSays.test(n || '')),
+    JSON.stringify(p.notes));
+    const key = vc.legend.key || '';
+    check('the legend key names all three colours in words: named directly in a '
+      + 'designation, a contiguous neighbour with the same access, and not '
+      + 'designated at all',
+    iface.legend.keySays.test(key) && iface.legend.keyAlsoSays.test(key)
+      && iface.legend.keyNoDataSays.test(key),
+    JSON.stringify(key.slice(0, 260)));
+    check('each role chip carries its meaning and not just its name — a '
+      + 'red/orange scheme has nothing left in grayscale',
+    p.swatchLabels.length >= 3
+      && p.swatchLabels.slice(0, 2).every((t) => (t || '').length > 10),
+    JSON.stringify(p.swatchLabels));
+    clean('disasters switcher and legend');
+  }
+
+  /* ── 14b. A year dictionary with two non-years in it ─────────────────────
+     `years` ships 17 strings and two of them are not years: "0" (one
+     Presidential declaration, 84 county rows) and "2011, 2012" (one Secretarial
+     declaration, 10 rows). Whether the second contributes a 2011 to the domain
+     is a judgement the payload does not settle, so what is asserted is what is
+     not a judgement: the slider is exactly the decoder's own domain, its floor
+     is a year rather than a zero, and the domain has no holes. */
+  section('▸ Disaster designations — the archive\'s years, and its two non-years');
+  {
+    const vc = await viewControls(page);
+    const years = await dataYears(page);
+    const floors = [iface.yearDomain.min, iface.yearDomain.minIfJunkYearDropped];
+    check('the year slider is re-authored to the designation record: the floor is '
+      + `${floors.join(' or ')} (the two readings of the unparseable `
+      + `"${iface.yearDomain.junkYears[1]}" string) and the ceiling is read from `
+      + 'the payload rather than typed into a harness',
+    vc.yearMin === String(years.min) && vc.yearMax === String(years.max)
+      && floors.includes(years.min) && vc.yearDisabled === false,
+    JSON.stringify({ slider: [vc.yearMin, vc.yearMax], data: years,
+      accepted: floors }));
+    check('and the two strings that are not years never become slider positions: '
+      + 'the domain is contiguous, and its floor is a program year rather than '
+      + `${JSON.stringify(iface.yearDomain.junkYears[0])}`,
+    typeof years.min === 'number' && typeof years.max === 'number'
+      && years.n === years.max - years.min + 1,
+    JSON.stringify(years));
+
+    const snap = await snapshot(page);
+    check('arriving here does not move the visitor: the shared year is inside '
+      + 'this archive\'s own domain — it is scraped weekly, so it covers the '
+      + 'program year in progress — and the slider agrees with it',
+    snap.state.year >= years.min && snap.state.year <= years.max
+      && vc.year === String(snap.state.year),
+    JSON.stringify({ year: snap.state.year, slider: vc.year, domain: years }));
+    clean('disasters year domain');
+  }
+
+  /* ── 14c. The fixture year, and what the map owes the data ───────────────
+     2026 is where a default boot lands and Missoula has no designation in it;
+     2021 is the year every count below was measured against, and the year the
+     template's card and table steps will read. */
+  section('▸ Disaster designations — the designations of one program year');
+  let fixtureSig = null;
+  {
+    await slideYear(page, F.year);
+    await settleVintage(page);
+    const snap = await snapshot(page);
+    const join = await iface.joinOracle(page);
+    fixtureSig = await paintSignature(page, CONFIG.sourceId);
+    check(`setup: ${F.year} on the ${F.vintage} boundaries that were in force `
+      + 'for it', snap.state.year === F.year && snap.vintage === F.vintage,
+    JSON.stringify({ year: snap.state.year, vintage: snap.vintage }));
+    if (join.error) {
+      skip('the designations painted for the fixture year', String(join.error));
+    } else {
+      check(`the archive's own numbers reached the map: ${F.rows} county rows `
+        + `under ${F.declarations} declarations, ${F.fips} FIPS keys, `
+        + `${F.designated} FSA counties (${F.primary} Primary, ${F.contiguous} `
+        + 'Contiguous) — recomputed here from the published payload rather than '
+        + 'from the decoder that painted it',
+      join.rows === F.rows && join.declarations === F.declarations
+        && join.fips === F.fips && join.designated === F.designated
+        && join.primary === F.primary && join.contiguous === F.contiguous,
+      JSON.stringify({ rows: join.rows, declarations: join.declarations,
+        fips: join.fips, designated: join.designated, primary: join.primary,
+        contiguous: join.contiguous, expected: F }));
+      check('every FSA county a designation reaches carries a colour, and no '
+        + 'county without one does',
+      fixtureSig.colored === join.painted,
+      `${fixtureSig.colored} painted, ${join.painted} expected`);
+
+      /* The live region: two counts and a denominator, because the canvas has no
+         text and "some of the country is red" is not a reading. */
+      const said = await settledLiveText(page,
+        (t) => saysCount(t, join.primary) || saysCount(t, join.primaryPainted));
+      const namesPrimary = saysCount(said, join.primary)
+        || saysCount(said, join.primaryPainted);
+      const namesContiguous = saysCount(said, join.contiguous)
+        || saysCount(said, join.contiguousPainted);
+      check('the announcement counts the counties named directly and the '
+        + `neighbours separately (${join.primary} Primary, ${join.contiguous} `
+        + 'Contiguous) — the roles are not the same access to the same programs, '
+        + 'and a screen-reader visitor has only this sentence',
+      namesPrimary && namesContiguous,
+      `live region says ${JSON.stringify(said.slice(0, 240))} — expected `
+        + `${join.primary}/${join.primaryPainted} primary and `
+        + `${join.contiguous}/${join.contiguousPainted} contiguous`);
+
+      /* The rows that reach no boundary at all — the archive's junk keys plus
+         any real county the vintage's crosswalk cannot place. */
+      const j = iface.junk;
+      check(`the ${join.unmatched} county key(s) the crosswalk cannot reach are `
+        + 'COUNTED out loud rather than dropped — at this year they are the FSA '
+        + 'portal\'s own four-digit codes for tribal lands '
+        + `(${j.fipsKeys.join(', ')}), which are not FIPS codes and match no `
+        + 'county boundary',
+      join.unmatched === j.rows && j.unmatchedSays.test(said)
+        && (saysCount(said, join.unmatched) || saysCount(said, join.unmatchedRows)),
+      `oracle says ${join.unmatched} key(s) / ${join.unmatchedRows} row(s) `
+        + `${JSON.stringify(join.unmatchedSample)}; live region `
+        + JSON.stringify(said.slice(0, 240)));
+      check('…and they are off the MAP, not painted grey by accident: the painted '
+        + 'count is the reachable counties and nothing else',
+      join.painted <= join.designated
+        && join.designated - join.unmatched <= join.geometry,
+      JSON.stringify({ designated: join.designated, painted: join.painted,
+        unmatched: join.unmatched, geometry: join.geometry }));
+    }
+    clean('disasters fixture year');
+    await shot('25-disasters-fixture');
+  }
+
+  /* ── 14d. Two instruments, and the corner where one of them is empty ─────
+     The Secretary's designation and the President's declaration are different
+     instruments with different consequences, so switching between them is a
+     different map — except at the drought scope, where the Presidential map is
+     EMPTY, and honestly so: FEMA's instrument is for storms, floods, fires and
+     freezes, and not one Presidential county row in this archive is coded
+     DROUGHT. An app that quietly showed the Secretarial paint under a
+     Presidential legend would look better and be wrong. */
+  section('▸ Disaster designations — two instruments, one of them never drought');
+  {
+    const pres = T.decl.options[1];
+    const seq = await viewSeq(page);
+    const clicked = await clickControl(page, pres.sel);
+    /* No marker to wait on: a toggle inside ONE archive fetches nothing — the
+       payload is already here — so it is a synchronous repaint, like the week
+       scrubber, and `data-ngp-view-seq` must stay exactly where it is. That is
+       asserted below rather than merely assumed. */
+    await settleRepaint(page);
+    const p = await disProbe(page);
+    const sig = await paintSignature(page, CONFIG.sourceId);
+    const join = await iface.joinOracle(page);
+    check(`${pres.label}: the seg accepted it, aria-pressed followed, and `
+      + `?${T.decl.param}=${pres.id} is in the URL — which instrument produced a `
+      + 'map is not a detail a shared link may drop',
+    clicked && p.presidential === 'true' && p.secretarial === 'false'
+      && p.params.decl === pres.id,
+    JSON.stringify({ clicked, pressed: [p.secretarial, p.presidential],
+      param: p.params.decl }));
+    check(`${pres.label} × drought is an EMPTY map, and that is the archive `
+      + 'talking: no Presidential declaration in it is coded for drought '
+      + `(${iface.presidentialDroughtRows} of 48,449 county rows), because the `
+      + 'Stafford Act is not the drought instrument',
+    join.error ? false : (join.rows === 0 && sig.colored === 0
+      && sig.hash !== fixtureSig.hash),
+    join.error ? String(join.error)
+      : `${join.rows} rows, ${sig.colored} counties painted `
+        + `(was ${fixtureSig.colored} @${fixtureSig.hash})`);
+    check(`${pres.label}: the choice is remembered for the next visit `
+      + `(${T.decl.storageKey})`,
+    p.stored.decl === pres.id, 'stored ' + JSON.stringify(p.stored.decl));
+    check('switching instrument does NOT bump data-ngp-view-seq: that marker '
+      + 'sequences fetch-involving transitions, and slicing one archive that is '
+      + 'already loaded is a synchronous repaint',
+    (await viewSeq(page)) === seq, `seq ${seq} → ${await viewSeq(page)}`);
+    clean('disasters presidential drought');
+    await shot('25b-disasters-presidential-drought');
+  }
+
+  /* ── 14e. Every disaster type the portal reports ─────────────────────────
+     The scope toggle is the one that makes the Presidential half of the archive
+     visible at all, and it is also the one that turns this view from an LFP
+     instrument into the whole disaster record: 22 disaster-type strings, of
+     which drought is one exact code. */
+  section('▸ Disaster designations — drought, or every disaster type reported');
+  {
+    const all = T.disaster.options[1];
+    const drought = T.disaster.options[0];
+    const pres = T.decl.options[1];
+    const sec = T.decl.options[0];
+
+    const toAll = await clickControl(page, all.sel);
+    await settleRepaint(page);
+    const pAll = await disProbe(page);
+    const sigAll = await paintSignature(page, CONFIG.sourceId);
+    const joinAll = await iface.joinOracle(page);
+    check(`${all.label} on the Presidential side fills the map the drought filter `
+      + `emptied: ${F.slices['presidential-all'].rows} county rows and `
+      + `${F.slices['presidential-all'].designated} FSA counties at ${F.year}, `
+      + 'where drought alone had none',
+    toAll && !joinAll.error && joinAll.rows === F.slices['presidential-all'].rows
+      && joinAll.designated === F.slices['presidential-all'].designated
+      && sigAll.colored > 0,
+    joinAll.error ? String(joinAll.error)
+      : JSON.stringify({ rows: joinAll.rows, designated: joinAll.designated,
+        painted: sigAll.colored, expected: F.slices['presidential-all'] }));
+    check(`both params travel together — ?${T.decl.param}=${pres.id} and `
+      + `?${T.disaster.param}=${all.id} — because either one alone describes a `
+      + 'different map',
+    pAll.params.decl === pres.id && pAll.params.disaster === all.id
+      && pAll.all === 'true' && pAll.drought === 'false', page.url());
+    check(`${all.label}: the choice is remembered for the next visit `
+      + `(${T.disaster.storageKey})`,
+    pAll.stored.disaster === all.id,
+    'stored ' + JSON.stringify(pAll.stored.disaster));
+    check('the unmatched count moves with the slice rather than being a constant: '
+      + 'the Presidential half of this archive keys far more tribal lands the '
+      + 'crosswalk cannot place, and says so',
+    !joinAll.error && joinAll.unmatched > iface.junk.rows,
+    joinAll.error ? String(joinAll.error)
+      : `${joinAll.unmatched} key(s) / ${joinAll.unmatchedRows} row(s) here `
+        + `against ${iface.junk.rows} on the Secretarial drought slice: `
+        + JSON.stringify(joinAll.unmatchedSample));
+
+    /* Back to the Secretary, still counting everything. */
+    await clickControl(page, sec.sel);
+    await settleRepaint(page);
+    const pSec = await disProbe(page);
+    const sigSec = await paintSignature(page, CONFIG.sourceId);
+    const joinSec = await iface.joinOracle(page);
+    check('the Secretarial slice of every disaster type is a third map again — '
+      + `${F.slices['secretarial-all'].rows} county rows, `
+      + `${F.slices['secretarial-all'].designated} FSA counties — and the default `
+      + 'instrument takes its param out of the URL on the way',
+    !joinSec.error && joinSec.rows === F.slices['secretarial-all'].rows
+      && joinSec.designated === F.slices['secretarial-all'].designated
+      && sigSec.hash !== sigAll.hash && pSec.params.decl === null
+      && pSec.params.disaster === all.id,
+    joinSec.error ? String(joinSec.error)
+      : JSON.stringify({ rows: joinSec.rows, designated: joinSec.designated,
+        painted: sigSec.colored, decl: pSec.params.decl,
+        disaster: pSec.params.disaster }));
+
+    /* And back to the drought filter, which has to restore the fixture paint
+       exactly — a toggle is a restore, not a rebuild. */
+    await clickControl(page, drought.sel);
+    await settleRepaint(page);
+    const pHome = await disProbe(page);
+    const sigHome = await paintSignature(page, CONFIG.sourceId);
+    check('coming back to Secretarial drought drops BOTH params and restores '
+      + 'that paint bit for bit — a link at the defaults carries no smudge from '
+      + 'the trip',
+    pHome.params.decl === null && pHome.params.disaster === null
+      && sigHome.hash === fixtureSig.hash
+      && pHome.secretarial === 'true' && pHome.drought === 'true',
+    `${sigHome.colored} @${sigHome.hash} vs ${fixtureSig.colored} `
+      + `@${fixtureSig.hash} — ${page.url()}`);
+    clean('disasters scope toggle');
+    await shot('25c-disasters-all-types');
+  }
+
+  /* ── 14f. The archive's own text, verbatim ───────────────────────────────
+     The data table on this view is not a cleaned view of the archive; it IS the
+     archive, spelled the way the portal spells it. The two rows below are the
+     whole junk population of the fixture slice: reservations the portal keys
+     with a four-digit code and names in the county column. They are off the map
+     (nothing can place them) and in the table (the archive says them), and a
+     table that quietly dropped them would be the more comfortable lie. */
+  section('▸ Disaster designations — the archive\'s own text, verbatim');
+  {
+    await page.locator('#btn-table').click();
+    await page.waitForFunction(
+      () => document.getElementById('table-modal').open
+        && document.querySelectorAll('#table-modal-body tbody tr').length > 0,
+      null, { timeout: CONFIG.switchMs }).catch(() => {});
+    const p = await disProbe(page);
+    const cols = iface.table.columns;
+    check(`the table is a record per row, not a value: ${cols.length} columns — `
+      + cols.join(', '),
+    cols.every((c, i) => (p.table.headers[i] || '').toLowerCase()
+      .includes(c.toLowerCase())),
+    JSON.stringify(p.table.headers));
+    const found = iface.junk.atFixture.filter((r) => p.table.body.includes(r.county)
+      && p.table.body.includes(r.fips) && p.table.body.includes(r.state));
+    check('the malformed county keys are in the table exactly as the archive '
+      + `spells them — ${iface.junk.atFixture
+        .map((r) => `${r.county} (${r.fips}, ${r.state})`).join(' and ')} — `
+      + 'because this table is the source, and a designation nobody can map is '
+      + 'still a designation somebody received',
+    found.length === iface.junk.atFixture.length,
+    `${found.length} of ${iface.junk.atFixture.length} found in `
+      + `${p.table.rows} rows`);
+    check('a date the source never reported prints as an em-dash rather than as '
+      + 'an empty cell — 103,757 of these rows have no end date at all',
+    p.table.body.includes(iface.table.nullDate),
+    JSON.stringify(p.table.caption));
+    check('the caption says which slice of the archive this is: the year, the '
+      + 'instrument, the scope, and how many designations under how many '
+      + 'declarations',
+    /\b2021\b/.test(p.table.caption || '')
+      && /secretarial/i.test(p.table.caption || '')
+      && /drought/i.test(p.table.caption || '')
+      && /declaration/i.test(p.table.caption || ''),
+    JSON.stringify(p.table.caption));
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.getElementById('table-modal').open,
+      null, { timeout: 5000 }).catch(() => {});
+    clean('disasters verbatim table');
+    await shot('25d-disasters-table');
+  }
+}
+
+section('▸ View disasters — the disaster designations, end to end');
+{
+  /* A FRESH context, opened for downloads so the template's export step runs,
+     and the boot resource list read BEFORE anything is switched. */
+  const s = await open({ downloads: true });
+  check('the designations page reaches ngpReady on the boot payload', s.ready);
+  s.clean('disasters section boot');
+  const bootResources = await resourceNames(s.page);
+  await verifyInterfaceSection(DIS, {
+    session: s, bootResources, extraChecks: disastersExtraChecks,
+  });
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   15. DEEP LINK ?view=disasters&year=2021&county=30063
+
+   A designation, shared. Every param honoured on LOAD rather than by replaying
+   the clicks that would have produced it — and the card is the point here,
+   because on this view the card is a LIST rather than a chart: one entry per
+   declaration that touched the county that year, with the role in words beside
+   the colour, and the dates as the archive has them (which for all six of these
+   means an incident that was never given an end).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section(`▸ Deep link ${DIS.deepLink}`);
+{
+  const E = DIS.deepLinkExpect;
+  const C = DIS.fixture.county;
+  const s = await open({ query: DIS.deepLink });
+  const { page } = s;
+  check('the deep-linked designations page reaches ngpReady', s.ready);
+
+  const snap = await snapshot(page);
+  const vc = await viewControls(page);
+  const p = await disProbe(page);
+  const years = await dataYears(page);
+
+  check('?view=disasters boots straight onto the designations: the marker, the '
+    + 'pressed switcher button, and only its own drawer sections',
+  snap.markers.ngpView === DIS.slug && snap.state.view === DIS.slug
+    && vc.views.length === 1 && vc.views[0] === DIS.slug
+    && vc.sections.every((sec) => (sec.view === DIS.slug) === !sec.hidden),
+  JSON.stringify({ marker: snap.markers.ngpView, pressed: vc.views,
+    sections: vc.sections }));
+  check(`the year is ${E.year}, inside the archive's own domain `
+    + `(${years.min}–${years.max}), on the ${E.vintage} boundaries that were in `
+    + 'force for it',
+  vc.year === String(E.year) && snap.state.year === E.year
+    && snap.vintage === E.vintage,
+  JSON.stringify({ year: vc.year, domain: [vc.yearMin, vc.yearMax],
+    vintage: snap.vintage }));
+  check('the three defaults stay out of a deep link: no ?decl for the Secretary, '
+    + 'no ?disaster for drought, and no ?dataset at all — there is only one '
+    + 'archive here to name',
+  p.params.decl === null && p.params.disaster === null
+    && p.params.dataset === null, page.url());
+  check('the swatches legend is the visible body, and neither continuous one is',
+    vc.legend.swatches === true && vc.legend.wheel === false
+      && vc.legend.bar === false, JSON.stringify(vc.legend));
+  check(`the card is open on the linked county and says its role in WORDS — `
+    + `${E.role}, because a county named directly in any designation is a `
+    + 'Primary county however many neighbouring roles it also holds',
+  p.card.open && (p.card.title || '').includes(DIS.county.name)
+    && [...p.card.values, p.card.body || ''].some((v) => (v || '')
+      .includes(E.role)),
+  JSON.stringify({ title: p.card.title, terms: p.card.terms,
+    values: p.card.values }));
+  check(`the card reads out all ${C.designations} designations that touched the `
+    + `county in ${E.year} — one entry per declaration `
+    + `(${C.numbers.join(', ')}), not a count and not the best one`,
+  C.numbers.every((n) => (p.card.body || '').includes(n))
+    && p.card.items >= C.designations,
+  JSON.stringify({ items: p.card.items, missing: C.numbers
+    .filter((n) => !(p.card.body || '').includes(n)),
+  body: (p.card.body || '').slice(0, 260) }));
+  check('every entry carries its role as a word beside the colour — this county '
+    + `is ${C.primary} Primary and ${C.contiguous} Contiguous in the same year, `
+    + 'which a hue-only chip could not tell a reader',
+  /Primary/.test(p.card.body || '') && /Contiguous/.test(p.card.body || ''),
+  JSON.stringify((p.card.body || '').slice(0, 260)));
+  check('an incident the archive never gave an end date is SAID to be open '
+    + 'rather than left blank or invented — all six of these are',
+  C.endSays.test(p.card.body || ''),
+  JSON.stringify((p.card.body || '').slice(0, 300)));
+  check('the card\'s list is its own accessible twin: semantic markup, so there '
+    + 'is no canvas here to caption',
+  p.card.items > 0 && p.card.figures === 0,
+  JSON.stringify({ items: p.card.items, figures: p.card.figures }));
+  const painted = await paintSignature(page, CONFIG.sourceId);
+  const expect = await DIS.paintOracle(page);
+  if (typeof expect === 'number') {
+    check('the choropleth painted for the deep-linked year and slice, county for '
+      + 'county', painted.colored === expect,
+    `${painted.colored} painted, ${expect} expected`);
+  } else {
+    skip('the deep-linked designations painted the counties they reach',
+      String(expect));
+  }
+  s.clean('disasters deep link');
+  await s.shot('26-disasters-deep-link');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   16. FOUR VIEWS, FOUR MEMORIES — an excursion changes nothing it did not
+   touch, now across all four.
+
+   §10 proved this for two. Three views was the first honest test of it — the
+   eligibility view has four pieces of state of its own (archive, aggregation,
+   pasture type, variable), and the MIDDLE of a multi-stop trip is where a
+   "remember the last view" implementation passes a two-view test and loses the
+   first view's state on the way home. Four is the whole switcher, and the fourth
+   view adds the case the other three cannot make: it has no dataset at all, so
+   what has to survive an excursion is two params that no other view emits, and
+   what must NOT survive is the five that the other three do.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Four views, four memories');
 {
   const NGP = CONFIG.interfaces.ngp;
   const USDM = CONFIG.interfaces.usdm;
   const s = await open();
   const { page } = s;
-  check('the three-view page reaches ngpReady', s.ready);
+  check('the four-view page reaches ngpReady', s.ready);
 
   /* 1 · Put the grazing periods somewhere no default could be mistaken for. */
   await slideYear(page, 2012);
@@ -4217,10 +4884,10 @@ section('▸ Three views, three memories');
   await settleRepaint(page);
   const eligBefore = await eligProbe(page);
   const eligSnapBefore = await snapshot(page);
-  check('setup: all three views are somewhere distinctive — the grazing periods '
-    + 'on the climatology coloured by season start, the drought monitor on the '
-    + 'NDMC-reported set at week 8, and eligibility on the derived archive\'s '
-    + `${conv.label} aggregation, all types, coloured by date`,
+  check('setup: the first three views are somewhere distinctive — the grazing '
+    + 'periods on the climatology coloured by season start, the drought monitor '
+    + 'on the NDMC-reported set at week 8, and eligibility on the derived '
+    + `archive's ${conv.label} aggregation, all types, coloured by date`,
   onUsdm && onElig && ngpBefore.datasets[0] === 'nclimgrid'
     && eligSnapBefore.state.dataset === 'derived'
     && eligSnapBefore.state.variable === 'date'
@@ -4233,15 +4900,49 @@ section('▸ Three views, three memories');
   eligBefore.params.week === null && eligBefore.params.dataset === 'derived'
     && eligBefore.params.view === ELIG.slug, page.url());
 
-  /* 4 · Home the long way round: eligibility → drought monitor → grazing
-         periods, then back out to eligibility. Each stop has to be the state
-         its own visitor left, not the state the previous stop implies. */
+  /* 4 · The designations, on both of their own toggles. This is the view with
+         the FEWEST params and the most competitors for them, so it is where a
+         pushState that emits whatever it last knew about shows up. */
+  const seqD = await viewSeq(page);
+  const toDis = await clickControl(page, DIS.switchSel);
+  const onDis = toDis && await awaitViewSeq(page, seqD);
+  await clickControl(page, DIS.toggles.decl.options[1].sel);
+  await settleRepaint(page);
+  await clickControl(page, DIS.toggles.disaster.options[1].sel);
+  await settleRepaint(page);
+  const disBefore = await disProbe(page);
+  check('setup: …and so is the fourth — the designations on Presidential '
+    + 'declarations for every disaster type, which is two non-default toggles '
+    + 'and no dataset at all',
+  onDis && disBefore.presidential === 'true' && disBefore.all === 'true'
+    && disBefore.params.decl === 'presidential'
+    && disBefore.params.disaster === 'all',
+  JSON.stringify({ onDis, pressed: [disBefore.presidential, disBefore.all],
+    params: disBefore.params }));
+  check('while the designations are on screen the URL carries THEIR two params '
+    + 'and none of the other three views\' five — no ?dataset (there is one '
+    + 'archive), no ?week, no ?source, no ?type, no ?variable',
+  disBefore.params.dataset === null && disBefore.params.week === null
+    && disBefore.params.type === null && disBefore.params.variable === null
+    && !new URL(page.url()).searchParams.has('source')
+    && disBefore.params.view === DIS.slug, page.url());
+
+  /* 5 · Home the long way round: designations → drought monitor → grazing
+         periods, then back out through eligibility to the designations. Each
+         stop has to be the state its own visitor left, not the state the
+         previous stop implies. */
   const seq5 = await viewSeq(page);
   await clickControl(page, USDM.switchSel);
   await awaitViewSeq(page, seq5);
   const usdmAgain = await weekProbe(page);
+  check('leaving the designations takes BOTH of their params with them, even '
+    + 'though neither was at its default — a ?decl on a drought-monitor link '
+    + 'would describe two controls that are not on screen',
+  !new URL(page.url()).searchParams.has(DIS.toggles.decl.param)
+    && !new URL(page.url()).searchParams.has(DIS.toggles.disaster.param),
+  page.url());
   check('the drought monitor comes back to the county set and the week it was '
-    + 'left on, two stops later',
+    + 'left on, three stops later',
   usdmAgain.datasetParam === 'reported'
     && usdmAgain.weekParam === usdmBefore.weekParam
     && !!weekNumber(usdmBefore.out)
@@ -4256,7 +4957,7 @@ section('▸ Three views, three memories');
   const ngpSnapAgain = await snapshot(page);
   check('the grazing periods come back exactly as they were left — the '
     + 'climatology, its own season dictionary, the start variable and the '
-    + 'disabled year slider under its note — after an excursion through two '
+    + 'disabled year slider under its note — after an excursion through three '
     + 'other views',
   ngpAgain.datasets[0] === 'nclimgrid' && ngpAgain.type === ngpBefore.type
     && ngpAgain.types.length === ngpBefore.types.length
@@ -4284,8 +4985,21 @@ section('▸ Three views, three memories');
     && eligAgain.datePressed === 'true',
   JSON.stringify({ before: eligBefore.params, again: eligAgain.params,
     variable: eligSnapAgain.state.variable }));
-  s.clean('three views, three memories');
-  await s.shot('24-three-views');
+
+  const seq8 = await viewSeq(page);
+  await clickControl(page, DIS.switchSel);
+  await awaitViewSeq(page, seq8);
+  const disAgain = await disProbe(page);
+  check('and the designations remember both of theirs — the Presidential '
+    + 'instrument and the whole-record scope — after a trip through every other '
+    + 'view in the app',
+  disAgain.presidential === 'true' && disAgain.all === 'true'
+    && disAgain.params.decl === disBefore.params.decl
+    && disAgain.params.disaster === disBefore.params.disaster,
+  JSON.stringify({ before: disBefore.params, again: disAgain.params,
+    pressed: [disAgain.presidential, disAgain.all] }));
+  s.clean('four views, four memories');
+  await s.shot('24-four-views');
   await s.ctx.close();
 }
 
