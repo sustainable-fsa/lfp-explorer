@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /* ============================================================================
    FSA Normal Grazing Periods · tools/a11y-audit.mjs
-   Axe over the app in BOTH themes at TWO viewports and in SEVEN interaction
-   states. Serious/critical violations fail the run — the kit's rule (AGENTS.md
-   §6: "the axe workflow failing on serious/critical is a hard stop, not a flake
-   to re-run") applies to consumers too.
+   Axe over the app in BOTH themes at TWO viewports and in every interaction
+   state below. Serious/critical violations fail the run — the kit's rule
+   (AGENTS.md §6: "the axe workflow failing on serious/critical is a hard stop,
+   not a flake to re-run") applies to consumers too.
 
      node tools/a11y-audit.mjs [workspaceRoot]
 
@@ -27,13 +27,13 @@
 
      · ngpReady IS A GATE HERE. The kit's demo degrades to an error note when
        the boundary fetch or WebGL is missing and audits the rest of the page
-       anyway; this app IS the map, and four of the seven states below cannot be
+       anyway; this app IS the map, and most of the states below cannot be
        reached before the data has landed. A run that never sees ngpReady is
        reported as a failure rather than as a thin pass. Note what the flag
        proves: the data loaded and the first choropleth paint ran. It is NOT
        evidence of painted tiles, and nothing in CI should read it that way.
 
-     · SEVEN STATES PER COMBO, not two. The kit probes the combobox because its
+     · A STATE LIST, not two states. The kit probes the combobox because its
        listbox does not exist until something is typed. Every floating surface
        in this app has the same property — the card, the two <dialog>s, the
        dropdown and (on the phone) the control drawer and its scrim are all
@@ -60,77 +60,42 @@
    The chromium GL flags are the kit's: a GitHub runner has no GPU, and without
    a software rasterizer MapLibre never gets a context, ngpReady never fires,
    and the run fails for a reason that has nothing to do with accessibility.
+
+   ── What this file no longer owns ──────────────────────────────────────────
+   The page path, the two themes, the two viewport sizes, the localStorage
+   seeds, the ngpReady predicate and its timeout, the MIME table and the static
+   server all live in tools/config.mjs, which tools/verify.mjs imports too.
+   They were hand-duplicated between the two harnesses; nine shared facts in
+   two places is eighteen chances for one of them to drift a version behind,
+   and the failure mode is that both harnesses stay green while auditing two
+   subtly different pages. The knobs that are genuinely this harness's — the
+   settle window, the state list — are still here.
    ========================================================================== */
-import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
+import {
+  INIT_LS, PAGE_PATH as PAGE, READY_MS, THEMES, VIEWPORTS, renderEvidence,
+  serveWorkspace, workspaceRoot,
+} from './config.mjs';
 
-/** Default: the workspace root, two levels up from this file (tools/ → repo →
-    workspace). */
-const root = resolve(process.argv[2]
-  || join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+/** Default: the workspace root, two levels up from tools/ (tools/ → repo →
+    workspace). Pass a different root as argv[1] if the checkout sits
+    somewhere else. */
+const root = workspaceRoot(process.argv[2]);
 
-const PAGE = '/lfp-explorer/';
-const THEMES = ['light', 'high-contrast'];
-const VIEWPORTS = [
-  { name: 'wide', width: 1440, height: 900 },
-  { name: 'narrow', width: 375, height: 720 },
+/** The shared sizes, with the names THIS harness prints. Every report row and
+    every CI log line has said `narrow` for the phone since the first run; the
+    numbers are shared with verify.mjs (where the same viewport is called
+    `compact`), the labels are not. */
+const AUDIT_VIEWPORTS = [
+  { name: 'wide', ...VIEWPORTS.wide },
+  { name: 'narrow', ...VIEWPORTS.compact },
 ];
 
-/** ngpReady waits this long. The payload is 5 MB local plus a ~2 MB boundary
-    archive over the network; 60s is generous on purpose, because the failure
-    it exists to catch is "never", not "slow". */
-const READY_MS = 60000;
 /** After ngpReady: the font swap, the legend, the map's first frames. */
 const SETTLE_MS = 1500;
 
-/** Seeded before load. `sfsa-ngp-seen-intro` suppresses the first-visit help
-    auto-open, which would otherwise land on top of the "rest" state 350ms in
-    and make that state a coin flip. The help modal is audited deliberately,
-    two states below. `sfsa-ngp-drawer` pins the desktop drawer open, which is
-    also the app's default — it states the assumption the `wide` states are
-    written against instead of inheriting whatever a run left behind. The phone
-    force-closes the drawer regardless of what is stored. */
-const INIT_LS = { 'sfsa-ngp-seen-intro': '1', 'sfsa-ngp-drawer': 'open' };
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.webmanifest': 'application/manifest+json',
-  '.topojson': 'application/json; charset=utf-8',
-  '.geojson': 'application/geo+json',
-  '.md': 'text/markdown; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-};
-
-const server = createServer(async (req, res) => {
-  try {
-    let path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    if (path.endsWith('/')) path += 'index.html';
-    const file = normalize(join(root, path));
-    if (!file.startsWith(root)) { res.writeHead(403).end(); return; }
-    // Read BEFORE writing headers: the other order commits a 200 and only then
-    // discovers the file is missing, so the catch tries to send 404 headers on
-    // an already-sent response and the harness dies with ERR_HTTP_HEADERS_SENT.
-    const body = await readFile(file);
-    res.writeHead(200, {
-      'content-type': MIME[extname(file)] || 'application/octet-stream',
-      'access-control-allow-origin': '*',
-    });
-    res.end(body);
-  } catch {
-    res.writeHead(404).end('not found');
-  }
-});
+const server = serveWorkspace(root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -165,7 +130,7 @@ function selectCounty(page, id) {
   }, id);
 }
 
-/* ── The seven states ─────────────────────────────────────────────────────
+/* ── The states ───────────────────────────────────────────────────────────
    Each `enter` leaves the page in the state; each `exit` puts it back. They
    run in order inside one page, so the exits matter: a card left open under
    the table dialog would make the last state a compound of two, and on the
@@ -340,7 +305,7 @@ const rows = [];
 let failed = false;
 
 for (const theme of THEMES) {
-  for (const vp of VIEWPORTS) {
+  for (const vp of AUDIT_VIEWPORTS) {
     const label = `${theme} · ${vp.name} ${vp.width}×${vp.height}`;
     // @axe-core/playwright requires a page created from an explicit context.
     const context = await browser.newContext({
@@ -376,8 +341,10 @@ for (const theme of THEMES) {
 
     let ready = true;
     try {
-      await page.waitForFunction(() => document.documentElement.dataset.ngpReady === '1',
-        null, { timeout: READY_MS });
+      // The predicate is the shared FUNCTION from tools/config.mjs, never a
+      // string: a string is eval'd in-page and the meta CSP has no
+      // 'unsafe-eval'.
+      await page.waitForFunction(renderEvidence, null, { timeout: READY_MS });
     } catch {
       ready = false;
       failed = true;
@@ -477,6 +444,6 @@ for (const r of rows) console.log(`  ${r.label.padEnd(30)}  ${r.states}`);
 console.log(rows.every((r) => r.ready)
   ? '  ngpReady in every combo: the payload joined and the choropleth painted.'
   : '  ngpReady MISSING in at least one combo — see above. This is a failure, not '
-    + 'a degradation: four of the seven states are unreachable without it.');
+    + 'a degradation: most of the states above are unreachable without it.');
 
 process.exit(failed ? 1 : 0);

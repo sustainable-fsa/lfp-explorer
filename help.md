@@ -2,11 +2,13 @@
 
 **Normal Grazing Periods (NGPs)** define the historical timeframe during which forage is typically available for livestock grazing under non-drought conditions. The USDA Farm Service Agency (FSA) uses them to determine eligibility and payment amounts under the [Livestock Forage Disaster Program (LFP)](https://www.fsa.usda.gov/resources/programs/livestock-forage-disaster-program-lfp): a county qualifies only when drought occurs *during* its normal grazing period for a given pasture type, and the period's length caps the payment. This map draws every period FSA reported from **2008 through 2026** — 244,890 records across 3,095 FSA counties and 16 pasture types — one county polygon per FSA service area, exactly as FSA reports it. For the program rules themselves, see [FSA Handbook 1-LFP, Amendment 4](https://www.fsa.usda.gov/Internet/FSA_File/1lfp_a4.pdf).
 
+**Two datasets, one map.** Alongside FSA's official periods, the **Dataset** control offers the [nClimGrid climatology](https://sustainable-fsa.com/nclimgrid-normal-grazing-period/) — what grazing periods *would be* if the method in FSA Notice NAP-190 were applied to NOAA's 1991–2020 climate normals for every CONUS county. It is a counterfactual for comparison, not FSA's numbers: one set of periods for all years (so the year slider rests while it is shown), three season types (Full, Cool, and Warm Season) instead of FSA's sixteen forage types, and Census county geography rather than FSA service areas (see *Two county keys* below). Grazing periods are the first of several LFP data families this explorer will host; the *What to show* section at the top of the controls panel is where the others will appear.
+
 ## Using the map
 
 **The controls panel.** Everything that changes what the map shows — county search, year, pasture type, color by, and the legend — is in one panel down the left side. On a wide screen the panel is open when you arrive and the map fills whatever is left of the window; the slim tab on the panel's right edge collapses it, and the map takes the space back. On a phone, or in a short window, the panel slides in over the map instead: open it with the **menu button** (☰) at the right of the top bar, and close it with that same button, by tapping the dimmed map, or with `Esc`.
 
-**Choose what you see.** The **year** slider steps through program years 2008–2026. The **pasture type** menu selects one of the 16 forage classifications FSA reports (Native Pasture, Improved Pasture, Long Season Small Grains, and so on). **Color by** switches the variable painted on the counties: *Season Start*, *Season End*, or *Duration*.
+**Choose what you see.** The **Dataset** control switches between FSA's official periods and the nClimGrid climatology; each remembers its own pasture-type selection, and where a selection has an obvious counterpart (Native Pasture ↔ Full Season) the map carries it across for you. The **year** slider steps through program years 2008–2026 (it is disabled on the climatology, which describes one normal period rather than individual years). The **pasture type** menu selects one of the 16 forage classifications FSA reports (Native Pasture, Improved Pasture, Long Season Small Grains, and so on), or one of the climatology's three seasons. **Color by** switches the variable painted on the counties: *Season Start*, *Season End*, or *Duration*.
 
 **Read the legend.** The legend is the last section of the controls panel, and it always shows the scale in use. Season Start and Season End are days of the year, so they use a **cyclic month wheel**: a county's color is the position of its date around the calendar, read against the month labels on the ring. The palette wraps, so late December and early January are neighboring hues rather than opposite ends of a scale — which is what you want for dates, since a period beginning December 28 is not a world away from one beginning January 3. Winter forage types routinely start in the calendar year *before* their program year; those dates take their place on the wheel like any other. Duration is not cyclic, so it uses a plain **linear color bar**, dark to light, running 0 to 52 weeks.
 
@@ -34,11 +36,14 @@ Single-key shortcuts (`/`) can be turned off by adding `?kbd=off` to the map's U
 
 ## What a blank county means
 
-An uncolored county means one of two distinct things.
+An uncolored county means one of two distinct things (three, on the
+climatology).
 
 **No polygon.** The island territories are not drawn, because neither FSA boundary archive includes them. Their grazing periods are still in the data and in the downloadable files — they simply have no shape to paint.
 
 **No reported grazing period** for that county, year, and pasture type. FSA did not publish a period for every county in every year. Ten FSA counties have a year missing inside their own span of reporting — 15 county-years in all, mostly 2009–2011, plus Shoshone County, ID in 2016. Every one is listed in [`qa-report.txt`](https://data.sustainable-fsa.com/fsa-normal-grazing-period/qa-report.txt).
+
+**No climatological season**, on the nClimGrid dataset only. The reanalysis derives a season only where the NAP-190 rules define one for that county's climate — not every county has all three seasons, and Alaska, Hawaii, and the territories are outside the CONUS climate grid entirely.
 
 **Which boundaries a year is drawn on.** County boundaries are fetched at run time from the FSA administrative boundary archives, and **the vintage follows the program year**: [`fsa-counties-dd17`](https://data.sustainable-fsa.com/fsa-counties-dd17/) for 2008–2014 and [`fsa-counties-dd22`](https://data.sustainable-fsa.com/fsa-counties-dd22/) for 2015 onward. FSA re-drew eight county footprints between the two handbook digests — Shoshone County, ID was split out of the Benewah and Kootenai offices; Sioux County, NE was consolidated into `31165`; King County, WA into `53033`; and Richmond City, VA was split out of Henrico. Each year is therefore drawn on the boundaries that were in force for it, and the two vintages are never mixed within a year. Drawing an early year on current boundaries would leave the territory of a since-split county blank even though its grazing period was reported, under the office that then administered it.
 
@@ -50,7 +55,13 @@ The data are USDA FSA's own, obtained under the Freedom of Information Act by R.
 
 **Get the data.** The archive of record is published as [CSV](https://data.sustainable-fsa.com/fsa-normal-grazing-period/fsa-normal-grazing-period.csv) and [Parquet](https://data.sustainable-fsa.com/fsa-normal-grazing-period/fsa-normal-grazing-period.parquet) with identical records, one row per program year, FSA county, and pasture type. Processing code, FOIA correspondence, and this map's source are in the [GitHub repository](https://github.com/sustainable-fsa/fsa-normal-grazing-period).
 
-**FSA county codes are not FIPS codes.** They coincide for most counties, but FSA administers some Census counties as two or three separate service areas and elsewhere administers many Census counties from one — so 20 of the 3,095 FSA counties here carry a code matching no FIPS county they cover. To reach Census geography, take the crosswalk from the boundary archives, which are the authority on it: [fsa-counties-dd17](https://data.sustainable-fsa.com/fsa-counties-dd17/) for program years 2008–2014, [fsa-counties-dd22](https://data.sustainable-fsa.com/fsa-counties-dd22/) for 2015 onward.
+**The nClimGrid climatology** is an independent reanalysis by the Montana Climate Office: NOAA's nClimGrid-daily 1991–2020 normals run through the grazing-period rules in FSA Notice NAP-190 (the 28 °F freeze-date rule for full and warm seasons, the 50 °F/90 °F rule for cool season, and DAFP's rounding conventions). The full method, a worked example, and the archive are at [nclimgrid-normal-grazing-period](https://sustainable-fsa.com/nclimgrid-normal-grazing-period/). It is released under CC0 and is **not** an FSA product.
+
+## Two county keys
+
+**FSA county codes are not FIPS codes.** They coincide for most counties, but FSA administers some Census counties as two or three separate service areas and elsewhere administers many Census counties from one — so 20 of the 3,095 FSA counties here carry a code matching no FIPS county they cover, and nine Census counties (Aroostook, ME; Custer, ID; Pottawattamie, IA; Otter Tail, Polk, and St. Louis, MN; Nye, NV; Lucas, OH; Galax, VA) are split across more than one FSA office, each setting its own grazing period. The boundary archives are the authority on the correspondence: [fsa-counties-dd17](https://data.sustainable-fsa.com/fsa-counties-dd17/) for program years 2008–2014, [fsa-counties-dd22](https://data.sustainable-fsa.com/fsa-counties-dd22/) for 2015 onward.
+
+**How Census-keyed data reaches this map.** This map always draws FSA service areas. Datasets keyed to Census counties (today, the nClimGrid climatology) are joined through a crosswalk extracted from those same boundary archives: a Census county's value is copied to every FSA county that covers it, and where one FSA office administers several Census counties the map shows the longest period among them — the county card then lists each constituent Census county's own dates, so nothing is hidden by the reduction. The crosswalk itself ships with this app as [`assets/fsa-fips-crosswalk.json`](https://sustainable-fsa.com/lfp-explorer/assets/fsa-fips-crosswalk.json).
 
 ## Citation
 
@@ -59,6 +70,8 @@ If you use this data in published work, please cite:
 > USDA Farm Service Agency. *Normal Grazing Periods, 2008–2026*. Obtained under FOIA requests 2025-FSA-04691-F, 2026-FSA-02435-F, and 2026-FSA-03465-F; curated and archived by R. Kyle Bocinsky, Montana Climate Office, University of Montana. Sustainable FSA project. Accessed YYYY-MM-DD. <https://sustainable-fsa.com/fsa-normal-grazing-period/>
 >
 > DOI: <https://doi.org/10.5281/zenodo.15252842>
+
+For the nClimGrid climatology dataset, cite its own archive: <https://sustainable-fsa.com/nclimgrid-normal-grazing-period/>.
 
 ## License
 

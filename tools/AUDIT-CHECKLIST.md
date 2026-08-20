@@ -1,4 +1,4 @@
-# Audit checklist — FSA Normal Grazing Periods
+# Audit checklist — LFP Explorer
 
 Four automated gates and three manual passes. The gates are in CI
 (`.github/workflows/audit.yaml`); the manual passes are here because nothing
@@ -30,16 +30,41 @@ python3 -m http.server 8000 -d /path/to/sustainable-fsa
 
 | # | Gate | Command | Fails on |
 |---|------|---------|----------|
-| 1 | Markup | `npx --yes html-validate index.html` | any html-validate error |
+| 1 | Markup | `npx --prefix tools html-validate index.html` | any html-validate error |
 | 2 | Accessibility | `node tools/a11y-audit.mjs` | any **serious/critical** axe violation, or `ngpReady` never firing |
 | 3 | Behaviour | `node tools/verify.mjs` | any failed assertion, or **any console error** |
 | 4 | Lighthouse | `npx --prefix tools lhci autorun --config=.lighthouserc.json` | accessibility < 1.0, best-practices < 0.95 (performance is warn-only) |
+
+`--prefix tools` in gate 1, never `--yes`: a bare `npx --yes html-validate`
+resolves from the working directory's `node_modules`, which does not exist at
+the repo root (the root `package.json` is gitignored), so it would fetch
+whatever is newest on the registry and the gate would drift under the repo
+without a commit. `.github/workflows/audit.yaml` carries the same warning at
+the step that runs it.
 
 Gates 2 and 3 start their **own** ephemeral server on a random port and do not
 use the one above; only Lighthouse needs the `:8000` server, because
 `staticDistDir` serves a directory at the server root and cannot express a
 subpath app. Both harnesses take the workspace root as `argv[1]` if the
-checkout is not two levels below `tools/`.
+checkout is not two levels below `tools/`. What they share about the app — the
+page path, the two themes, the two viewports, the localStorage seeds, the
+`ngpReady` predicate, the per-view probe table, the static server — lives in
+`tools/config.mjs`; a shared number is changed there, once.
+
+**The payloads have to be next to the checkout.** No data payload is committed
+here — the app fetches each one by relative sibling path, and
+`tools/payloads.txt` is the manifest CI stages from. (The FIPS↔FSA crosswalk in
+`assets/` is the one committed table: a join key, served by the checkout
+itself, and never staged.) Mirror any payload a sibling checkout does not
+already provide, from the repo root:
+
+```sh
+while IFS= read -r p; do
+  case "$p" in ''|\#*) continue ;; esac
+  mkdir -p "../$(dirname "$p")"
+  [ -f "../$p" ] || curl -fsSL "https://sustainable-fsa.com/$p" -o "../$p"
+done < tools/payloads.txt
+```
 
 Gates 2 and 3 fetch the pinned style kit and both FSA county boundary archives
 **live** from `sustainable-fsa.com`. That is deliberate — those origins are
