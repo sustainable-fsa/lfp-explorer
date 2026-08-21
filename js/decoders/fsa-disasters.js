@@ -525,40 +525,20 @@ export function makeDisastersData(payload, ds = {}) {
     return sliceOf(year, declType, droughtOnly).latestApproval;
   }
 
-  /* Does this archive hold ANY row of one declaration type at one scope, in any
-     year? Asked once per pair (four possible keys) and kept, because it answers
-     a question about the ARCHIVE rather than about a year — and the answer is
-     the difference between "nothing happened in 2025" and "this instrument does
-     not do this". MEASURED: not one of the 948 Presidential declarations
-     carries the drought disaster type, so the Presidential drought map is empty
-     in every year and the live region has to say why. */
-  const anyMemo = new Map();
+  /* NO hasAny(). This instance used to answer "does the archive hold ANY row of
+     one declaration type at one scope, in any year?", because the map could be
+     read at four (declaration type × scope) corners and one of them —
+     Presidential × drought — is empty in every year: not one of the 948
+     Presidential declarations carries the drought disaster type. The live region
+     said so, in those words, rather than reporting an empty map.
 
-  /**
-   * @param {string} declType 'Secretarial' | 'Presidential'
-   * @param {boolean} droughtOnly
-   * @returns {boolean}
-   */
-  function hasAny(declType, droughtOnly) {
-    const ti = declTypeIdxOf.get(String(declType));
-    if (ti === undefined) return false;
-    const drought = !!droughtOnly;
-    const key = ti + '|' + (drought ? 'd' : 'a');
-    const hit = anyMemo.get(key);
-    if (hit !== undefined) return hit;
-
-    let found = false;
-    for (let d = 0; d < nDecl && !found; d++) {
-      if (payload.decl_type[d] !== ti) continue;
-      if (declYearInt[d] < 0) continue;      // a year no slice can ask for
-      const hi = declStart[d + 1];
-      for (let i = declStart[d]; i < hi; i++) {
-        if (!drought || droughtType[payload.disaster_type[i]]) { found = true; break; }
-      }
-    }
-    anyMemo.set(key, found);
-    return found;
-  }
+     The app now reads this archive at ONE corner, the Secretarial drought slice
+     (js/interfaces/disasters.js § ONE SLICE), which is never empty across the
+     record — so the question has no caller, and a memo answering it would be a
+     leaf a reader has to trace to nothing. Everything the slice itself needs is
+     sliceOf() below, whose arguments are still general: this decoder can be
+     asked about either instrument at either scope, and only the descriptor
+     decided to stop asking. */
 
   /**
    * The counts one slice can produce and nothing outside it can recover: how
@@ -639,7 +619,6 @@ export function makeDisastersData(payload, ds = {}) {
     countyRowsFor,
     latestApproval,
     sliceMeta,
-    hasAny,
     declTypes,
     codes,
     disasterTypes,

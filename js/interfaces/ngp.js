@@ -1,21 +1,30 @@
 /* ============================================================================
    LFP Explorer · js/interfaces/ngp.js
-   Interface 1 · Grazing periods. Two readings of the same question — when may
+   Interface 2 · Grazing periods. Two readings of the same question — when may
    livestock graze this county, and for how long — and every sentence the app
    says about either of them.
+
+   Second in the switcher and FIRST at boot: this is still the family a session
+   with no `?view=` lands on (js/interfaces/registry.js § DEFAULT_VIEW), and
+   still the one payload the boot path fetches.
 
    ES module, no build step. Imports the color scales, the `fsa-ngp-web/1`
    decoder and the crosswalk join; imports nothing from app.js (the module
    graph stays acyclic: app.js → registry → descriptors → decoders + color).
 
    ── The two datasets ───────────────────────────────────────────────────────
-     FSA official (FOIA)     what FSA actually published, county by county,
-                             program year by program year, 2008–2026. Keyed by
-                             FSA county code — the same key the polygons use.
-     nClimGrid climatology   what NAP-190's own method yields when it is run on
-                             1991–2020 climate normals instead of on a county
-                             committee's determination. Keyed by Census FIPS,
-                             with no program year at all.
+     FSA Official (FOIA)         what FSA actually published, county by county,
+                                 program year by program year, 2008–2026. Keyed
+                                 by FSA county code — the same key the polygons
+                                 use.
+     NAP-190 Derived (nClimGrid) what NAP-190's own method yields when it is run
+                                 on 1991–2020 climate normals instead of on a
+                                 county committee's determination. Keyed by
+                                 Census FIPS, with no program year at all. The
+                                 label names the METHOD first and its input
+                                 second, because what makes these numbers a
+                                 counterfactual is the method being run at all —
+                                 not which grid it was run on.
 
    The second is a COUNTERFACTUAL, not a correction, and every string in this
    file that describes it says so. It answers "what would the method give
@@ -74,17 +83,20 @@ const ERA = '1991–2020';
 const DATASETS = Object.freeze([
   Object.freeze({
     id: 'fsa',
-    label: 'FSA official (FOIA)',
+    label: 'FSA Official (FOIA)',
     url: '../fsa-normal-grazing-period/fsa-normal-grazing-period.json',
     schema: 'fsa-ngp-web/1',
     keySpace: 'fsa',
     expect: Object.freeze({ year0: 2008 }),
     defaultType: 'Native Pasture',
+    /** What the app opens on, and the one payload boot fetches. Declared rather
+        than inferred from this position — see registry.js § defaultDatasetOf. */
+    default: true,
     decode: makeNgpData,
   }),
   Object.freeze({
     id: 'nclimgrid',
-    label: 'nClimGrid climatology',
+    label: 'NAP-190 Derived (nClimGrid)',
     url: '../nclimgrid-normal-grazing-period/nclimgrid-normal-grazing-period.json',
     schema: 'fsa-ngp-web/1',
     keySpace: 'fips',
@@ -94,6 +106,12 @@ const DATASETS = Object.freeze([
     decode: makeNgpData,
   }),
 ]);
+
+/** The dataset the app opens on — FSA's own, which is also the one the card's
+    chart always draws. Read off the `default` flag rather than off position, so
+    that a reordered seg cannot silently make the counterfactual the baseline
+    (js/interfaces/registry.js § defaultDatasetOf). */
+const OFFICIAL_DS = DATASETS.find((d) => d.default) || DATASETS[0];
 
 /** Month + day, no year: a climatology's dates are a point in the calendar,
     and "May 15, 2001" would invite the reader to believe 2001 means something.
@@ -112,7 +130,7 @@ const MD_FMT = new Intl.DateTimeFormat('en-US', {
 
 function datasetById(id) {
   for (const ds of DATASETS) if (ds.id === id) return ds;
-  return DATASETS[0];
+  return OFFICIAL_DS;
 }
 
 /* ── The instances this interface has seen ───────────────────────────────────
@@ -190,7 +208,7 @@ function officialTypeFor(sel, data) {
   if (!have.length) return null;
   if (have.includes(sel.type)) return sel.type;
   const want = seasonFor(sel.type);
-  const dflt = DATASETS[0].defaultType;
+  const dflt = OFFICIAL_DS.defaultType;
   if (have.includes(dflt) && seasonFor(dflt) === want) return dflt;
   return have.find((t) => seasonFor(t) === want) || have[0];
 }
@@ -776,7 +794,7 @@ function applyPending(data, pending) {
     : (pending && (pending.typeSlug || pending.type)) || null;
 
   const ds = DATASETS.find((d) => d.keySpace === data.keySpace
-    && !!d.nominalYears === !!data.nominalYears) || DATASETS[0];
+    && !!d.nominalYears === !!data.nominalYears) || OFFICIAL_DS;
   const have = data.types();
   const fallback = have.includes(ds.defaultType) ? ds.defaultType : (have[0] || null);
 
@@ -791,8 +809,9 @@ function applyPending(data, pending) {
 /* ── The descriptor ──────────────────────────────────────────────────────── */
 
 /**
- * Interface 1. Frozen, like every descriptor: the app reads it on every
- * repaint and a mutated leaf would mean the legend and the paint disagreed.
+ * Interface 2 of the story, and the app's default view. Frozen, like every
+ * descriptor: the app reads it on every repaint and a mutated leaf would mean
+ * the legend and the paint disagreed.
  */
 export const NGP = Object.freeze({
   id: 'ngp',
@@ -801,7 +820,7 @@ export const NGP = Object.freeze({
       role="application" needs a label that says what the application IS, and
       "grazing periods" and "drought classes" are different applications. */
   mapLabel: 'Choropleth map of USDA FSA normal grazing periods by county',
-  order: 1,
+  order: 2,
   datasets: DATASETS,
   variables: VARIABLES,
   /** The program years this family covers, for the shared year slider. Declared

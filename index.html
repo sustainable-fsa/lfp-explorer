@@ -221,11 +221,17 @@
         <!-- ══ What to show ═════════════════════════════════════════════════
              FIRST section in the drawer, because it scopes everything below
              it: one segmented button per SHIPPED data family, numbered in the
-             order the Livestock Forage Program is administered — when may
-             livestock graze here, how dry was it, what did that qualify the
-             county for, and what wider disaster was declared around it. The
-             four of them are the whole chain, which is why there is no longer
-             a caption promising more.
+             order the STORY reads — where was it dry, when must that dryness
+             fall to count at all, what did the two of them qualify the county
+             for, and what wider disaster was declared around it. The four of
+             them are the whole chain, which is why there is no longer a caption
+             promising more.
+
+             THE ORDER IS NOT THE DEFAULT. The app still boots on Grazing
+             periods — every URL with no ?view= means that one
+             (js/interfaces/registry.js § DEFAULT_VIEW) — which is why the
+             second button is the pressed one below.
+
              app.js owns aria-pressed (which IS the styling source of truth,
              HOUSE-STYLE §5.7). These buttons are deliberately NOT in app.js's
              dataControls: switching away from a family whose payload failed
@@ -233,10 +239,10 @@
         <section class="sfsa-drawer-section" id="view-seg">
           <h2 class="sfsa-drawer-title" id="view-title">What to show</h2>
           <div class="seg-btns" role="group" aria-labelledby="view-title">
-            <button type="button" class="nav-btn seg-btn" id="btn-view-ngp"
-                    data-view-btn="ngp" aria-pressed="true">1 · Grazing periods</button>
             <button type="button" class="nav-btn seg-btn" id="btn-view-usdm"
-                    data-view-btn="usdm" aria-pressed="false">2 · Drought monitor</button>
+                    data-view-btn="usdm" aria-pressed="false">1 · Drought monitor</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-view-ngp"
+                    data-view-btn="ngp" aria-pressed="true">2 · Grazing periods</button>
             <button type="button" class="nav-btn seg-btn" id="btn-view-eligibility"
                     data-view-btn="eligibility" aria-pressed="false">3 · LFP eligibility</button>
             <button type="button" class="nav-btn seg-btn" id="btn-view-disasters"
@@ -257,41 +263,45 @@
           <h2 class="sfsa-drawer-title" id="ngp-dataset-title">Dataset</h2>
           <div class="seg-btns" role="group" aria-labelledby="ngp-dataset-title">
             <button type="button" class="nav-btn seg-btn" id="btn-ngp-official"
-                    data-dataset="fsa" aria-pressed="true">FSA official (FOIA)</button>
+                    data-dataset="fsa" aria-pressed="true">FSA Official (FOIA)</button>
             <button type="button" class="nav-btn seg-btn" id="btn-ngp-nclimgrid"
-                    data-dataset="nclimgrid" aria-pressed="false">nClimGrid climatology</button>
+                    data-dataset="nclimgrid" aria-pressed="false">NAP-190 Derived (nClimGrid)</button>
           </div>
           <p class="control-note">
-            nClimGrid climatology is what NAP-190's method yields from 1991–2020
-            climate normals — a counterfactual, not FSA's numbers.
+            NAP-190 Derived is FSA's own method run on NOAA's 1991–2020 climate
+            normals — a counterfactual, not FSA's numbers.
           </p>
         </section>
 
         <!-- ══ Dataset — drought monitor ═════════════════════════════════════
              Three answers to "which county?", not three drought monitors: the
              USDM is one product, reported against three different county
-             layers. FSA LFP boundaries is the default because it is the
-             geometry the PROGRAM is administered on; the NDMC-reported set
-             keys Connecticut as its nine planning regions, which the FSA
-             crosswalk cannot reach, so Connecticut is honestly uncolored
-             there (and the live region counts the nine areas out loud).
+             layers. Listed from the most general idea of a county to the most
+             program-specific, so the DEFAULT is the last button rather than the
+             first — FSA LFP boundaries, because it is the geometry the PROGRAM
+             is administered on, and app.js reads that from the descriptor's own
+             `default` flag rather than from this order
+             (js/interfaces/registry.js § defaultDatasetOf). The NDMC-reported
+             set keys Connecticut as its nine planning regions, which the FSA
+             crosswalk cannot reach, so Connecticut is honestly uncolored there
+             (and the live region counts the nine areas out loud).
 
              Each payload is fetched on FIRST PRESS, never at boot — asserted
              in tools/verify.mjs. -->
         <section class="sfsa-drawer-section" id="usdm-dataset-seg" data-view="usdm" hidden>
           <h2 class="sfsa-drawer-title" id="usdm-dataset-title">Dataset</h2>
           <div class="seg-btns" role="group" aria-labelledby="usdm-dataset-title">
-            <button type="button" class="nav-btn seg-btn" id="btn-usdm-fsa-lfp"
-                    data-dataset="fsa-lfp" aria-pressed="true">FSA LFP boundaries</button>
-            <button type="button" class="nav-btn seg-btn" id="btn-usdm-reported"
-                    data-dataset="reported" aria-pressed="false">NDMC reported</button>
             <button type="button" class="nav-btn seg-btn" id="btn-usdm-census"
                     data-dataset="census" aria-pressed="false">Census counties</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-usdm-reported"
+                    data-dataset="reported" aria-pressed="false">NDMC reported</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-usdm-fsa-lfp"
+                    data-dataset="fsa-lfp" aria-pressed="true">FSA LFP boundaries</button>
           </div>
           <p class="control-note">
-            FSA's own LFP boundary statistics, NDMC's published county
-            statistics, or vintage-matched Census counties. Same drought, three
-            county sets.
+            Vintage-matched Census counties, NDMC's published county statistics,
+            or FSA's own LFP boundary statistics — the default, and the geometry
+            the program is administered on. Same drought, three county sets.
           </p>
         </section>
 
@@ -328,7 +338,11 @@
             determination.
           </p>
           <!-- Unhidden by app.js only while the derived archive is showing:
-               it is the one payload with four aggregations to choose between. -->
+               it is the one payload that answers the same question more than
+               once. Its options come from the descriptor
+               (js/interfaces/eligibility.js § OFFERED_SOURCES) — three of the
+               four conventions the archive publishes; the fourth, Census 2020
+               held fixed, stays in the data downloads. -->
           <!-- The select is named by aria-labelledby rather than by the <label>
                alone, and deliberately: a name that lives on the FIELD survives
                every state this drawer passes through. An explicit <label> is the
@@ -342,50 +356,21 @@
             <label class="control-label" id="elig-source-label" for="elig-source">Aggregation</label>
             <select id="elig-source" aria-labelledby="elig-source-label"></select>
             <p class="control-note">
-              Four defensible ways to read “any area of the county”; they
+              Different ways of reading “any area of the county” — they
               disagree.
             </p>
           </div>
         </section>
 
-        <!-- ══ Declaration type — disaster designations ══════════════════════
-             Not a dataset and not a colour-by: one archive holds both
-             instruments, and this picks which of them the map is about. They
-             are different findings by different authorities with different
-             consequences, so the note says what each one unlocks rather than
-             leaving two proper nouns to speak for themselves.
-
-             The buttons carry the CHOICE's id and the value they select; app.js
-             wires every family's choices from those two attributes and owns
-             aria-pressed (js/app.js § Enumerated choices). -->
-        <section class="sfsa-drawer-section" id="dis-decltype-seg" data-view="disasters" hidden>
-          <h2 class="sfsa-drawer-title" id="dis-decltype-title">Declaration type</h2>
-          <div class="seg-btns" role="group" aria-labelledby="dis-decltype-title">
-            <button type="button" class="nav-btn seg-btn" id="btn-dis-secretarial"
-                    data-choice="decl" data-value="secretarial" aria-pressed="true">Secretarial</button>
-            <button type="button" class="nav-btn seg-btn" id="btn-dis-presidential"
-                    data-choice="decl" data-value="presidential" aria-pressed="false">Presidential</button>
-          </div>
-          <p class="control-note">
-            Secretary of Agriculture designations unlock FSA emergency loans;
-            Presidential declarations are FEMA's broader instrument.
-          </p>
-        </section>
-
-        <!-- ══ Disaster type — disaster designations ═════════════════════════
-             The whole app is about drought, so drought is the default; the
-             other twenty-one disaster types in the archive are one press away,
-             because a county's drought year reads differently next to the
-             hurricane, the freeze or the wildfire that also hit it. -->
-        <section class="sfsa-drawer-section" id="dis-scope-seg" data-view="disasters" hidden>
-          <h2 class="sfsa-drawer-title" id="dis-scope-title">Disaster type</h2>
-          <div class="seg-btns" role="group" aria-labelledby="dis-scope-title">
-            <button type="button" class="nav-btn seg-btn" id="btn-dis-drought"
-                    data-choice="disaster" data-value="drought" aria-pressed="true">Drought</button>
-            <button type="button" class="nav-btn seg-btn" id="btn-dis-all"
-                    data-choice="disaster" data-value="all" aria-pressed="false">All disasters</button>
-          </div>
-        </section>
+        <!-- NO SECTION FOR THE DISASTER DESIGNATIONS. That view is one slice of
+             its archive — the Secretarial designations for drought, the LFP
+             corner of it — and a slice is not a control: the whole of its state
+             is the shared year. It had a "Declaration type" seg
+             (#dis-decltype-seg) and a "Disaster type" seg (#dis-scope-seg) until
+             the map was narrowed to what it is about; the Presidential
+             declarations and the other twenty-one disaster types live in the
+             archive's own downloads, which help.md cites. See
+             js/interfaces/disasters.js § ONE SLICE. -->
 
         <section class="sfsa-drawer-section">
           <h2 class="sfsa-drawer-title">Find a county</h2>

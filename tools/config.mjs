@@ -139,14 +139,24 @@ export const MARKERS = Object.freeze({
  * Fields:
  *   slug        `?view=` value. The default view emits NO param at all.
  *   label       prose for check labels, not markup.
- *   isDefault   true for exactly one entry.
+ *   isDefault   true for exactly one entry — and NOT the same fact as `order`
+ *               below: the switcher is ordered for the reader (the story starts
+ *               at the drought monitor) and the app boots on the grazing
+ *               periods, so the elided `?view=` is the SECOND button's.
+ *   order       the button's place in the switcher, 1-based, and `switchLabel`
+ *               the words on it — the numbered prefix included, because the
+ *               number is how the drawer tells a reader what order to read the
+ *               four maps in. One check reads the switcher in DOM order and
+ *               compares it against these two fields.
  *   switchSel   the view switcher's seg button (`aria-pressed` drives its
  *               styling, so aria-pressed is also what a harness reads).
  *   sectionSel  the switcher section itself, first child of the drawer scroll.
  *   county      a county with data and a polygon in BOTH boundary vintages, so
  *               no assertion depends on which side of 2015 the year sits.
  *   datasets    keyed by dataset id; exactly one `isDefault`. Per entry:
- *               `sel` (its seg button), `label`, `payload` (the basename the
+ *               `sel` (its seg button), `label` (the words ON that button —
+ *               checked against the DOM, not just interpolated into a check's
+ *               own prose), `payload` (the basename the
  *               lazy-boot resource assertion looks for), `keySpace`
  *               ('fsa' → direct join; 'fips' → through the crosswalk), plus
  *               whatever that dataset makes true about the controls
@@ -181,11 +191,6 @@ export const MARKERS = Object.freeze({
  *   lazyAssets  committed repo assets this view loads WITH the view rather than
  *               at boot (a second colour ramp). The lazy-boot assertion adds
  *               them to the list of things the boot path must not have fetched.
- *   toggles     a view's two-way seg controls that are neither datasets nor
- *               variables (the disaster designations' declaration type and
- *               disaster scope): per toggle its section, its URL param, its
- *               localStorage key, and one entry per option with the option's
- *               seg button and whether it is the elided default.
  *   fixture     the (year, county) the gates drive this view to, with what the
  *               published payload says is there — measured, and the reason the
  *               choice was made. A view whose default year happens to hold no
@@ -207,7 +212,12 @@ export const INTERFACES = Object.freeze({
   ngp: Object.freeze({
     slug: 'ngp',
     label: 'Grazing periods',
+    /** The view a session with no `?view=` lands on — SECOND in the switcher
+        since the story was put in its reading order, which is why these two
+        fields are separate facts. */
     isDefault: true,
+    order: 2,
+    switchLabel: '2 · Grazing periods',
     switchSel: '#btn-view-ngp',
     sectionSel: '#view-seg',
     county: Object.freeze({ id: '30063', name: 'Missoula' }),
@@ -215,7 +225,7 @@ export const INTERFACES = Object.freeze({
       fsa: Object.freeze({
         id: 'fsa',
         isDefault: true,
-        label: 'FSA official (FOIA)',
+        label: 'FSA Official (FOIA)',
         sel: '#btn-ngp-official',
         payload: 'fsa-normal-grazing-period.json',
         keySpace: 'fsa',
@@ -223,7 +233,7 @@ export const INTERFACES = Object.freeze({
       nclimgrid: Object.freeze({
         id: 'nclimgrid',
         isDefault: false,
-        label: 'nClimGrid climatology',
+        label: 'NAP-190 Derived (nClimGrid)',
         sel: '#btn-ngp-nclimgrid',
         payload: 'nclimgrid-normal-grazing-period.json',
         keySpace: 'fips',
@@ -266,7 +276,11 @@ export const INTERFACES = Object.freeze({
   usdm: Object.freeze({
     slug: 'usdm',
     label: 'Drought monitor',
+    /** FIRST in the switcher and not the default view: the story starts with
+        the drought, and the app still boots on the grazing periods. */
     isDefault: false,
+    order: 1,
+    switchLabel: '1 · Drought monitor',
     switchSel: '#btn-view-usdm',
     sectionSel: '#view-seg',
     /** The same county as the default view, deliberately: a state-memory round
@@ -277,18 +291,25 @@ export const INTERFACES = Object.freeze({
 
     /* Three answers to one question, and the difference between them is a
        fact about how the USDM is keyed rather than a modelling choice. All
-       three are FIPS-keyed, so all three arrive through the crosswalk. */
+       three are FIPS-keyed, so all three arrive through the crosswalk.
+
+       IN THE SEG'S OWN ORDER, from the most general idea of a county to the
+       most program-specific — which puts the DEFAULT last. The app reads that
+       default off the descriptor's `default` flag rather than off a position
+       (js/interfaces/registry.js § defaultDatasetOf), and so does everything
+       here: `isDefault` below, never `Object.values(...)[0]`. */
     datasets: Object.freeze({
-      'fsa-lfp': Object.freeze({
-        id: 'fsa-lfp',
-        isDefault: true,
-        label: 'FSA LFP boundaries',
-        sel: '#btn-usdm-fsa-lfp',
-        payload: 'usdm-counties-fsa-lfp.json',
+      census: Object.freeze({
+        id: 'census',
+        isDefault: false,
+        label: 'Census counties',
+        sel: '#btn-usdm-census',
+        payload: 'usdm-counties.json',
         keySpace: 'fips',
-        /** FSA's own FOIA'd LFP boundary statistics: rectangular (every county
-            in every week) and CT-clean, which is why it is the default. */
-        rectangular: true,
+        /** Vintage-matched TIGER, so it is the one NON-rectangular set: a
+            county absent from a week is a real '.' in the series, and the
+            harness's absent-county copy is checked against this one. */
+        rectangular: false,
       }),
       reported: Object.freeze({
         id: 'reported',
@@ -309,17 +330,17 @@ export const INTERFACES = Object.freeze({
             02066 post-date that vintage's crosswalk too.) */
         unmatchedAtDefaultYear: 9,
       }),
-      census: Object.freeze({
-        id: 'census',
-        isDefault: false,
-        label: 'Census counties',
-        sel: '#btn-usdm-census',
-        payload: 'usdm-counties.json',
+      'fsa-lfp': Object.freeze({
+        id: 'fsa-lfp',
+        isDefault: true,
+        label: 'FSA LFP boundaries',
+        sel: '#btn-usdm-fsa-lfp',
+        payload: 'usdm-counties-fsa-lfp.json',
         keySpace: 'fips',
-        /** Vintage-matched TIGER, so it is the one NON-rectangular set: a
-            county absent from a week is a real '.' in the series, and the
-            harness's absent-county copy is checked against this one. */
-        rectangular: false,
+        /** FSA's own FOIA'd LFP boundary statistics: rectangular (every county
+            in every week) and CT-clean, which is why it is the default — last
+            button in the seg, and still the one `?dataset=` is elided at. */
+        rectangular: true,
       }),
     }),
 
@@ -396,6 +417,8 @@ export const INTERFACES = Object.freeze({
     slug: 'eligibility',
     label: 'LFP eligibility',
     isDefault: false,
+    order: 3,
+    switchLabel: '3 · LFP eligibility',
     switchSel: '#btn-view-eligibility',
     sectionSel: '#view-seg',
 
@@ -497,11 +520,18 @@ export const INTERFACES = Object.freeze({
     }),
 
     /** THE FOURTH CONTROL — visible only on `derived`, because only that
-        payload has a `sources` dictionary to choose from. The four conventions
-        are four defensible readings of "any area of the county", and the
-        archive publishes all four rather than picking one; the app defaults to
-        the same FSA-boundary convention the drought monitor defaults to, for
-        the same reason (it is the geometry this map draws).
+        payload has a `sources` dictionary to choose from. The conventions are
+        defensible readings of "any area of the county", and the archive
+        publishes FOUR of them rather than picking one; the app OFFERS THREE and
+        defaults to the same FSA-boundary convention the drought monitor
+        defaults to, for the same reason (it is the geometry this map draws).
+
+        `conventions` is what the select must offer, in the order it must offer
+        them. `removed` is the fourth — the 2020 county set held fixed, still in
+        the payload and still in the archive's downloads, deliberately not on
+        this map — and it is here so the fallback can be checked: a `?source=`
+        naming it must land on the default with a warning, exactly like any
+        other value the app does not offer.
 
         `slug` is what `?source=` carries; the default is elided, and the param
         is DROPPED — not remembered in the URL — the moment the dataset stops
@@ -515,12 +545,16 @@ export const INTERFACES = Object.freeze({
       conventions: Object.freeze([
         Object.freeze({ id: 'usdm-counties-fsa-lfp', slug: 'usdm-counties-fsa-lfp', label: 'FSA LFP boundaries' }),
         Object.freeze({ id: 'usdm-counties-reported', slug: 'usdm-counties-reported', label: 'NDMC reported' }),
-        Object.freeze({ id: 'usdm-counties-census-2020', slug: 'usdm-counties-census-2020', label: 'Census 2020' }),
-        Object.freeze({ id: 'usdm-counties', slug: 'usdm-counties', label: 'Census vintage-matched' }),
+        Object.freeze({ id: 'usdm-counties', slug: 'usdm-counties', label: 'Census Counties' }),
       ]),
+      removed: Object.freeze({
+        id: 'usdm-counties-census-2020', slug: 'usdm-counties-census-2020',
+        label: 'Census 2020',
+      }),
       /** The payload's own order, which is what the decoder's `sources()` hands
-          back and what `source[]` indexes. Alphabetical, not the UI's order —
-          the select is free to present them most-relevant-first. */
+          back and what `source[]` indexes — all FOUR of them, because the data
+          is unchanged. Alphabetical, and neither the UI's order nor the UI's
+          list: the select presents the three it offers most-relevant-first. */
       payloadOrder: Object.freeze(['usdm-counties', 'usdm-counties-census-2020',
         'usdm-counties-fsa-lfp', 'usdm-counties-reported']),
     }),
@@ -641,7 +675,7 @@ export const INTERFACES = Object.freeze({
         what `paintOracle` counts. Neither is a number typed here: at program
         year 2024 on Native Pasture the official archive holds 1,134 events in
         626 counties, at 2025 it holds 1,385 in 738, and the derived archive's
-        four conventions disagree with each other (3,821–3,833 events at 2012).
+        conventions disagree with each other (3,821–3,833 events at 2012).
         The oracle reads whichever of those the app is actually showing.
 
         Under the all-types sentinel there is no single-type answer to give, so
@@ -680,6 +714,8 @@ export const INTERFACES = Object.freeze({
     slug: 'disasters',
     label: 'Disaster designations',
     isDefault: false,
+    order: 4,
+    switchLabel: '4 · Disaster designations',
     switchSel: '#btn-view-disasters',
     sectionSel: '#view-seg',
 
@@ -706,49 +742,28 @@ export const INTERFACES = Object.freeze({
     payloadUrl: '../fsa-disasters/fsa-disasters.json',
     keySpace: 'fips',
 
-    /** TWO TWO-WAY SEGS, and neither is a dataset: both slice ONE archive.
-        The declaration type is the instrument (whose signature unlocks what),
-        the scope is the disaster type filter. Each elides its default and each
-        is remembered per view, exactly like a dataset id. */
-    toggles: Object.freeze({
-      decl: Object.freeze({
-        sectionSel: '#dis-decltype-seg',
-        param: 'decl',
-        storageKey: 'sfsa-ngp-decl-disasters',
-        /** The COPY CONTRACT for the note under this seg. Two signatures are
-            not two spellings of one thing: the Secretary's designation is what
-            opens FSA's emergency loans, and a Presidential declaration is the
-            Stafford Act instrument that brings FEMA. A visitor choosing between
-            them has to be told which is which. */
-        noteSays: /emergency loan/i,
-        noteAlsoSays: /FEMA|Stafford/i,
-        options: Object.freeze([
-          Object.freeze({ id: 'secretarial', label: 'Secretarial',
-            sel: '#btn-dis-secretarial', isDefault: true }),
-          Object.freeze({ id: 'presidential', label: 'Presidential',
-            sel: '#btn-dis-presidential', isDefault: false }),
-        ]),
-      }),
-      disaster: Object.freeze({
-        sectionSel: '#dis-scope-seg',
-        param: 'disaster',
-        storageKey: 'sfsa-ngp-disaster-disasters',
-        options: Object.freeze([
-          Object.freeze({ id: 'drought', label: 'Drought',
-            sel: '#btn-dis-drought', isDefault: true }),
-          Object.freeze({ id: 'all', label: 'All disasters',
-            sel: '#btn-dis-all', isDefault: false }),
-        ]),
-      }),
-    }),
+    /** ONE SLICE, AND NO CONTROLS AT ALL. This view is the SECRETARIAL DROUGHT
+        designations — the LFP corner of the archive — and that is not a
+        selection a visitor makes: the shared year is the whole of its state.
+        It had two two-way segs (`#dis-decltype-seg`, `#dis-scope-seg`) with
+        `?decl=` and `?disaster=` behind them until the map was narrowed to what
+        it is about; the Presidential declarations and the other 21 disaster
+        types are in the archive's downloads, which help.md cites. What the gates
+        assert now is the ABSENCE: no drawer section of its own, no dataset seg,
+        neither param in the URL, and neither retired preference key written.
 
-    /** MEASURED, and the fact that makes one corner of this view empty ON
-        PURPOSE: not one of the 48,449 Presidential county rows is coded for
-        drought. FEMA's instrument is not the drought instrument — the Stafford
-        Act declarations in this archive are storms, floods, fires and freezes —
-        so Presidential × Drought is an honestly empty map, and the harness holds
-        the app to saying so rather than to painting something. */
-    presidentialDroughtRows: 0,
+        The two slugs below are the slice, and they are frozen here for one
+        reason: the poster's filename still names it out loud
+        (`fsa-disasters_<year>_secretarial_drought.png`, `exportName` above), and
+        the oracle recomputes that same slice from the payload. */
+    slice: Object.freeze({
+      declType: 'Secretarial',
+      droughtOnly: true,
+      retiredParams: Object.freeze(['decl', 'disaster']),
+      retiredKeys: Object.freeze(['sfsa-ngp-decl-disasters',
+        'sfsa-ngp-disaster-disasters']),
+      retiredSections: Object.freeze(['#dis-decltype-seg', '#dis-scope-seg']),
+    }),
 
     /** Two roles, two colours, and the legend has to name both in words: the
         scheme is hue-only (the archive's own red/orange), so in grayscale the
@@ -782,11 +797,14 @@ export const INTERFACES = Object.freeze({
       junkYearRows: 94,
     }),
 
-    exportName: /^fsa-disasters_\d{4}_(secretarial|presidential)_(drought|all)\.png$/,
+    /** The slice is spelled out in the name even though it is now the only one
+        this view can produce: a poster outlives the page, and the archive it
+        came from holds two instruments and 22 disaster types. */
+    exportName: /^fsa-disasters_\d{4}_secretarial_drought\.png$/,
 
     /** THE FIXTURE YEAR, chosen from the data rather than assumed — and 2021
         rather than the app's default 2026 for two independent reasons.
-        MEASURED at 2021 on this view's defaults (Secretarial × drought):
+        MEASURED at 2021 on this view's one slice (Secretarial × drought):
         2,802 county rows under 148 declarations, 1,164 distinct FIPS keys
         reaching 1,168 FSA counties (918 Primary, 250 Contiguous), latest
         approval 2022-05-25.
@@ -794,11 +812,11 @@ export const INTERFACES = Object.freeze({
             Primary, #S5071), so the card and its list are a real record. It has
             NONE in 2026, and a deep link whose card reads "no designation" would
             assert the empty half of the card.
-          · It is the only year whose SECRETARIAL DROUGHT slice — the two
-            defaults, so no toggling to reach it — carries malformed county keys
-            (see `junk`), which is what makes the verbatim and unmatched-count
-            checks assertions about the app's default state instead of about a
-            corner of it. */
+          · It is the only year whose Secretarial drought slice — the whole of
+            what this view shows, so nothing has to be toggled to reach it —
+            carries malformed county keys (see `junk`), which is what makes the
+            verbatim and unmatched-count checks assertions about the state a
+            visitor actually lands in. */
     fixture: Object.freeze({
       year: 2021,
       vintage: 'dd22',
@@ -825,14 +843,6 @@ export const INTERFACES = Object.freeze({
             has to stand in for a date that was never reported. */
         endSays: /ongoing|not reported/i,
       }),
-      /** What the other three corners of the two toggles hold at the same year,
-          so a repaint witness is a claim about numbers rather than a hope.
-          `presidential-drought` is empty for the archive's own reason above. */
-      slices: Object.freeze({
-        'secretarial-all': Object.freeze({ rows: 4754, designated: 1656 }),
-        'presidential-all': Object.freeze({ rows: 4705, designated: 1489 }),
-        'presidential-drought': Object.freeze({ rows: 0, designated: 0 }),
-      }),
     }),
 
     /** VALUES VERBATIM, IRREGULARITIES INCLUDED — the archive's own policy
@@ -845,11 +855,11 @@ export const INTERFACES = Object.freeze({
         text and not a cleanup of it.
 
         The two below are the whole of that population at the fixture year on
-        this view's defaults. Each is a reservation the portal keys with a
+        this view's one slice. Each is a reservation the portal keys with a
         four-digit code and names in the county column; the state column is
         ordinary. (The other flavour of junk — a state column reading "Acoma" —
-        lives at 2017 on the Presidential side, which is two toggles and a year
-        away; it is described in help.md rather than gated here.) */
+        lives on the Presidential side of the archive, which this map does not
+        draw at all; it is described in help.md rather than gated here.) */
     junk: Object.freeze({
       rows: 2,
       fipsKeys: Object.freeze(['2810', '2715']),
@@ -881,16 +891,26 @@ export const INTERFACES = Object.freeze({
       nullDate: '—',
     }),
 
-    deepLink: '?view=disasters&year=2021&county=30063',
-    /** What that link must produce, all of it measured above. */
+    /** THREE PARAMS THIS VIEW HONOURS, AND TWO IT MUST NOT. `decl` and
+        `disaster` are the retired segs' params, and they ride along here
+        deliberately: they are exactly the shape of a link somebody bookmarked
+        before the map was narrowed to its one slice, and what has to happen to
+        them is nothing — read by nobody, and gone from the address bar by the
+        time the boot's own pushState has run (js/app.js § pushState builds the
+        query from scratch). A check with no such link in front of it would be
+        asserting that two absent params are absent. */
+    deepLink: '?view=disasters&year=2021&county=30063'
+      + '&decl=presidential&disaster=all',
+    /** What that link must produce, all of it measured above. The two retired
+        params produce nothing at all — see `slice.retiredParams`. */
     deepLinkExpect: Object.freeze({
-      year: 2021, vintage: 'dd22', decl: 'secretarial', disaster: 'drought',
+      year: 2021, vintage: 'dd22',
       role: 'Primary', designations: 6,
       number: 'S5071', approval: 'Sep 3, 2021',
     }),
 
-    /** Row for row, the county designations the table owes — every row matching
-        (year, declaration type, scope), junk keys included, which is a LARGER
+    /** Row for row, the county designations the table owes — every Secretarial
+        drought row of the selected year, junk keys included, which is a LARGER
         number than the map's because several declarations reach one county and
         because some rows reach no county at all. `paintOracle` is the other one:
         the FSA counties the crosswalk reaches that the composite can draw. */
@@ -907,12 +927,12 @@ export const INTERFACES = Object.freeze({
         state of the app (and so must not re-read it four times). */
     joinOracle: async (page) => disastersJoin(page),
 
-    /** The two seg toggles, the empty Presidential drought map, the verbatim
-        junk in the table, the unmatched count and the four-interface round trip
-        are asserted in tools/verify.mjs § the disaster designations — they need
-        that file's paint-signature, marker and live-region probes, and this file
-        must not assert. Every selector, fixture and measured count they read is
-        in this entry. */
+    /** The absence of controls, the fixture year's counts, the verbatim junk in
+        the table, the unmatched count and the four-interface round trip are
+        asserted in tools/verify.mjs § the disaster designations — they need that
+        file's paint-signature, marker and live-region probes, and this file must
+        not assert. Every selector, fixture and measured count they read is in
+        this entry. */
     extraChecks: null,
   }),
 });
@@ -1105,11 +1125,14 @@ function eligJoin(page, defaultSource = 'usdm-counties-fsa-lfp') {
  * other two have (a decoder that indexed the wrong year would agree with itself
  * but not with this), and it costs one 4 MB parse from localhost per call.
  *
- * WHICH SLICE: the two seg toggles, read from `aria-pressed` — the attribute the
- * kit styles a seg button from, so if it is wrong the button LOOKS wrong and
- * there is no second source of truth to prefer. The view state is the fallback
- * for a run where the markup is not there yet, and the documented defaults
- * (Secretarial, drought) are the fallback for that.
+ * WHICH SLICE: the one this view IS — Secretarial, drought — taken from the
+ * entry's own `slice` and not from the page, because there is nothing on the
+ * page to take it from any more. That is a weaker independence than reading two
+ * `aria-pressed` attributes was (this oracle can no longer catch a view that
+ * quietly painted the wrong instrument), and it is the honest one: the app's
+ * only statement of the slice is now its own source, and an oracle that guessed
+ * would be checking a guess. What still holds the app to the slice is the
+ * poster's filename (`exportName`) and every count below.
  *
  * THE ONE RULE IT RE-IMPLEMENTS is the reduce: Primary beats Contiguous, within
  * a county's rows and again across the FIPS→FSA crosswalk, because a county
@@ -1123,10 +1146,8 @@ function disastersJoin(page) {
   const E = INTERFACES.disasters;
   const sels = {
     url: E.payloadUrl,
-    secretarial: E.toggles.decl.options[0].sel,
-    presidential: E.toggles.decl.options[1].sel,
-    drought: E.toggles.disaster.options[0].sel,
-    all: E.toggles.disaster.options[1].sel,
+    declType: E.slice.declType,
+    droughtOnly: E.slice.droughtOnly,
   };
   // A THROW IS AN ANSWER — see usdmJoin above for why every branch here comes
   // back as data, including the failures.
@@ -1137,8 +1158,6 @@ function disastersJoin(page) {
       const xw = typeof c.getCrosswalk === 'function' ? c.getCrosswalk() : null;
       if (!xw) return { error: 'the crosswalk has not been fetched' };
       const sel = typeof c.getSelection === 'function' ? c.getSelection() : {};
-      const vs = typeof c.getViewState === 'function' ? c.getViewState() : {};
-      const slice = (vs && (typeof vs.decl === 'string' ? vs : vs.disasters)) || {};
       const idx = c.getCounties() ? c.getCounties().index : new Map();
       const vintage = (typeof c.getVintage === 'function' ? c.getVintage() : null)
         || sel.vintage;
@@ -1146,16 +1165,8 @@ function disastersJoin(page) {
         return { error: 'the app does not say which boundary vintage is drawn' };
       }
       const year = sel.year;
-
-      const pressed = (q) => {
-        const b = document.querySelector(q);
-        return !!b && b.getAttribute('aria-pressed') === 'true';
-      };
-      const declType = pressed(s.presidential) ? 'Presidential'
-        : pressed(s.secretarial) ? 'Secretarial'
-          : (slice.decl === 'presidential' ? 'Presidential' : 'Secretarial');
-      const droughtOnly = pressed(s.all) ? false
-        : pressed(s.drought) ? true : slice.disaster !== 'all';
+      const declType = s.declType;
+      const droughtOnly = s.droughtOnly;
 
       const res = await fetch(new URL(s.url, document.baseURI).href);
       if (!res.ok) return { error: `the payload answered HTTP ${res.status}` };

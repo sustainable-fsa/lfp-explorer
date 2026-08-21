@@ -29,19 +29,16 @@
    moveend, and a view that is entirely at defaults emits a CLEAN url with no
    query string at all.
 
-     ?view   interface slug (ngp | usdm | eligibility | disasters)
+     ?view   interface slug (usdm | ngp | eligibility | disasters — switcher
+             order; `ngp` is the DEFAULT and is therefore never emitted)
      ?dataset the active view's own dataset id (ngp: fsa | nclimgrid;
-             usdm: fsa-lfp | reported | census;
-             eligibility: official | web | derived; disasters: one archive, so
-             this view never emits it)
+             usdm: census | reported | fsa-lfp; eligibility: official | web |
+             derived; disasters: one archive, so this view never emits it)
      ?year   2000–2026, narrowed to the ACTIVE view's own domain
      ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?source which county aggregation a dataset that publishes several is read
              at (eligibility's derived archive; dropped on every other dataset)
-     ?decl ?disaster  the ACTIVE VIEW's own enumerated choices — two slices of
-             one table (disasters: secretarial|presidential, drought|all). See
-             § Enumerated choices.
      ?variable the ACTIVE VIEW's own colour-by (ngp: start|end|duration;
              eligibility: months|date)   ?kbd    off (disables the / shortcut)
      ?county 5-character FSA id   ?export (N-W4)
@@ -51,9 +48,13 @@
              open, and on compact it is an overlay that always boots closed, so
              a compact session never emits it)
 
-   ?view and ?dataset are elided at their defaults (the first interface in the
-   registry, and that interface's first dataset), so every URL minted before
-   the app grew past one dataset still means exactly what it meant. ?type is
+   ?view and ?dataset are elided at their defaults — the interface the registry
+   NAMES as the default, and the dataset that interface's own list marks as one
+   (js/interfaces/registry.js § DEFAULT_VIEW, defaultDatasetOf). Neither is
+   positional: both segs are ordered for the reader, and the switcher opens on
+   the drought monitor while the app boots on the grazing periods. So every URL
+   minted before the app grew past one dataset still means exactly what it
+   meant, and a reordered seg cannot change what a clean URL means. ?type is
    NOT elided on a non-default dataset: "full-season" is a real choice inside
    the climatology's own three-season dictionary, and dropping it would make
    the link mean "whatever that dataset defaults to next year". ?week is elided
@@ -118,7 +119,7 @@ import {
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
 import { PROJECTED_BOUNDS, projectCounties } from './projection.js';
 import {
-  DEFAULT_VIEW, INTERFACES, aliasType, viewFromSlug,
+  DEFAULT_VIEW, INTERFACES, aliasType, defaultDatasetOf, viewFromSlug,
 } from './interfaces/registry.js';
 import { loadDataset } from './decoders/common.js';
 import { loadCrosswalk } from './decoders/crosswalk.js';
@@ -180,8 +181,14 @@ const LS = Object.freeze({
       same reason as the dataset key. */
   source: (view) => 'sfsa-ngp-source-' + view,
   /** One of a family's own enumerated choices (§ Enumerated choices), per
-      interface and per choice: `sfsa-ngp-decl-disasters` is which designation
-      type the disaster map is read at, and it means nothing anywhere else. */
+      interface and per choice — `sfsa-ngp-<choice>-<view>`, which means nothing
+      to any other view. No shipped family declares a choice today, so nothing
+      writes one; the disaster designations did until that map was narrowed to
+      the single slice it is about, and the two keys it wrote
+      (`sfsa-ngp-decl-disasters`, `sfsa-ngp-disaster-disasters`) are now read by
+      nobody. A stale one in a returning visitor's storage is inert: every value
+      here is re-validated against the family's own list on read, and a family
+      with no list has nothing to validate. */
   choice: (view, id) => 'sfsa-ngp-' + id + '-' + view,
   drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
@@ -324,8 +331,8 @@ const viewState = {
    * LFP eligibility: which of the three archives is painted, which pasture type
    * (ONE field, because all three share the fifteen-name dictionary — the
    * descriptor says so with `typeScope: 'view'`), which of its two colour-by
-   * variables, and — for the derived archive alone — which of the four
-   * aggregation conventions.
+   * variables, and — for the derived archive alone — which aggregation
+   * convention it is read at.
    *
    * `source` is null until a payload can say which conventions exist; it is
    * remembered across a toggle to another archive and back, and it is only ever
@@ -339,9 +346,10 @@ const viewState = {
     source: null,
   },
   /**
-   * Disaster designations: one archive, and two enumerated choices of how to
-   * read it (§ Enumerated choices) — which designation type, and whether the
-   * map is drought alone or every disaster type in the record.
+   * Disaster designations: one archive, read at one slice — the Secretarial
+   * drought designations, which is what that map IS (js/interfaces/
+   * disasters.js § ONE SLICE). So there is nothing here to remember but the
+   * dataset, and nothing of this family's in the URL at all.
    *
    * `dataset` is here because every family has one and app.js finds the payload
    * through it; this family's is the only entry in its list, which is also why
@@ -349,8 +357,6 @@ const viewState = {
    */
   disasters: {
     dataset: 'fsa-disasters',
-    decl: 'secretarial',
-    disaster: 'drought',
   },
 };
 
@@ -465,9 +471,10 @@ function activeDataset() {
 }
 
 /** The id of the dataset a view shows when nothing has asked for another one —
-    its first, which is also the one whose absence from the URL is the default. */
+    the one it DECLARES (never merely the first in its list), which is also the
+    one whose absence from the URL means it. */
 function defaultDatasetId(view) {
-  return viewFromSlug(view).datasets[0].id;
+  return defaultDatasetOf(viewFromSlug(view)).id;
 }
 
 /**
@@ -498,9 +505,10 @@ function knownVariable(iface, name) {
   return !!name && Object.prototype.hasOwnProperty.call(variablesOf(iface), name);
 }
 
-/** Where one interface's remembered colour-by lives. The first interface keeps
-    the historical `sfsa-ngp-variable`; every other one gets a key of its own,
-    because one name means different things to two registries. */
+/** Where one interface's remembered colour-by lives. The DEFAULT interface keeps
+    the historical `sfsa-ngp-variable` (it is the one that has always written it,
+    whatever position it now holds in the switcher); every other one gets a key
+    of its own, because one name means different things to two registries. */
 function variableLsKey(view) {
   return view === DEFAULTS.view ? LS.variable : LS.variableFor(view);
 }
@@ -559,8 +567,9 @@ function selection() {
     universe: counties ? counties.index.size : 0,
   };
   // Whatever enumerated choices the active family declares, by name — so a
-  // descriptor leaf reads `sel.decl` exactly the way it reads `sel.year`, and a
-  // family that declares none carries none (§ Enumerated choices).
+  // descriptor leaf reads its own slice off `sel` exactly the way it reads
+  // `sel.year`. Every shipped family declares none today and therefore carries
+  // none (§ Enumerated choices).
   for (const choice of choicesOf(iface)) {
     sel[choice.id] = choiceValue(iface, choice.id);
   }
@@ -790,9 +799,9 @@ function pushState() {
     if (week) p.week = week;
   }
   // The active family's own enumerated choices, each elided at its own default
-  // and none of them emitted while another family is on screen — a
-  // grazing-period link carrying ?decl=presidential would describe a control
-  // that is not there.
+  // and none of them emitted while another family is on screen — a param for a
+  // control the reader cannot see would describe a different map. No shipped
+  // family declares one, so this loop emits nothing (§ Enumerated choices).
   for (const choice of choicesOf(iface)) {
     const value = choiceValue(iface, choice.id);
     if (value !== choice.default) p[choice.id] = value;
@@ -1324,6 +1333,14 @@ function setYear(next) {
   if (currentInterface().controls.week) syncWeekControl();
   persist();
   pushState();
+  // The legend is re-asked on a YEAR change too, not only on a switch: a
+  // family's no-data chip may name the year it is about ("No designation in
+  // 2021" — js/interfaces/disasters.js § legendNoDataLabel), and a chip a year
+  // behind the map is a legend that lies about the gray counties a reader is
+  // looking at. It matters most where the year is the view's ONLY control, which
+  // the disaster designations now are. Cheap and idempotent: the legend BODY
+  // never changes with the year, only its words.
+  syncLegend();
 
   const want = vintageForYear(year);
   if (want === vintage) {
@@ -1630,12 +1647,13 @@ function populateTypeSelect() {
 }
 
 /* ── The aggregation picker ──────────────────────────────────────────────────
-   One archive in the app publishes the same question four times over, under
-   four defensible readings of "any area of the county" (js/interfaces/
-   eligibility.js § SOURCE_LABELS). That is a fact about ONE dataset, not about
-   its interface, so the control appears and disappears with the dataset —
-   which makes it the one [data-view] control whose visibility is narrower than
-   its section's. */
+   One archive in the app answers the same question several times over, under
+   different defensible readings of "any area of the county" (js/interfaces/
+   eligibility.js § SOURCE_LABELS — the payload carries four and the picker
+   offers three of them). That is a fact about ONE dataset, not about its
+   interface, so the control appears and disappears with the dataset — which
+   makes it the one [data-view] control whose visibility is narrower than its
+   section's. The OPTIONS are the descriptor's to decide; this file only asks. */
 
 /** Show the picker only while the dataset that has conventions is on screen. */
 function syncSourceControl() {
@@ -1663,8 +1681,8 @@ function populateSourceSelect(instance) {
 /**
  * Read the same archive at another convention.
  *
- * A synchronous repaint: the payload holds all four, so nothing is fetched and
- * nothing waits. It therefore does NOT bump `data-ngp-view-seq` — that counter
+ * A synchronous repaint: the payload holds every convention, so nothing is
+ * fetched and nothing waits. It does NOT bump `data-ngp-view-seq` — that counter
  * means "a transition that involved a fetch has landed" (tools/config.mjs §
  * MARKERS), and a week scrub does not bump it either.
  *
@@ -1702,12 +1720,18 @@ function applySource(instance) {
 
 /* ── Enumerated choices ──────────────────────────────────────────────────────
    A family may slice its ONE dataset in ways that are neither a dataset nor a
-   colour-by. The disaster designations are read as Secretarial or Presidential,
-   and for drought alone or for every disaster type the record carries: four
-   states of one table, none of them a different file and none of them a
-   different quantity.
+   colour-by: several states of one table, none of them a different file and
+   none of them a different quantity.
 
-   So a family DECLARES its choices — `descriptor.choices`, a frozen list of
+   NO SHIPPED FAMILY DECLARES ONE TODAY. The disaster designations did — read as
+   Secretarial or Presidential, for drought alone or for all 22 disaster types —
+   until that map was narrowed to the one slice it is about (js/interfaces/
+   disasters.js § ONE SLICE). The mechanism stays because it is the shape that
+   question has whenever it comes back, and because everything below is generic:
+   `choicesOf()` answers with an empty list, and every function is a no-op over
+   it. Nothing here is reachable from the page as it stands.
+
+   A family DECLARES its choices — `descriptor.choices`, a frozen list of
    `{id, values[], default}` — and everything here is generic. The button group,
    the URL param, the stored preference and the remembered per-view state all
    key off `id`, and the rules are the ones every other control in this file
@@ -1720,8 +1744,8 @@ function applySource(instance) {
    `data-ngp-view-seq` — that counter means "a transition that involved a fetch
    has landed" (tools/config.mjs § MARKERS), and a week scrub does not bump it
    either. And it is not a payload-driven select like the aggregation picker
-   above: the values are static, so `?decl=` needs no parking and is resolved at
-   boot like any other whitelisted param. */
+   above: the values are static, so a choice param needs no parking and is
+   resolved at boot like any other whitelisted param. */
 
 /** The choices one family declares, or none. */
 function choicesOf(iface) {

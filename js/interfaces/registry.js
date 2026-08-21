@@ -20,14 +20,21 @@
    harness's probe table mirrors it — so adding an interface is a descriptor
    plus one line here, never a search for hardcoded slugs.
 
-   FOUR are shipped, and together they are the whole chain: grazing periods,
-   then the drought monitor, then LFP eligibility, then disaster designations —
-   the order the Livestock Forage Program is administered in (when may livestock
-   graze here · how dry was it · what did that qualify the county for · what
-   wider disaster was declared around it), which is also the order the story
-   reads in. Nothing here is a placeholder: an unshipped interface has no entry
-   and therefore no disabled teaser button, and now that the story is complete
-   the switcher carries no promise of more.
+   FOUR are shipped, and together they are the whole chain: the drought
+   monitor, then grazing periods, then LFP eligibility, then disaster
+   designations — the order the story reads in (where was it dry · when must
+   that dryness fall to count at all · what did the two of them qualify the
+   county for · what wider disaster was declared around it). Nothing here is a
+   placeholder: an unshipped interface has no entry and therefore no disabled
+   teaser button, and now that the story is complete the switcher carries no
+   promise of more.
+
+   THE ORDER IS THE READER'S, THE DEFAULT IS THE APP'S, and they are no longer
+   the same thing — the switcher opens with the drought monitor and the app
+   boots on the grazing periods (DEFAULT_VIEW below). Nothing may derive one
+   from the other: `?view=` is elided at DEFAULT_VIEW, not at the head of the
+   list, and the same rule applies one level down to a family's datasets
+   (defaultDatasetOf).
 
    A FIFTH would be a descriptor plus one line in the list below, in its own
    `order`. Nothing else in the app counts them.
@@ -45,12 +52,17 @@ import { DISASTERS } from './disasters.js';
  *
  * @type {ReadonlyArray<object>}
  */
-export const INTERFACES = Object.freeze([NGP, USDM, ELIGIBILITY, DISASTERS]);
+export const INTERFACES = Object.freeze([USDM, NGP, ELIGIBILITY, DISASTERS]);
 
 /** The interface a session with no `?view=` and no stored preference lands on.
     Its slug is NEVER emitted into the URL (clean-URL discipline, HOUSE-STYLE
-    §4), so this value is also the one `pushState()` elides. */
-export const DEFAULT_VIEW = INTERFACES[0].id;
+    §4), so this value is also the one `pushState()` elides.
+
+    NAMED, not the head of the list: the switcher is ordered for the reader (the
+    drought monitor first, because that is where the story starts) and the app
+    boots on the grazing periods, which is what every URL minted since it
+    shipped means by carrying no `?view=` at all. */
+export const DEFAULT_VIEW = NGP.id;
 
 /**
  * Slug → descriptor. The registry IS the whitelist: a `?view=` that does not
@@ -69,6 +81,27 @@ export function viewFromSlug(slug) {
   return null;
 }
 
+/**
+ * The dataset one interface shows when nothing has asked for another one — and
+ * therefore the one whose absence from the URL means it (`pushState()` elides
+ * it, exactly as it elides DEFAULT_VIEW).
+ *
+ * DECLARED (`default: true` on the entry), not positional, for the same reason
+ * DEFAULT_VIEW is: a dataset seg is ordered for the reader and its default is a
+ * fact about the data. The drought monitor lists its three county sets from the
+ * most general idea of a county to the most program-specific, and defaults to
+ * the last of them — the geometry the program is actually administered on. A
+ * family that declares no default keeps the old rule, its first.
+ *
+ * @param {object} iface an interface descriptor
+ * @returns {object|null} a dataset descriptor
+ */
+export function defaultDatasetOf(iface) {
+  const list = (iface && iface.datasets) || [];
+  for (const ds of list) if (ds.default) return ds;
+  return list[0] || null;
+}
+
 /* ── Reading the app context ──────────────────────────────────────────────── */
 
 /**
@@ -79,7 +112,8 @@ export function viewFromSlug(slug) {
  * @returns {object} an interface descriptor
  */
 export function interfaceOf(ctx) {
-  return (ctx && ctx.getInterface && ctx.getInterface()) || INTERFACES[0];
+  return (ctx && ctx.getInterface && ctx.getInterface())
+    || viewFromSlug(DEFAULT_VIEW);
 }
 
 /**
@@ -116,7 +150,7 @@ export function viewSelection(ctx) {
     year: state.year,
     type: state.type,
     variable: state.variable,
-    dataset: (slice && slice.dataset) || iface.datasets[0].id,
+    dataset: (slice && slice.dataset) || defaultDatasetOf(iface).id,
     vintage: (ctx.getVintage && ctx.getVintage()) || null,
   };
 }

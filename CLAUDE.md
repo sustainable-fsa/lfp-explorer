@@ -69,8 +69,10 @@ Specifics that bite in this repo:
 ## Where we left off (2026-08-20, the four-interface expansion is complete)
 
 The **four-interface expansion is done**: the administration story in four
-acts — 1 · Grazing periods, 2 · Drought monitor (USDM weekly), 3 · LFP
-eligibility, 4 · Disaster designations — landed as four serial PRs, with
+acts — displayed as 1 · Drought monitor (USDM weekly), 2 · Grazing periods
+(the default view), 3 · LFP eligibility, 4 · Disaster designations, per the
+owner's 2026-08-21 reordering — landed as four serial PRs plus a
+refinements PR, with
 shared year/county/camera/theme surviving every switch and per-interface
 memory for everything else. Gates at completion: verify.mjs prints its own
 count — currently 509; axe clean 2 themes × 2 viewports × 11 states;
@@ -83,12 +85,13 @@ html-validate clean; LHCI a11y 1.0:
   (`js/decoders/`), three legend bodies, readiness markers (`ngpReady` once
   at boot; `data-ngp-view`, monotonic `data-ngp-view-seq` — bumped only by
   fetch-involving transitions, never week scrubs — `data-ngp-view-error`).
-- **1 · Grazing periods**: FSA official (boot) + nClimGrid climatology (lazy;
+- **2 · Grazing periods** (the DEFAULT view — display order ≠ default):
+  "FSA Official (FOIA)" (boot) + "NAP-190 Derived (nClimGrid)" (lazy;
   Census-FIPS keys joined through `assets/fsa-fips-crosswalk.json`,
   record-level max-duration reduction, "Combined from" card rows,
   nominal-years slider disable). The county card's span chart draws a
   climatology reference band whenever the other payload is already cached.
-- **2 · Drought monitor** (PR 2): `usdm-max-class/1` × three archives —
+- **1 · Drought monitor** (PR 2): `usdm-max-class/1` × three archives —
   default **FSA LFP boundaries** (CT-clean; NDMC-reported keys Connecticut
   only as planning regions the crosswalk cannot map, so CT is honestly
   uncolored there and counted in the live region). Week-within-year scrubber
@@ -128,18 +131,30 @@ html-validate clean; LHCI a11y 1.0:
   reveal-push, EPSG:5070 client-side pre-projection, runtime payload fetch
   (manifest: `tools/payloads.txt`).
 
-- **4 · Disaster designations** (PR 4): `fsa-disasters/1` — Secretarial
-  designations (2012–) and Presidential declarations (2017–), two-table
-  normalized, FIPS-keyed → crosswalked, Primary `#DC0005` beats Contiguous
-  `#FD9A09` everywhere. `?decl=`/`?disaster=` via the generic
-  `descriptor.choices` mechanism (synchronous — never bumps view-seq). Junk
-  is policy: the year string `"2011, 2012"` (94 rows) and 72 malformed
-  county keys (249 rows) never match a clean year or the crosswalk — they
-  render verbatim in the data table only and are counted out loud in the
-  live region. Presidential × drought is structurally empty (0 of 48,449
-  rows) and the live sentence says so. The card is a declaration list (its
+- **4 · Disaster designations** (PR 4, narrowed by the refinements PR):
+  `fsa-disasters/1`, two-table normalized, FIPS-keyed → crosswalked. **The
+  map is hardwired to Secretarial designations for drought** — the LFP
+  corner of the archive; Presidential declarations and the other 21
+  disaster types live in the archive downloads (`?decl=`/`?disaster=` and
+  their LS keys are retired; the generic `descriptor.choices` mechanism
+  remains in app.js, currently unused). Primary `#DC0005` beats Contiguous
+  `#FD9A09` everywhere. Junk is policy: the year string `"2011, 2012"` (94
+  rows) and 72 malformed county keys (249 rows) never match a clean year or
+  the crosswalk — they render verbatim in the data table only and are
+  counted out loud in the live region. The card is a declaration list (its
   own accessible twin; `tabindex="0"` because `.sfsa-card-body` scrolls at
-  compact — see the kit-gap open thread).
+  compact — see the kit-gap open thread). A county being Contiguous under
+  later declarations while already Primary is the archive's real structure
+  (each declaration names its own primary set; neighbors get contiguous
+  status per declaration) — verified 2026-08-21, not a defect.
+- **Refinements PR (2026-08-21, owner-requested)**: switcher display order
+  ≠ default; NGP dataset labels "FSA Official (FOIA)" / "NAP-190 Derived
+  (nClimGrid)"; USDM dataset display order Census counties · NDMC reported
+  · FSA LFP boundaries (default decoupled from array position via a
+  declared `default: true` + `defaultDatasetOf()`); the eligibility derived
+  source picker offers three of the payload's four conventions ("Census
+  Counties" = vintage-matched; Census 2020 UI-retired, slug falls back with
+  a warn); disasters toggles removed as above.
 
 Open threads, in rough priority order:
 
