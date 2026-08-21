@@ -18,7 +18,7 @@ every push.
 ## House style
 
 This app consumes the Sustainable FSA style kit, pinned by full versioned URL
-in index.html (https://sustainable-fsa.com/style/v0.2.0/…). Design tokens,
+in index.html (https://sustainable-fsa.com/style/v0.2.1/…). Design tokens,
 a11y mandates, and interaction conventions: see HOUSE-STYLE.md in
 https://github.com/sustainable-fsa/style — tokens only (no raw hexes),
 --accent is fill-only, aria-pressed drives toggle styling, canvas data needs a
@@ -75,7 +75,7 @@ owner's 2026-08-21 reordering — landed as four serial PRs plus a
 refinements PR, with
 shared year/county/camera/theme surviving every switch and per-interface
 memory for everything else. Gates at completion: verify.mjs prints its own
-count — currently 509; axe clean 2 themes × 2 viewports × 11 states;
+count — currently 494; axe clean 2 themes × 2 viewports × 11 states;
 html-validate clean; LHCI a11y 1.0:
 
 - The **interface framework** (PR 1): "What to show" switcher (top of the
@@ -155,6 +155,18 @@ html-validate clean; LHCI a11y 1.0:
   source picker offers three of the payload's four conventions ("Census
   Counties" = vintage-matched; Census 2020 UI-retired, slug falls back with
   a warn); disasters toggles removed as above.
+- **Kit v0.2.1 (2026-08-21)**: the selection ring. The kit filtered its two
+  `sfsa-county-selected*` layers on `['==', ['id'], id]`, and `promoteId`
+  notwithstanding, the tile encoder behind the FILTER path coerces a
+  numeric-looking id to a number — `'01001'` → `1001` — so the comparison
+  was string-vs-number and the ring never drew for ANY selection this app
+  made. Measured: `queryRenderedFeatures` returned 0 on both layers while
+  the fill returned 3,232. Fixed in the kit (v0.2.1 compares `['get', 'id']`,
+  the property, which is never coerced) and picked up here by the pin sweep;
+  there was no app-side workaround to remove. `['to-string', ['id']]` is NOT
+  a fix — it yields `'1001'`. verify.mjs now asserts the PAINT (not the
+  filter, which was the bug) for the run's county AND for a leading-zero id,
+  plus that the ring clears when the card closes.
 
 Open threads, in rough priority order:
 

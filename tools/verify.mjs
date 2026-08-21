@@ -122,7 +122,7 @@ const CONFIG = {
     README § Developing against an unreleased kit lists this file alongside
     index.html and js/. It is passed INTO page.evaluate as an argument: a
     string built in-page from an outer-scope binding would not exist. */
-const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
+const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.2.1/county/county.js';
 
 const server = serveWorkspace(CONFIG.root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -1075,6 +1075,89 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
         check('an unobscured county does NOT push — the dock stays an overlay',
           clear.open && !clear.pushes && clear.mapW === clear.frameW,
           `open=${clear.open}, pushes=${clear.pushes}, canvas ${clear.mapW}/${clear.frameW}`);
+      }
+
+      /* ── The selection ring actually PAINTS ──────────────────────────────
+         The kit outlines the selected county with two filter-driven line
+         layers (`sfsa-county-selected` over its casing), and the card is only
+         half the answer: a reader who cannot see WHICH county the readout
+         describes has been told a name, not shown a place.
+
+         This is measured with queryRenderedFeatures rather than by reading the
+         filter back, because the filter was the bug. Through kit v0.2.0 both
+         layers keyed on `['id']`, and while promoteId does put the 5-character
+         FSA string in the feature-id slot for setFeatureState(), the tile
+         encoder behind the FILTER path coerces a numeric-looking id to a
+         NUMBER — '01001' becomes 1001, leading zero and all. Every FSA id is
+         numeric-looking, so `['==', ['id'], '01001']` matched nothing and the
+         ring never drew for any selection this app ever made, silently, while
+         the choropleth join kept working. Kit v0.2.1 compares `['get', 'id']`,
+         the property, which is never coerced.
+
+         So: assert the paint, not the filter, and do it for a LEADING-ZERO id
+         as well — that is the case no `['to-string', ['id']]` half-fix would
+         have saved, and the one this app is full of. */
+      const ring = (id) => page.evaluate(async (id) => {
+        const app = await import(new URL('js/app.js', document.baseURI).href);
+        const map = app.ngpContext().getMap();
+        const n = (layer) => {
+          try { return map.queryRenderedFeatures({ layers: [layer] }).length; }
+          catch { return -1; }
+        };
+        return { id, ring: n('sfsa-county-selected'),
+          casing: n('sfsa-county-selected-casing'),
+          fill: n('sfsa-county-fill') };
+      }, id);
+
+      const litHere = await ring(CONFIG.county.id);
+      check('the selected county is OUTLINED on the map, not just named in the '
+        + 'card: both selection layers paint exactly one feature',
+      litHere.ring === 1 && litHere.casing === 1,
+      `ring=${litHere.ring}, casing=${litHere.casing} (fill=${litHere.fill}) `
+        + `for ${CONFIG.county.id}`);
+
+      // A leading-zero id from the live geometry — the coercion case.
+      const zeroId = await page.evaluate(async () => {
+        const app = await import(new URL('js/app.js', document.baseURI).href);
+        for (const id of app.ngpContext().getCounties().index.keys()) {
+          if (id.startsWith('0')) return id;
+        }
+        return null;
+      });
+      if (!zeroId) {
+        skip('the ring paints for a LEADING-ZERO county id',
+          'no id starting with 0 in this vintage');
+      } else {
+        await page.evaluate(async (id) => {
+          const app = await import(new URL('js/app.js', document.baseURI).href);
+          app.ngpContext().selectCounty(id);   // no fly — the map-click path
+        }, zeroId);
+        await page.waitForTimeout(700);
+        const litZero = await ring(zeroId);
+        check(`the ring paints for a LEADING-ZERO id too (${zeroId}) — the id `
+          + 'shape a numeric feature-id filter can never match',
+        litZero.ring === 1 && litZero.casing === 1,
+        `ring=${litZero.ring}, casing=${litZero.casing} for ${zeroId}`);
+
+        // …and it is the card that owns it: closing the readout takes the
+        // outline with it, so the map never points at a county nothing
+        // describes.
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(700);
+        const litClosed = await ring(zeroId);
+        check('closing the card clears the ring — the outline lives exactly as '
+          + 'long as the readout that explains it',
+        litClosed.ring === 0 && litClosed.casing === 0
+          && await page.evaluate(() => document.getElementById('county-card').hidden),
+        `ring=${litClosed.ring}, casing=${litClosed.casing} after Escape`);
+
+        // Restore the state the rest of this section left behind: the run's
+        // canonical county, selected, card open, nothing pushed.
+        await page.evaluate(async (id) => {
+          const app = await import(new URL('js/app.js', document.baseURI).href);
+          app.ngpContext().selectCounty(id);
+        }, CONFIG.county.id);
+        await page.waitForTimeout(500);
       }
       clean('county click');
       await shot('06-card-open');

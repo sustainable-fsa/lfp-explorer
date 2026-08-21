@@ -7,7 +7,7 @@
 # tools/payloads.txt — and must be cheap enough to run on every pull request.
 #
 # WHAT THE NETWORK IS FOR. The app loads the house style kit by full pinned URL
-# (https://sustainable-fsa.com/style/v0.2.0/…), fetches the two FSA county
+# (https://sustainable-fsa.com/style/v0.2.1/…), fetches the two FSA county
 # boundary archives at runtime, and fetches each data payload by RELATIVE path
 # (../<repo>/<file>), which in production is that archive repo's same-origin
 # GitHub Pages copy. All are fetched LIVE here — the payloads are curled into
