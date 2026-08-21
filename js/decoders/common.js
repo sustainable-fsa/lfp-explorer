@@ -47,7 +47,7 @@
    (app.js, export.js) do not have to move.
    ========================================================================== */
 
-import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
+import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.2.1/core/core.js';
 
 /** URL → Promise<instance>. Module-level on purpose: the identity of a payload
     is its URL, and the app wants one decoded instance per payload per session

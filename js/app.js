@@ -84,7 +84,7 @@
    ========================================================================== */
 
 /* ── Kit imports ─────────────────────────────────────────────────────────────
-   Pinned at v0.2.0, like every kit reference in index.html and js/. Any bump
+   Pinned at v0.2.1, like every kit reference in index.html and js/. Any bump
    or dev-state sweep is ALL-OR-NOTHING across all of them: two different
    core.js URLs are two module instances, and therefore two independent
    `viewport` pub-subs — the drawer would then be listening to a different
@@ -93,20 +93,20 @@
 import {
   createLiveRegion, getTheme, initThemeToggle, lsGet, lsSet, reducedMotion,
   replaceUrlState, showToast, urlParams, viewport,
-} from 'https://sustainable-fsa.com/style/v0.2.0/core/core.js';
+} from 'https://sustainable-fsa.com/style/v0.2.1/core/core.js';
 import {
   addFitControl, addNavigation, cameraParamsIfDefault, createCompositeMap,
   fitDefault, installZoomFloor,
-} from 'https://sustainable-fsa.com/style/v0.2.0/map/map.js';
+} from 'https://sustainable-fsa.com/style/v0.2.1/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, loadCounties,
   searchItems, vintageForYear,
-} from 'https://sustainable-fsa.com/style/v0.2.0/county/county.js';
-import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.2.0/ui/search.js';
-import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.2.0/ui/card.js';
-import { initDrawer } from 'https://sustainable-fsa.com/style/v0.2.0/ui/drawer.js';
-import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.2.0/ui/legend.js';
-import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.0/ui/help.js';
+} from 'https://sustainable-fsa.com/style/v0.2.1/county/county.js';
+import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.2.1/ui/search.js';
+import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.2.1/ui/card.js';
+import { initDrawer } from 'https://sustainable-fsa.com/style/v0.2.1/ui/drawer.js';
+import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.2.1/ui/legend.js';
+import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.1/ui/help.js';
 
 /* js/data.js is the GRAZING-PERIOD family's facade, not the app's data layer
    (see § Live state): the search index, the county gazetteer and the type

@@ -32,7 +32,7 @@ broader instrument around the program.
 - Chrome, tokens, and map machinery come from the shared house-style kit
   [sustainable-fsa/style](https://github.com/sustainable-fsa/style), consumed
   same-origin by pinned version path
-  (`https://sustainable-fsa.com/style/v0.2.0/…` for the versioned surface;
+  (`https://sustainable-fsa.com/style/v0.2.1/…` for the versioned surface;
   `…/style/vendor/…` and `…/style/assets/…` are deliberately unversioned).
   The kit owns the two side surfaces this app is built around: the left
   controls drawer (`.sfsa-drawer` + `ui/drawer.js`) and the right-docked county
@@ -136,7 +136,7 @@ sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.2\.0/|/style/|g' \
 # Prod-ward — re-pin after the kit release: versioned surface, then the
 # deliberately unversioned vendor and brand-asset surfaces.
 for d in theme core map county ui; do
-  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.2.0/$d/|g" \
+  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.2.1/$d/|g" \
     index.html js/*.js js/*/*.js tools/verify.mjs
 done
 for d in vendor assets; do
