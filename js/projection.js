@@ -70,11 +70,37 @@
    exactly (0, 0) before the rescale, as it must, and every point on lon_0 to
    x = 0 exactly.
 
+   ── The same twelve, in dummy degrees ──────────────────────────────────────
+   projectPoint() output — the affine AND the Gudermannian shear correction
+   applied. This is the SPECIFICATION any other producer of this space has to
+   reproduce: agreement to 1e-9 dummy degrees (about half a millimetre) is the
+   registration contract, and a producer that skips the Gudermannian matches at
+   the centre and drifts to 765 m at the edges, so test a high-|y| point.
+
+     lng            lat          dummy x          dummy y
+     −96             23        0.7947477083   −2.8690890227
+     −96             29.5      0.7947477083   −1.5406289019
+     −100            40        0.1645913869    0.6569201213
+     −80             30        3.6529679418   −1.1962819573
+     −110            45.5     −1.2355505808    1.9371708604
+     −155            60       −5.5697326102    6.7049406421  (Alaska, unshifted)
+     −68             42        5.0224850448    1.6878038573
+     −113.9967       46.8721  −1.7556369197    2.3127478380  (Missoula, MT)
+     −125.2581512    49.3843626 −3.1546051115   3.1978918714  ┐ the archives'
+     −125.2581512    18.5921373 −5.0762148857  −2.8423860441  │ shared bbox
+     −66.9498943     49.3843626  4.7169014166   3.1892891466  │ corners
+     −66.9498943     18.5921373  6.6252771038  −2.8551786008  ┘
+
+   Several land outside PROJECTED_BOUNDS, which is correct and worth saying: the
+   bbox corners and unshifted Alaska are combinations of extremes from different
+   features, not points on the composite. See the extent note below.
+
    ── The dummy space ────────────────────────────────────────────────────────
    Albers metres are then mapped into fake degrees by ONE fixed affine
    transform: subtract the composite's projected centre, multiply by one scale
    factor shared by x and y (so the aspect ratio is preserved exactly), giving
-   x ∈ [−5, +5] and y ∈ [−3.0377, +3.0377].
+   x ∈ [−5, +5] and y ∈ [−3.0363, +3.0363] (the y half-height is the linear
+   3.0377 with the Gudermannian shear correction applied — see below).
 
    The constants are HARDCODED, from the measured extent of the composite —
    never derived from whatever geometry happens to be loaded. Two reasons, and
@@ -85,12 +111,21 @@
    fact measure identically to the millimetre — see below — but the app must not
    depend on that continuing to hold.)
 
-   MERCATOR SHEAR: MapLibre still runs Web Mercator over these fake degrees, so
-   the y axis is stretched by 1/cos(lat) away from the equator. Centring the box
-   on (0, 0) keeps |lat| ≤ 3.0377°, where that factor is 1.00141 — a 0.14%
-   vertical stretch at the very top and bottom edges of the composite, against
-   the ~40% Mercator was applying to northern Montana before. Below the
-   archives' own 6.5 m quantization at this map's scales, and invisible.
+   MERCATOR SHEAR, AND WHY THERE ISN'T ANY: MapLibre still runs Web Mercator
+   over these fake degrees, and Mercator's y is the inverse Gudermannian of
+   latitude. Emitting a y left LINEAR in Albers northing would therefore render
+   the plane stretched by 1/cos(lat) — 1.001407 at |lat| = 3.0377°, a 0.14%
+   vertical stretch accumulating to 765 m of displacement at the top and bottom
+   edges, and a 0.141% area error in a projection chosen BECAUSE it is
+   equal-area. So projectPoint() emits the GUDERMANNIAN of the linear value
+   (see gudermannian() below) and Mercator undoes it exactly: the rendered
+   plane is true Albers, and the y half-height is 3.0362967564, not 3.0377188926.
+
+   That correction is also what lets any other layer register against this one.
+   Under the linear scheme the mathematically natural recipe — project to
+   Albers, rescale linearly — is subtly WRONG, so an independent producer doing
+   the obvious thing lands up to 765 m out. Under the corrected scheme the
+   natural recipe is the correct one, and independent implementations converge.
    ========================================================================== */
 
 /* ── EPSG:5070 ────────────────────────────────────────────────────────────────
@@ -174,10 +209,10 @@ function albers5070(lng, lat) {
 
    Cross-checked live, the other way round: projectCounties() recomputes
    `bounds` from the fetched geometry after transforming it, and on the running
-   app that lands at [[−5.0000000009, −3.0377188935], [5.0000000001,
-   3.0377188935]] — within 1e-9 dummy units, half a millimetre on the ground, of
-   PROJECTED_BOUNDS below. The residual is the rounding of the four literals
-   here to the millimetre, and nothing else. */
+   app that lands within 1e-9 dummy units — half a millimetre on the ground — of
+   PROJECTED_BOUNDS below, whose y extremes are the Gudermannian-corrected
+   ±3.0362967564. The residual is the rounding of the four literals here to the
+   millimetre, and nothing else. */
 const EXTENT_M = Object.freeze({
   x0: -3111748.649, x1: 2258198.078,
   y0: -89909.057, y1: 3172568.668,
@@ -194,6 +229,38 @@ const CENTER_Y_M = (EXTENT_M.y0 + EXTENT_M.y1) / 2;   //  1541329.8055
 const M_TO_DEG = DUMMY_WIDTH_DEG / (EXTENT_M.x1 - EXTENT_M.x0);   // 1.8622158670e-6
 
 /**
+ * THE SHEAR CORRECTION. MapLibre runs Web Mercator over these fake degrees, and
+ * Mercator's y IS the inverse Gudermannian of latitude. So a dummy latitude
+ * left LINEAR in Albers northing renders stretched by 1/cos(lat) — 1.000152 at
+ * dummy lat 1, 1.001407 at the box edge — which accumulates to 765 m of
+ * displacement from a true Albers plane at the top and bottom. Albers was
+ * chosen BECAUSE it is equal-area, and that stretch is a 0.141% area error.
+ *
+ * Emitting the Gudermannian of the linear value instead means Mercator undoes
+ * it exactly, and the rendered plane is true Albers. Edge: linear 3.0377188926
+ * → 3.0362967564, a difference of 0.0014221362° (764 m).
+ *
+ * @param {number} deg a dummy latitude linear in Albers northing
+ * @returns {number} the latitude to emit so Mercator renders `deg`
+ */
+function gudermannian(deg) {
+  return (360 / Math.PI) * Math.atan(Math.exp((Math.PI * deg) / 180)) - 90;
+}
+
+/**
+ * Albers metres → dummy degrees: the affine, then the shear correction. The one
+ * place both are applied — projectPoint() and PROJECTED_BOUNDS are built from
+ * it so they cannot drift apart.
+ *
+ * @param {number} x Albers easting, metres
+ * @param {number} y Albers northing, metres
+ * @returns {[number, number]} [x, y] in dummy degrees
+ */
+function toDummy(x, y) {
+  return [(x - CENTER_X_M) * M_TO_DEG, gudermannian((y - CENTER_Y_M) * M_TO_DEG)];
+}
+
+/**
  * A lng/lat position from the boundary archives → the dummy space the map
  * actually renders. The one function every other transform here is built from.
  *
@@ -202,7 +269,7 @@ const M_TO_DEG = DUMMY_WIDTH_DEG / (EXTENT_M.x1 - EXTENT_M.x0);   // 1.862215867
  */
 export function projectPoint(position) {
   const [x, y] = albers5070(position[0], position[1]);
-  return [(x - CENTER_X_M) * M_TO_DEG, (y - CENTER_Y_M) * M_TO_DEG];
+  return toDummy(x, y);
 }
 
 /**
@@ -211,14 +278,18 @@ export function projectPoint(position) {
  * control, the zoom floor, the initial camera, the clean-URL default check and
  * the PNG export all frame against it.
  *
- * Fixed by construction — [[−5, −3.0377188926], [+5, +3.0377188926]], the
- * measured extent above run through the same affine transform as every
- * coordinate. Frozen because it is handed to the kit, which reads it and must
- * never be able to write it.
+ * Fixed by construction — [[−5, −3.0362967564], [+5, +3.0362967564]], the
+ * measured extent above run through toDummy(), the same affine AND shear
+ * correction as every coordinate. Frozen because it is handed to the kit, which
+ * reads it and must never be able to write it.
+ *
+ * The y half-height is 3.0362967564 rather than the linear 3.0377188926
+ * because of the Gudermannian above; the two must move together, which is why
+ * both go through toDummy() rather than repeating the arithmetic.
  */
 export const PROJECTED_BOUNDS = Object.freeze([
-  Object.freeze([(EXTENT_M.x0 - CENTER_X_M) * M_TO_DEG, (EXTENT_M.y0 - CENTER_Y_M) * M_TO_DEG]),
-  Object.freeze([(EXTENT_M.x1 - CENTER_X_M) * M_TO_DEG, (EXTENT_M.y1 - CENTER_Y_M) * M_TO_DEG]),
+  Object.freeze(toDummy(EXTENT_M.x0, EXTENT_M.y0)),
+  Object.freeze(toDummy(EXTENT_M.x1, EXTENT_M.y1)),
 ]);
 
 /* ── Transforming a decoded vintage ──────────────────────────────────────── */
