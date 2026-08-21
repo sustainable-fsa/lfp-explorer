@@ -28,6 +28,21 @@
                                alongside the USDA programs. 2017 onward in this
                                archive.
 
+   ── ONE SLICE, AND IT IS THE LFP ONE ──────────────────────────────────────
+   This map is the SECRETARIAL DROUGHT designations and nothing else: the
+   Secretary's own finding, for the disaster type the whole app is about. The
+   archive holds far more — the Presidential declarations above, and 21 other
+   disaster types from hurricanes to insufficient chill hours — and that is
+   where it stays: in the archive's downloads, cited in help.md, not behind a
+   control on a map that is here to sit beside three LFP maps.
+
+   So this family declares no `choices` (js/app.js § Enumerated choices keeps
+   the generic mechanism; nothing uses it today), emits no params of its own,
+   and every leaf below reads the two constants under § The slice rather than a
+   field of `sel`. The poster's filename still names the slice out loud —
+   `fsa-disasters_<year>_secretarial_drought.png` — because a file that outlives
+   this page must say which corner of the archive it came from.
+
    ── Primary and Contiguous ─────────────────────────────────────────────────
    A designation names PRIMARY counties — the ones the loss finding is about —
    and every county CONTIGUOUS to them qualifies for the same assistance. So
@@ -108,69 +123,34 @@ const LABEL_FMT = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric',
 });
 
-/* ── The two enumerated choices this family adds ──────────────────────────────
-   Neither is a dataset (there is one archive) and neither is a colour-by (there
-   is one quantity): each is a SLICE of the same table, and both are declared
-   here so app.js can wire the URL, the stored preference and the buttons
-   generically (js/app.js § Enumerated choices).
+/* ── The slice ────────────────────────────────────────────────────────────────
+   The two constants this whole interface IS: the declaration type, spelled the
+   way the payload's own dictionary spells it, and the disaster-type filter. They
+   were a pair of segmented controls — a `choices` declaration and two `?decl=`/
+   `?disaster=` params — until the map was narrowed to the one slice it is about
+   (see the header). Kept as NAMED constants rather than inlined, because every
+   decoder call below takes them as arguments and
+   `inst.getYear(sel.year, 'Secretarial', true)` says less at the call site than
+   the names do — and because if the other instruments ever come back, this is
+   where they come back to. */
 
-   The defaults are the story's: Secretarial, because that is the designation
-   the Farm Service Agency administers and the one the three interfaces before
-   this one are about; and drought, because this app is about the Livestock
-   Forage Program. */
-const DECL_VALUES = Object.freeze(['secretarial', 'presidential']);
-const DECL_NAMES = Object.freeze({
-  secretarial: 'Secretarial',
-  presidential: 'Presidential',
-});
-const SCOPE_VALUES = Object.freeze(['drought', 'all']);
+/** The instrument: the Secretary of Agriculture's own designation. */
+const DECL_NAME = 'Secretarial';
 
-const CHOICES = Object.freeze([
-  Object.freeze({
-    id: 'decl',
-    values: DECL_VALUES,
-    default: 'secretarial',
-  }),
-  Object.freeze({
-    id: 'disaster',
-    values: SCOPE_VALUES,
-    default: 'drought',
-  }),
-]);
+/** The same, as the poster's filename spells it. */
+const DECL_SLUG = 'secretarial';
+
+/** Drought only — the decoder's `droughtOnly` argument, and the one disaster
+    type this app is about. */
+const DROUGHT_ONLY = true;
 
 /* ── Small shared readings of `sel` ──────────────────────────────────────────
-   `sel` is the app's selection: {year, type, variable, dataset, decl, disaster,
-   vintage, universe}, plus an optional hasGeometry the card uses. Every
-   function below reads it and none of them mutate it. The two choice fields are
-   read defensively — a context built by hand (js/interfaces/registry.js §
-   viewSelection) carries neither — so a leaf always describes SOME slice rather
-   than throwing. */
-
-function declSlug(sel) {
-  const raw = sel && sel.decl;
-  return DECL_VALUES.includes(raw) ? raw : CHOICES[0].default;
-}
-
-/** The declaration type as the payload's dictionary spells it. */
-function declName(sel) {
-  return DECL_NAMES[declSlug(sel)];
-}
-
-function droughtOnly(sel) {
-  const raw = sel && sel.disaster;
-  return (SCOPE_VALUES.includes(raw) ? raw : CHOICES[1].default) === 'drought';
-}
-
-/** "drought designations" / "disaster designations" — the noun phrase the live
-    region, the table caption and the card all need. */
-function scopePhrase(sel) {
-  return droughtOnly(sel) ? 'drought designations' : 'disaster designations';
-}
-
-/** The scope as the poster and the caption name it. */
-function scopeLabel(sel) {
-  return droughtOnly(sel) ? 'drought' : 'all disaster types';
-}
+   `sel` is the app's selection: {year, type, variable, dataset, vintage,
+   universe}, plus an optional hasGeometry the card uses. Every function below
+   reads it and none of them mutate it. Nothing here reads a slice off it: the
+   slice is the two constants above, so a context built by hand
+   (js/interfaces/registry.js § viewSelection) describes the same map as the
+   app's own selection does. */
 
 function count(n) {
   return Number(n || 0).toLocaleString('en-US');
@@ -245,12 +225,10 @@ function countyView(data, xw, sel, id) {
   if (!inst || !xw) return out;
 
   const year = sel.year;
-  const type = declName(sel);
-  const drought = droughtOnly(sel);
   const byDecl = new Map();
 
   for (const fipsId of xw.toFips(sel.vintage, id)) {
-    const rows = inst.countyRowsFor(fipsId, year, type, drought);
+    const rows = inst.countyRowsFor(fipsId, year, DECL_NAME, DROUGHT_ONLY);
     let partRole = null;
     let partName = '';
     for (const row of rows) {
@@ -313,23 +291,15 @@ function colorsFor(data, xw, sel) {
     unmatchedKeys: 0,
     unmatchedRows: 0,
     universe: Number(sel && sel.universe) || 0,
-    /* Whether this declaration type carries this scope ANYWHERE in the archive.
-       The difference between "no county was designated in 2025" and "this
-       instrument does not designate for this" — and the second is the honest
-       answer for Presidential drought, which is empty in every year. */
-    anyEver: true,
   };
   if (!data || typeof data.getYear !== 'function') {
     return { colors, unmatchedFips: [], stats };
   }
 
-  const byFips = data.getYear(sel.year, declName(sel), droughtOnly(sel));
-  const meta = data.sliceMeta(sel.year, declName(sel), droughtOnly(sel));
+  const byFips = data.getYear(sel.year, DECL_NAME, DROUGHT_ONLY);
+  const meta = data.sliceMeta(sel.year, DECL_NAME, DROUGHT_ONLY);
   stats.rows = meta.rows;
   stats.declarations = meta.declarations;
-  if (!meta.rows && typeof data.hasAny === 'function') {
-    stats.anyEver = data.hasAny(declName(sel), droughtOnly(sel));
-  }
 
   if (!xw) {
     // The honest failure: treating Census keys as FSA keys would paint a map
@@ -423,15 +393,15 @@ function legendKey() {
 function tooltip(data, xw, sel, id) {
   const view = countyView(data, xw, sel, id);
   if (!view.role) return legendNoDataLabel(sel);
-  const word = droughtOnly(sel) ? 'drought designation' : 'designation';
   if (view.role === PRIMARY) {
     // The designations that NAMED this county, not every one that reaches it:
     // the number has to be the one the colour is about.
     let named = 0;
     for (const entry of view.entries) if (entry.role === PRIMARY) named += 1;
-    return PRIMARY + ' — ' + plural(named, word, word + 's');
+    return PRIMARY + ' — '
+      + plural(named, 'drought designation', 'drought designations');
   }
-  return CONTIGUOUS + (droughtOnly(sel) ? ' (drought)' : '');
+  return CONTIGUOUS + ' (drought)';
 }
 
 /* ── The county card ─────────────────────────────────────────────────────── */
@@ -467,9 +437,9 @@ function cardRows(data, xw, sel, id) {
   if (!view.role) {
     rows.push({
       term: sel.year + ' designations',
-      value: 'Not designated: this archive records no ' + declName(sel) + ' '
-        + (droughtOnly(sel) ? 'drought ' : '')
-        + 'designation naming this county or a neighbor in ' + sel.year + '.',
+      value: 'Not designated: this archive records no ' + DECL_NAME
+        + ' drought designation naming this county or a neighbor in '
+        + sel.year + '.',
       isNote: true,
     });
     if (sel.hasGeometry === false) rows.push(boundaryNote(sel));
@@ -632,23 +602,20 @@ function cardBody(container, data, xw, sel, id) {
 
   const caption = htmlEl('p', { class: 'decl-caption', id: CAPTION_ID },
     plural(view.entries.length,
-      declName(sel) + ' ' + (droughtOnly(sel) ? 'drought ' : '')
-        + 'designation in ' + sel.year,
-      declName(sel) + ' ' + (droughtOnly(sel) ? 'drought ' : '')
-        + 'designations in ' + sel.year)
+      DECL_NAME + ' drought designation in ' + sel.year,
+      DECL_NAME + ' drought designations in ' + sel.year)
     + ', newest approval first.');
 
   container.replaceChildren(caption, list);
   return null;
 }
 
-/** What this interface adds to the card's render key, beyond the county, view,
-    dataset, year and type the app already keys on: which declaration type and
-    which scope, because both change the list entirely and neither is in the
-    app's own key. */
-function cardKey(sel) {
-  return declSlug(sel) + '|' + (droughtOnly(sel) ? 'drought' : 'all');
-}
+/* NO cardKey(). This family used to add the declaration type and the scope to
+   the card's render key, because either one changed the list entirely and
+   neither was in the app's own key. Both are constants now, so the app's key —
+   county, view, dataset, year, type — is the whole of what can change here, and
+   an extra leaf that always answered the same string would be a hook for a
+   reader to wonder about (js/card-content.js § keyOf treats it as optional). */
 
 /* ── The live region ─────────────────────────────────────────────────────── */
 
@@ -670,22 +637,12 @@ function cardKey(sel) {
  * @returns {string}
  */
 function liveSentence(sel, shown, total, missingGeometry, stats) {
-  const head = sel.year + ' ' + declName(sel) + ' ' + scopePhrase(sel);
+  const head = sel.year + ' ' + DECL_NAME + ' drought designations';
   if (!stats || !stats.universe) return head + ': nothing to show yet.';
 
-  /* An empty map has two very different causes, and a reader pressing
-     "Presidential" while the map is set to drought deserves the second one:
-     FEMA's major-disaster declarations in this archive never carry the drought
-     disaster type, so that combination is empty in every year rather than in
-     this one. */
-  if (!stats.rows) {
-    if (stats.anyEver === false) {
-      return head + ': none. This archive\'s ' + declName(sel) + ' record '
-        + 'carries no drought designations in any year — switch the disaster '
-        + 'type to see what it does carry.';
-    }
-    return head + ': none in this archive.';
-  }
+  // A year the Secretary designated no county for drought in. Said as the fact
+  // it is: the map is empty because the record is, not because it failed.
+  if (!stats.rows) return head + ': none in this archive.';
 
   let msg = head + ': ' + count(stats.primary) + ' primary and '
     + count(stats.contiguous) + ' contiguous counties of '
@@ -747,7 +704,7 @@ function tableRows(data, xw, sel) {
   if (!inst) return rows;
   const dash = '—';
 
-  for (const [fipsId, entry] of inst.getYear(sel.year, declName(sel), droughtOnly(sel))) {
+  for (const [fipsId, entry] of inst.getYear(sel.year, DECL_NAME, DROUGHT_ONLY)) {
     for (const row of entry.primary.concat(entry.contiguous)) {
       const decl = row.decl;
       rows.push({
@@ -786,10 +743,10 @@ function tableRows(data, xw, sel) {
 function tableCaption(sel, nRows) {
   const inst = instanceFor();
   const n = Number(nRows) || 0;
-  const head = sel.year + ' — ' + declName(sel) + ', ' + scopeLabel(sel) + ' — '
+  const head = sel.year + ' — ' + DECL_NAME + ', drought — '
     + plural(n, 'county designation', 'county designations');
   if (!inst) return head + '.';
-  const meta = inst.sliceMeta(sel.year, declName(sel), droughtOnly(sel));
+  const meta = inst.sliceMeta(sel.year, DECL_NAME, DROUGHT_ONLY);
   return head + ' under '
     + plural(meta.declarations, 'declaration', 'declarations') + '.';
 }
@@ -797,8 +754,7 @@ function tableCaption(sel, nRows) {
 /** What makes one built table different from another: the declaration type, the
     scope and the year. Not the county or the camera. */
 function tableCacheKey(sel) {
-  return declSlug(sel) + '|' + (droughtOnly(sel) ? 'drought' : 'all') + '|'
-    + sel.year;
+  return DECL_SLUG + '|drought|' + sel.year;
 }
 
 /* ── The poster ──────────────────────────────────────────────────────────── */
@@ -807,12 +763,14 @@ function exportTitle() {
   return 'USDA Disaster Designations';
 }
 
-/** `fsa-disasters_<year>_<secretarial|presidential>_<drought|all>.png`. The
-    three things that tell two of these posters apart, and nothing else: this
-    family has no pasture type and no colour-by. */
+/** `fsa-disasters_<year>_secretarial_drought.png`. The year is the only thing
+    that tells two of these posters apart — this family has no pasture type and
+    no colour-by — and the slice is spelled out anyway, because a poster outlives
+    the page it came from and "fsa-disasters_2021" would not say which corner of
+    a 22-disaster-type archive it holds. */
 function exportFilename(sel) {
-  return ['fsa-disasters', String(sel.year), declSlug(sel),
-    droughtOnly(sel) ? 'drought' : 'all'].join('_') + '.png';
+  return ['fsa-disasters', String(sel.year), DECL_SLUG, 'drought']
+    .join('_') + '.png';
 }
 
 /**
@@ -826,11 +784,10 @@ function exportFilename(sel) {
  * approval date at all for the slice, which is the honest silence.
  */
 function exportSubtitle(sel) {
-  const head = sel.year + ' ' + declName(sel) + ' designations for '
-    + scopeLabel(sel);
+  const head = sel.year + ' ' + DECL_NAME + ' designations for drought';
   const inst = instanceFor();
   const latest = inst
-    ? inst.latestApproval(sel.year, declName(sel), droughtOnly(sel)) : null;
+    ? inst.latestApproval(sel.year, DECL_NAME, DROUGHT_ONLY) : null;
   if (!latest) return head;
   return head + ' · approved through ' + LABEL_FMT.format(latest);
 }
@@ -845,12 +802,11 @@ function exportCredit() {
 }
 
 /* ── Pending state ───────────────────────────────────────────────────────────
-   There is nothing to park. This family's two choices are enumerated in this
-   file (see § CHOICES) and its single dataset needs no dictionary from a
-   payload, so `?decl=` and `?disaster=` are resolved at boot against static
-   lists — unlike a pasture type or a week, which cannot be validated until the
-   data says what exists. Hence no applyPending() leaf: app.js only calls one
-   for the controls a family declares (js/app.js § applyDataset). */
+   There is nothing to park, and now nothing to resolve either: this family has
+   one dataset, one instrument and one disaster type, none of which needs a
+   dictionary from a payload before it can be validated — unlike a pasture type
+   or a week. Hence no applyPending() leaf: app.js only calls one for the
+   controls a family declares (js/app.js § applyDataset). */
 
 /**
  * What to say when the shared year has to move to come on screen here.
@@ -873,11 +829,11 @@ function clampNotice(from, to) {
 /* ── The descriptor ──────────────────────────────────────────────────────── */
 
 /**
- * Interface 4, and the last: with it the switcher tells the whole story — when
- * livestock may graze, how dry it was, what that qualified the county for, and
- * the wider designations around it. Frozen, like every descriptor: the app reads
- * it on every repaint and a mutated leaf would mean the legend and the paint
- * disagreed.
+ * Interface 4, and the last: with it the switcher tells the whole story — where
+ * it was dry, when that dryness had to fall to count, what the two of them
+ * qualified the county for, and the wider designations around it. Frozen, like
+ * every descriptor: the app reads it on every repaint and a mutated leaf would
+ * mean the legend and the paint disagreed.
  */
 export const DISASTERS = Object.freeze({
   id: 'disasters',
@@ -892,10 +848,10 @@ export const DISASTERS = Object.freeze({
       "2011, 2012" — and applyYearDomain() then re-authors the slider from the
       payload and clamps, with clampNotice() saying why. */
   years: Object.freeze({ min: 2011, max: 2026 }),
-  /** No pasture type, no colour-by (one quantity, two categories) and no week.
-      What it does have is two enumerated choices of its own — see CHOICES. */
+  /** No pasture type, no colour-by (one quantity, two categories), no week —
+      and, since this map is the one slice named in the header, no `choices`
+      either. The shared year is the whole of its state. */
   controls: Object.freeze({ type: false, variable: false, week: false }),
-  choices: CHOICES,
   reduceFips,
   colorsFor,
   legend: Object.freeze({
@@ -907,7 +863,6 @@ export const DISASTERS = Object.freeze({
   tooltip,
   cardRows,
   cardBody,
-  cardKey,
   liveSentence,
   table: Object.freeze({
     columns: tableColumns,

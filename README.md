@@ -4,20 +4,19 @@ The seed of the **Sustainable FSA Explorer** — a single-page web application
 visualizing the data assembled by the [Sustainable FSA
 project](https://sustainable-fsa.com). It is growing into a multi-interface
 explorer of the data used to administer the Livestock Forage Disaster
-Program. Shipped so far: **1 · Grazing periods** — USDA Farm Service Agency
-**Normal Grazing Periods** (2008–2026, all FSA counties and pasture types,
-previously the
+Program. Its four views: **1 · Drought monitor** — the weekly worst U.S.
+Drought Monitor class per county, 2000 onward, under three
+county-aggregation conventions; **2 · Grazing periods** (the default view) —
+USDA Farm Service Agency **Normal Grazing Periods** (2008–2026, all FSA
+counties and pasture types, previously the
 [fsa-normal-grazing-period](https://github.com/sustainable-fsa/fsa-normal-grazing-period)
 dashboard) alongside the
-[nClimGrid climatology counterfactual](https://github.com/sustainable-fsa/nclimgrid-normal-grazing-period)
-— **2 · Drought monitor** — the weekly worst U.S. Drought Monitor class per
-county, 2000 onward, under three county-aggregation conventions —
+[NAP-190-derived nClimGrid counterfactual](https://github.com/sustainable-fsa/nclimgrid-normal-grazing-period);
 **3 · LFP eligibility** — the qualifying drought events behind LFP payment
 determinations, from FSA's FOIA'd records, its weekly web publications, and
-a reanalysis derived from the Drought Monitor under four county-aggregation
-conventions — and **4 · Disaster designations** — USDA Secretarial
-designations and Presidential major-disaster declarations, the broader
-instruments around the program.
+a reanalysis derived from the Drought Monitor; and **4 · Disaster
+designations** — USDA Secretarial disaster designations for drought, the
+broader instrument around the program.
 
 **Live app:** <https://sustainable-fsa.com/lfp-explorer/>
 

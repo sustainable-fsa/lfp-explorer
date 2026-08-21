@@ -33,7 +33,8 @@
                           superseded version behind it.
      Derived from USDM    the same statutory ladder recomputed from the U.S.
                           Drought Monitor, under four different conventions for
-                          "any area of the county". NOT an FSA determination,
+                          "any area of the county" — of which this app offers
+                          three (see OFFERED_SOURCES). NOT an FSA determination,
                           and every string in this file that describes it says
                           so — including the poster's credit line.
 
@@ -130,20 +131,45 @@ const DEFAULT_TYPE = 'Native Pasture';
 const ALL_TYPES_LABEL = 'All types (worst case)';
 
 /**
- * The four ways to read "any area of the county", with the UI's own words for
- * them. The ids are the archive names, in the payload's own order, and they are
- * also the `?source=` slug — one string, so nothing has to be mapped.
+ * The ways to read "any area of the county", with the UI's own words for them.
+ * The ids are the archive names — the payload's own strings — and they are also
+ * the `?source=` slug, so nothing has to be mapped.
  *
- * The default is the FSA LFP boundary aggregation, which is the same convention
- * the drought-monitor interface defaults to and for the same reason: it is the
- * geometry the PROGRAM is administered on.
+ * All FOUR are here because the payload carries four, and a record that names
+ * one of them has to be printable whichever it is (the card's Aggregation row).
+ * What the PICKER offers is the narrower list below.
  */
 const SOURCE_LABELS = Object.freeze({
   'usdm-counties-fsa-lfp': 'FSA LFP boundaries',
   'usdm-counties-reported': 'NDMC reported',
+  'usdm-counties': 'Census Counties',
   'usdm-counties-census-2020': 'Census 2020',
-  'usdm-counties': 'Census vintage-matched',
 });
+
+/**
+ * The three the picker offers, in the order it offers them.
+ *
+ * THE ARCHIVE PUBLISHES FOUR and this list is three: `usdm-counties-census-2020`
+ * — the 2020 county set held fixed across the whole record — is a defensible
+ * reading, but it is a fourth answer to a question the other three already
+ * disagree about, and the app's job here is to show that the answer depends on
+ * the boundary file, not to enumerate every boundary file. It stays in the data
+ * (the decoder reads all four, and the archive's downloads carry all four;
+ * help.md names it), and a `?source=` asking for it falls back to the default
+ * with a warning like any other value this app does not offer (see resolve()).
+ *
+ * NOT the payload's order, which is alphabetical: this is most-relevant-first,
+ * and the first entry is the default.
+ */
+const OFFERED_SOURCES = Object.freeze([
+  'usdm-counties-fsa-lfp',
+  'usdm-counties-reported',
+  'usdm-counties',
+]);
+
+/** The convention a session with no opinion reads: the geometry the PROGRAM is
+    administered on, which is the same convention the drought-monitor interface
+    defaults to and for the same reason. */
 const DEFAULT_SOURCE = 'usdm-counties-fsa-lfp';
 
 /**
@@ -904,7 +930,7 @@ function exportTitle() {
 }
 
 /** `fsa-lfp-eligibility_<archive>[_<aggregation>]_<year>_<type>_<variable>.png`.
-    The aggregation is in the name only where there is one to choose: four
+    The aggregation is in the name only where there is one to choose: three
     posters of the same year and type differ by nothing else. */
 function exportFilename(sel) {
   const parts = ['fsa-lfp-eligibility', datasetById(sel.dataset).id];
@@ -951,7 +977,8 @@ function exportLegendLines(sel) {
 /* ── Controls ────────────────────────────────────────────────────────────────
    Two things the app builds from the payload and cannot guess: the type select's
    options (fifteen names plus a sentinel that is in no dictionary) and the
-   aggregation select's (four conventions, in the payload's own order). */
+   aggregation select's (the three conventions this app offers of the four the
+   payload carries — OFFERED_SOURCES, in the picker's own order). */
 
 /**
  * The pasture-type options, sentinel first.
@@ -969,26 +996,38 @@ function typeOptions(data) {
     .concat(names.map((t) => ({ value: t, label: t })));
 }
 
+/** The conventions this payload has AND this app offers, in the picker's order.
+    The intersection, not either list alone: the payload is the authority on what
+    exists (an archive rebuild could retire one) and OFFERED_SOURCES is the
+    authority on what is on offer. */
+function offeredIn(data) {
+  const list = (data && typeof data.sources === 'function') ? data.sources() : [];
+  return OFFERED_SOURCES.filter((id) => list.includes(id));
+}
+
 /** The aggregation picker's options, and the resolution of a parked `?source=`.
     Grouped so app.js reads one leaf rather than four. */
 const source = Object.freeze({
   /** @returns {Array<{value: string, label: string}>} */
   options(data) {
-    const list = (data && typeof data.sources === 'function') ? data.sources() : [];
-    return list.map((id) => ({ value: id, label: sourceLabel(id) }));
+    return offeredIn(data).map((id) => ({ value: id, label: sourceLabel(id) }));
   },
   /** The convention a session with no opinion reads: the boundaries the program
-      is administered on. */
+      is administered on — or, if a rebuilt payload no longer carries it, the
+      first one that is both offered and present. */
   defaultId(data) {
-    const list = (data && typeof data.sources === 'function') ? data.sources() : [];
+    const list = offeredIn(data);
     if (!list.length) return null;
     return list.includes(DEFAULT_SOURCE) ? DEFAULT_SOURCE : list[0];
   },
   label: sourceLabel,
   /**
-   * Resolve a parked `?source=` (or stored) slug against the dictionary that has
-   * just arrived. Anything unknown falls back to the default rather than
-   * blanking the map — the same discipline every other param gets.
+   * Resolve a parked `?source=` (or stored) slug against what this payload
+   * offers. Anything else falls back to the default rather than blanking the
+   * map — the same discipline every other param gets, and the path a link
+   * carrying the one convention the app no longer offers takes
+   * (`usdm-counties-census-2020`: still in the data, no longer in the picker,
+   * so a URL naming it is warned about and read at the default).
    *
    * @param {object} data the arrived instance
    * @param {string|null} raw
@@ -997,9 +1036,8 @@ const source = Object.freeze({
   resolve(data, raw) {
     const fallback = source.defaultId(data);
     if (raw == null || raw === '') return fallback;
-    const list = (data && typeof data.sources === 'function') ? data.sources() : [];
     const want = String(raw).toLowerCase();
-    if (list.includes(want)) return want;
+    if (offeredIn(data).includes(want)) return want;
     console.warn('[elig/iface] unknown aggregation ' + JSON.stringify(String(raw))
       + ' — falling back to ' + JSON.stringify(fallback) + '.');
     return fallback;
@@ -1079,7 +1117,7 @@ export const ELIGIBILITY = Object.freeze({
       at 2025 and applyYearDomain() re-authors the slider to say so. */
   years: Object.freeze({ min: 2008, max: 2026 }),
   /** Which shared controls this family answers to. `source` is new: one archive
-      here publishes four readings of the same question. */
+      here publishes several readings of the same question. */
   controls: Object.freeze({ type: true, variable: true, week: false, source: true }),
   /** The type dictionary is the same fifteen names in all three archives, so
       one remembered type serves the whole interface — unlike the grazing

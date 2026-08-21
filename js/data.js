@@ -49,8 +49,11 @@ import { NGP } from './interfaces/ngp.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
-/** The official dataset's descriptor — the one `initData()` boots. */
-const OFFICIAL = NGP.datasets[0];
+/** The official dataset's descriptor — the one `initData()` boots. Read off the
+    family's own `default` flag rather than off its position in the list, which
+    is the reader's order and not a statement about which payload boots
+    (js/interfaces/registry.js § defaultDatasetOf). */
+const OFFICIAL = NGP.datasets.find((d) => d.default) || NGP.datasets[0];
 
 /** Default payload location, relative to the app page — the archive repo's own
     committed copy, one directory up. Deliberately RELATIVE and not the

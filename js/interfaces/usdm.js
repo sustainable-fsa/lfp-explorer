@@ -23,12 +23,13 @@
    is more than one county layer to report it against. Three archives publish
    the same schema against three different ideas of a county, and the
    difference between them is a fact about the data rather than a modelling
-   choice:
+   choice. They are listed — in the seg, and here — from the most general idea
+   of a county to the most program-specific:
 
-     FSA LFP boundaries  FSA's own FOIA'd LFP boundary statistics — the county
-                         set the PROGRAM is administered on, and the default
-                         here for exactly that reason. Rectangular (every
-                         county in every week) and Connecticut-clean.
+     Census counties     vintage-matched TIGER counties. The one non-rectangular
+                         set: a county absent from a week is a real '.' in the
+                         series, and the old Connecticut counties give way to
+                         the planning regions partway through the record.
      NDMC reported       NDMC's published county statistics. MEASURED FACT:
                          Connecticut appears ONLY as its nine planning regions
                          (09110–09190) for the entire record, with no county
@@ -37,10 +38,11 @@
                          dataset, and the live region counts the nine areas out
                          loud. Dropping them silently is the one thing this
                          interface must not do.
-     Census counties     vintage-matched TIGER counties. The one non-rectangular
-                         set: a county absent from a week is a real '.' in the
-                         series, and the old Connecticut counties give way to
-                         the planning regions partway through the record.
+     FSA LFP boundaries  FSA's own FOIA'd LFP boundary statistics — the county
+                         set the PROGRAM is administered on, and the DEFAULT
+                         here for exactly that reason, last in the list though
+                         it is. Rectangular (every county in every week) and
+                         Connecticut-clean.
 
    All three are keyed by Census FIPS and the map draws FSA counties, so all
    three arrive through js/decoders/crosswalk.js.
@@ -110,7 +112,10 @@ const ABSENT_PHRASE = "Not in this week's county set";
 const ABSENT = -1;
 
 /**
- * The three archives, declaratively.
+ * The three archives, declaratively, in the order the seg shows them (see the
+ * header) — which is NOT the order of preference: `default: true` marks the one
+ * the app opens on and the one `?dataset=` is elided at, wherever in the list it
+ * sits (js/interfaces/registry.js § defaultDatasetOf).
  *
  * All three declare schema `usdm-max-class/1` AND the same `week0`, so `expect`
  * cannot tell them apart — `expectedDataset` is the tripwire, checked against
@@ -120,13 +125,13 @@ const ABSENT = -1;
  */
 const DATASETS = Object.freeze([
   Object.freeze({
-    id: 'fsa-lfp',
-    label: 'FSA LFP boundaries',
-    url: '../usdm-counties-fsa-lfp/usdm-counties-fsa-lfp.json',
+    id: 'census',
+    label: 'Census counties',
+    url: '../usdm-counties/usdm-counties.json',
     schema: 'usdm-max-class/1',
     keySpace: 'fips',
     expect: Object.freeze({ week0: '2000-01-04' }),
-    expectedDataset: 'usdm-counties-fsa-lfp',
+    expectedDataset: 'usdm-counties',
     decode: makeUsdmData,
   }),
   Object.freeze({
@@ -140,22 +145,30 @@ const DATASETS = Object.freeze([
     decode: makeUsdmData,
   }),
   Object.freeze({
-    id: 'census',
-    label: 'Census counties',
-    url: '../usdm-counties/usdm-counties.json',
+    id: 'fsa-lfp',
+    label: 'FSA LFP boundaries',
+    url: '../usdm-counties-fsa-lfp/usdm-counties-fsa-lfp.json',
     schema: 'usdm-max-class/1',
     keySpace: 'fips',
     expect: Object.freeze({ week0: '2000-01-04' }),
-    expectedDataset: 'usdm-counties',
+    expectedDataset: 'usdm-counties-fsa-lfp',
+    /** The county set the program is administered on — see the header. */
+    default: true,
     decode: makeUsdmData,
   }),
 ]);
+
+/** The dataset the app opens on, for the fallbacks below: an id this interface
+    does not know must resolve to the DEFAULT rather than to whichever archive
+    happens to be listed first, or a stale `?dataset=` would quietly repaint the
+    map as the Census county set. */
+const DEFAULT_DATASET = DATASETS.find((d) => d.default) || DATASETS[0];
 
 /* ── Small shared readings ───────────────────────────────────────────────── */
 
 function datasetById(id) {
   for (const ds of DATASETS) if (ds.id === id) return ds;
-  return DATASETS[0];
+  return DEFAULT_DATASET;
 }
 
 function datasetLabel(sel) {
@@ -952,15 +965,20 @@ function applyPending(data, pending) {
 /* ── The descriptor ──────────────────────────────────────────────────────── */
 
 /**
- * Interface 2. Frozen, like every descriptor: the app reads it on every repaint
+ * Interface 1 of the story, and where it starts: the map that says where the
+ * drought was. Frozen, like every descriptor: the app reads it on every repaint
  * and a mutated leaf would mean the legend and the paint disagreed.
+ *
+ * FIRST IN THE SWITCHER AND NOT THE DEFAULT VIEW — the app still boots on the
+ * grazing periods (js/interfaces/registry.js § DEFAULT_VIEW), so this family's
+ * payloads are still fetched on the first press and never at boot.
  */
 export const USDM = Object.freeze({
   id: 'usdm',
   label: 'Drought monitor',
   /** See ngp.js — the map's accessible name follows the active family. */
   mapLabel: 'Choropleth map of weekly U.S. Drought Monitor drought classes by county',
-  order: 2,
+  order: 1,
   datasets: DATASETS,
   /** 2000-01-04 is the first USDM week ever published. The ceiling moves every
       Tuesday, so it is the widest year the app will validate — the slider's real

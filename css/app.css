@@ -194,10 +194,10 @@ main {
    `white-space: nowrap`, both sized for the short navbar labels the kit was
    drawn for ("Start · End · Duration"). The SCOPING groups — which data family,
    and which dataset within it — are named in words a reader can act on
-   ("nClimGrid climatology", "FSA LFP boundaries"), and two or three of those
-   cannot share a 248px drawer row without spilling out of their own borders. So
-   these groups stack instead, with the fused radii and the shared border
-   rotated a quarter turn; every other .seg-btns in the app keeps the kit's
+   ("NAP-190 Derived (nClimGrid)", "FSA LFP boundaries"), and two or three of
+   those cannot share a 248px drawer row without spilling out of their own
+   borders. So these groups stack instead, with the fused radii and the shared
+   border rotated a quarter turn; every other .seg-btns in the app keeps the kit's
    geometry. min-height is deliberately NOT set here, so the kit's own 40px
    touch target (theme §6) still wins on a pointerless device.
 
@@ -207,12 +207,9 @@ main {
    which of them is the payable one. The grazing periods' three-word group keeps
    the kit's row.
 
-   So do the disaster designations' two groups (#dis-decltype-seg,
-   #dis-scope-seg), and deliberately: "Secretarial / Presidential" and
-   "Drought / All disasters" are two short labels each, which the kit's fused
-   row holds at half the column apiece with room to spare. This paragraph exists
-   so the next reader does not add them to the list above for symmetry — the
-   list is for groups whose words do not fit, not for scoping groups as such. */
+   The disaster designations have no group at all: that view is one slice of one
+   archive and the shared year is the whole of its state (js/interfaces/
+   disasters.js § ONE SLICE). */
 #view-seg .seg-btns,
 #ngp-dataset-seg .seg-btns,
 #usdm-dataset-seg .seg-btns,

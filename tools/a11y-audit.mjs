@@ -69,12 +69,13 @@
                         where two native selects and two seg groups share one
                         drawer, and a label association or a name that is only a
                         colour would show up there first
-         disasters-view the fourth interface: the disaster designations, whose
-                        drawer is two two-way seg pairs and whose card is the
-                        app's only one built from a LIST rather than a chart —
-                        one entry per declaration, each with a role chip that has
-                        to carry its meaning in text and not only in a colour.
-                        Nothing else in the app produces that markup
+         disasters-view the fourth interface: the disaster designations, which
+                        add NO drawer controls of their own (that map is one
+                        slice of one archive) and whose card is the app's only one
+                        built from a LIST rather than a chart — one entry per
+                        declaration, each with a role chip that has to carry its
+                        meaning in text and not only in a colour. Nothing else in
+                        the app produces that markup
          disasters-table the same view's data table: eleven columns and one row
                         per county designation, which is structurally the widest
                         table the app builds. Entered as a PAIR with the state
