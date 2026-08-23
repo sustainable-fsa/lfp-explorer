@@ -250,6 +250,45 @@ async function open({
       errors.push('render evidence (ngpReady) never fired: ' + String(err).split('\n')[0]);
     }
   }
+
+  /* A DEEP-LINKED VIEW LANDS AFTER ngpReady, so waiting on that flag alone is a
+     race — and it is a race this suite USED TO WIN by accident.
+     `ngpReady` is stamped once, at the end of boot, and boot brings up the
+     DEFAULT view; a `?view=` other than that is a transition the app starts
+     afterwards (readInitialState parks it, boot's tail calls setView). It has to
+     fetch a payload and, since the geometry follows the dataset, an archive.
+     `CONFIG.settleMs` was covering that by being longer than the transition
+     happened to take.
+
+     It stopped covering it the moment the boundary swap became double-buffered:
+     the swap now waits for the incoming archive to be DRAWABLE before it flips,
+     which is the whole point, and on a cold CI runner against a cold CDN that is
+     seconds rather than milliseconds. The result was four failures on
+     `?view=usdm&…` describing a page still showing the grazing periods — the app
+     working exactly as designed, measured too early.
+
+     So wait for the app's own marker. `data-ngp-view` is written at the END of
+     applyDataset(), after the boundary swap has landed (MARKERS § view), which
+     makes it the one signal that means "the view the URL asked for is what is on
+     screen". The authority table already worked this way with
+     `settleBoundary()`; this is the same rule, in the one place every section
+     inherits it. */
+  const wantView = new URLSearchParams(String(query).replace(/^\?/, '')).get('view');
+  if (requireReady && ready && wantView) {
+    try {
+      await page.waitForFunction(
+        (v) => document.documentElement.dataset.ngpView === v,
+        wantView, { timeout: CONFIG.switchMs });
+      // And the pill down, so the next assertion is not reading a page mid-note.
+      await page.waitForFunction(
+        () => document.getElementById('app-note').hidden,
+        null, { timeout: CONFIG.switchMs });
+    } catch (err) {
+      errors.push(`the deep-linked view "${wantView}" never landed: `
+        + String(err).split('\n')[0]);
+    }
+  }
+
   await page.waitForTimeout(CONFIG.settleMs);
 
   /** Drain the console errors seen so far and report them under `label`. */
