@@ -127,6 +127,25 @@ jobs:
               "https://sustainable-fsa.com/$path" -o "$root/$path"
           done < tools/payloads.txt
 
+      # The county-authority contract: does a program year resolve to the
+      # tileset the DATA says it should? No browser — this is policy, and a map
+      # drawn on the wrong boundary vintage looks perfect. Every county has a
+      # colour, every shape is a real county, and the boundaries are simply from
+      # the wrong year; there is no pixel to inspect. So the gate asks the only
+      # authority that can answer, which is the published data: usdm-counties'
+      # '.' sentinels make each year's county set observable, and it has to
+      # equal the resolved tileset's set across all 27 years.
+      #
+      # Runs AFTER the staging step above, because it reads the payloads from
+      # their sibling slots to check each dataset against the authority it
+      # declares. It also fetches the 21 county index sidecars live from
+      # https://data.sustainable-fsa.com — a THIRD contract origin, and the
+      # first thing in this workflow to touch it. The app itself does not yet:
+      # js/boundaries.js is not on the render path until the cut-over, so the
+      # kit pin above is still v0.2.1 and this step is the only consumer.
+      - name: County authority contract
+        run: node tools/check-boundaries.mjs
+
       # The harnesses serve the WORKSPACE root — the parent of this checkout —
       # so the app sits at /lfp-explorer/ exactly as it deploys.
       # On a runner the checkout is at $GITHUB_WORKSPACE, whose basename is the

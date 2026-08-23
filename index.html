@@ -26,6 +26,17 @@
            and why the sweep is all-or-nothing (two core.js URLs are two
            module instances and two `viewport` pub-subs), is in
            README § Developing against an unreleased kit.
+         · data.sustainable-fsa.com is ADDED to connect-src, and to nothing
+           else. That origin serves the county PMTiles archives and their index
+           sidecars (js/boundaries.js) — a separate host because it does HTTP
+           range requests, which GitHub Pages does not.
+
+           worker-src is deliberately NOT widened, which is the wrong reflex
+           here. MapLibre 5 runs a registered protocol handler on the MAIN
+           thread: the tile worker finds no `pmtiles` handler in its own copy of
+           the registry and forwards the request back to the page, so the range
+           fetches are ordinary document-scoped fetches governed by connect-src.
+           `worker-src blob:` still covers exactly what it covered before.
          · manifest-src 'self' is ADDED. The snippet has no web app manifest;
            this app ships one, and with default-src 'none' a manifest fetch is
            blocked unless manifest-src says otherwise.
@@ -41,7 +52,7 @@
     style-src 'self' https://sustainable-fsa.com;
     font-src 'self' https://sustainable-fsa.com;
     img-src 'self' data: blob: https://sustainable-fsa.com;
-    connect-src 'self' https://sustainable-fsa.com;
+    connect-src 'self' https://sustainable-fsa.com https://data.sustainable-fsa.com;
     manifest-src 'self';
     base-uri 'none';
     form-action 'none';
@@ -119,6 +130,11 @@
        stylesheet is loaded from. -->
   <link rel="preload" as="font" type="font/woff2" crossorigin
         href="https://sustainable-fsa.com/style/v0.2.1/theme/fonts/roboto-v51-latin-wght.woff2">
+
+  <!-- The county tile origin. A preconnect rather than a preload: what is
+       fetched first is a sidecar whose URL depends on the active dataset, so
+       there is nothing to name here — but the TLS handshake can start now. -->
+  <link rel="preconnect" href="https://data.sustainable-fsa.com" crossorigin>
 
   <link rel="stylesheet" href="https://sustainable-fsa.com/style/vendor/maplibre-gl-5.18.0/maplibre-gl.css">
   <link rel="stylesheet" href="https://sustainable-fsa.com/style/v0.2.1/theme/sfsa-theme.css">

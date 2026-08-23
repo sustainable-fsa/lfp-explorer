@@ -90,6 +90,10 @@ const DATASETS = Object.freeze([
     url: '../fsa-disasters/fsa-disasters.json',
     schema: 'fsa-disasters/1',
     keySpace: 'fips',
+    /** FIPS-keyed portal data with no boundary archive of its own, drawn on
+        the FSA counties the program is administered on — crosswalked, exactly
+        as before. Unchanged by this work. */
+    boundary: 'fsa',
     expect: Object.freeze({ epoch: '1970-01-01' }),
     decode: makeDisastersData,
   }),

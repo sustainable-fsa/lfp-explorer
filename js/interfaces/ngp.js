@@ -87,6 +87,10 @@ const DATASETS = Object.freeze([
     url: '../fsa-normal-grazing-period/fsa-normal-grazing-period.json',
     schema: 'fsa-ngp-web/1',
     keySpace: 'fsa',
+    /** FSA-keyed grazing periods on FSA polygons: the archive, the key and the
+        geometry are all the same administrative authority, which is what makes
+        this the one dataset in the app with nothing to reconcile. */
+    boundary: 'fsa',
     expect: Object.freeze({ year0: 2008 }),
     defaultType: 'Native Pasture',
     /** What the app opens on, and the one payload boot fetches. Declared rather
@@ -100,6 +104,11 @@ const DATASETS = Object.freeze([
     url: '../nclimgrid-normal-grazing-period/nclimgrid-normal-grazing-period.json',
     schema: 'fsa-ngp-web/1',
     keySpace: 'fips',
+    /** Census-FIPS-keyed, and there is no nClimGrid boundary set to draw it on
+        — the grazing period is an FSA administrative fact, so it stays on FSA
+        polygons and reaches them through the crosswalk exactly as it always
+        has. Unchanged by this work; only the transport under it moved. */
+    boundary: 'fsa',
     expect: Object.freeze({ year0: 2001 }),
     nominalYears: true,
     defaultType: 'Full Season',

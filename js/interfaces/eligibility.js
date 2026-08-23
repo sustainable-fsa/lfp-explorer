@@ -86,6 +86,9 @@ const DATASETS = Object.freeze([
     url: '../fsa-lfp-eligibility/fsa-lfp-eligibility-events.json',
     schema: 'fsa-lfp-eligibility/1',
     keySpace: 'fsa',
+    /** An LFP eligibility determination is an FSA-county fact, so all three of
+        these datasets draw FSA polygons. */
+    boundary: 'fsa',
     expect: Object.freeze({ year0: 2008 }),
     expectedDataset: 'fsa-lfp-eligibility',
     decode: makeEligibilityData,
@@ -96,6 +99,7 @@ const DATASETS = Object.freeze([
     url: '../fsa-lfp-eligibility-web/fsa-lfp-eligibility-web-events.json',
     schema: 'fsa-lfp-eligibility/1',
     keySpace: 'fsa',
+    boundary: 'fsa',
     expect: Object.freeze({ year0: 2008 }),
     expectedDataset: 'fsa-lfp-eligibility-web',
     decode: makeEligibilityData,
@@ -106,6 +110,16 @@ const DATASETS = Object.freeze([
     url: '../fsa-lfp-eligibility-derived/fsa-lfp-eligibility-derived.json',
     schema: 'fsa-lfp-eligibility/1',
     keySpace: 'fsa',
+    /** FSA, like its siblings — and note this is NOT the aggregation picker's
+        business. That control chooses which drought convention RECOMPUTED the
+        ladder, and every convention's answer is still reported per FSA county:
+        this payload's `counties` array is FSA codes (a strict subset of dd22,
+        including 14 ids no FIPS-keyed tileset has — 02001, 12025, 19156,
+        23002 …), so there is nothing to draw on Census polygons even if it
+        were the right claim. The parallel `fips` column is card provenance,
+        one representative FIPS per office, and re-keying through it would
+        silently misattribute every office that splits or merges counties. */
+    boundary: 'fsa',
     expect: Object.freeze({ year0: 2008 }),
     expectedDataset: 'fsa-lfp-eligibility-derived',
     decode: makeEligibilityData,

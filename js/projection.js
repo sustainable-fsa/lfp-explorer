@@ -292,6 +292,101 @@ export const PROJECTED_BOUNDS = Object.freeze([
   Object.freeze(toDummy(EXTENT_M.x1, EXTENT_M.y1)),
 ]);
 
+/* ── The producer contract ───────────────────────────────────────────────────
+   Geometry can now ARRIVE in this space instead of being transformed into it:
+   `data-tiles` builds its tilesets and its index sidecars' bounding boxes
+   through R/dummy-space.R, which is gated against the twelve reference points
+   in this file's header to 1e-9 dummy degrees — the same tolerance, from the
+   other side.
+
+   That gate is the only thing standing between this app and a silent
+   misregistration, and "silent" is the whole problem. Two layers built on
+   slightly different constants line up at the centre of the map and drift apart
+   toward the edges; nothing on screen says so, and the error is largest exactly
+   where a reader zooms in to compare two county authorities. So every boundary
+   index this app loads asserts, before anything reads a bbox off it, that it
+   says it is in this space and that its extent is THIS file's extent.
+
+   This is the counterpart of projectCounties() below, not a replacement for it:
+   one transforms geometry that arrives geographic, the other checks geometry
+   that arrives already projected. An app drawing both needs both. */
+
+/** The space identifier every producer of this plane stamps on its artifacts. */
+export const DUMMY_SPACE = 'sfsa-albers-usa/1';
+
+/**
+ * The registration tolerance, in dummy degrees — about half a millimetre on the
+ * ground, and the same number data-tiles/tools/check-registration.R uses.
+ *
+ * NOT zero, and not `===`. R prints 15 significant digits where JS round-trips
+ * at 17, so the published bounds are `-3.03629675646083` against this file's
+ * `-3.0362967564608283`: equal to 1.8e-15, which is a rounding artifact of the
+ * serialisation and not a disagreement about anything. A validator written with
+ * `===` or `JSON.stringify` would reject every sidecar ever published.
+ */
+export const SPACE_EPSILON = 1e-9;
+
+/**
+ * Flatten either bounds convention to `[w, s, e, n]`.
+ *
+ * Both are in circulation and neither is wrong: a sidecar publishes the flat
+ * four, and MapLibre — and therefore PROJECTED_BOUNDS — wants `[[w,s],[e,n]]`.
+ * A check that knew only one of them would throw on every load.
+ *
+ * @param {number[]|number[][]} b
+ * @returns {number[]|null} [w, s, e, n], or null if it is neither shape
+ */
+function flatBounds(b) {
+  if (!Array.isArray(b)) return null;
+  if (b.length === 4 && b.every((v) => typeof v === 'number')) return b.slice();
+  if (b.length === 2 && Array.isArray(b[0]) && Array.isArray(b[1])) {
+    return [b[0][0], b[0][1], b[1][0], b[1][1]];
+  }
+  return null;
+}
+
+/**
+ * Assert that a loaded boundary really is in the space this map renders.
+ *
+ * THROWS rather than warns, and that is the point. A sidecar in another space —
+ * or built from another extent — draws a map that is subtly, invisibly wrong,
+ * and a warning would leave it on screen. Refusing to draw it is the only
+ * failure mode a reader can act on, and the app's own error note is a better
+ * outcome than a plausible lie.
+ *
+ * @param {{space?: string, bounds?: number[]|number[][]}} loaded a
+ *        loadCountyIndex() result, or anything carrying the same two fields
+ * @param {string} label the tileset key, for the message
+ * @returns {object} the same object, unchanged
+ */
+export function assertProjectedSpace(loaded, label = 'a boundary index') {
+  if (!loaded || loaded.space !== DUMMY_SPACE) {
+    throw new Error('[ngp/projection] ' + label + ' declares space '
+      + JSON.stringify(loaded && loaded.space) + ', not ' + JSON.stringify(DUMMY_SPACE)
+      + '. This map renders a pre-projected dummy plane and cannot draw geometry '
+      + 'from anywhere else — see the header of this file.');
+  }
+  const got = flatBounds(loaded.bounds);
+  const want = flatBounds(PROJECTED_BOUNDS);
+  if (!got) {
+    throw new Error('[ngp/projection] ' + label + ' has bounds '
+      + JSON.stringify(loaded.bounds) + ', which is neither [w,s,e,n] nor '
+      + '[[w,s],[e,n]].');
+  }
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(got[i] - want[i]) > SPACE_EPSILON) {
+      throw new Error('[ngp/projection] ' + label + ' is in ' + DUMMY_SPACE
+        + ' but its extent disagrees with this app\'s by more than '
+        + SPACE_EPSILON + ' dummy degrees: got ' + JSON.stringify(got)
+        + ', expected ' + JSON.stringify(want) + '. Component ' + i + ' differs '
+        + 'by ' + Math.abs(got[i] - want[i]) + '. One of the two producers of '
+        + 'this plane has drifted, and every layer drawn from both is now '
+        + 'misregistered.');
+    }
+  }
+  return loaded;
+}
+
 /* ── Transforming a decoded vintage ──────────────────────────────────────── */
 
 /**
