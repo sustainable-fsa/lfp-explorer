@@ -122,7 +122,7 @@ const CONFIG = {
     README § Developing against an unreleased kit lists this file alongside
     index.html and js/. It is passed INTO page.evaluate as an argument: a
     string built in-page from an outer-scope binding would not exist. */
-const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.2.1/county/county.js';
+const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
 
 const server = serveWorkspace(CONFIG.root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -198,7 +198,19 @@ async function open({
 
   const page = await ctx.newPage();
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  /* THE LOCATION, not just the text. A console.error of an Error subclass with
+     an empty message stringifies to the single word "Error", which is
+     unactionable — it cost an hour to chase one of those, and the answer was in
+     the source URL all along. `m.location()` is synchronous and free; expanding
+     the args would need an async handler and could race the page closing. */
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    const loc = m.location() || {};
+    const where = loc.url
+      ? ` @${String(loc.url).replace(/^https?:\/\/[^/]+/, '')}:${loc.lineNumber ?? '?'}`
+      : '';
+    errors.push(m.text() + where);
+  });
   page.on('pageerror', (e) => errors.push('pageerror: ' + String(e).split('\n')[0]));
   const downloadList = [];
   page.on('download', (d) => downloadList.push(d));
@@ -409,6 +421,17 @@ const viewControls = (page) => page.evaluate(() => {
  * carry a color in MapLibre's feature state, and a hash of those colors in
  * geometry order. Two snapshots that differ prove a repaint reached GL; two
  * that match prove it did not.
+ *
+ * IT ASKS THE HANDLE FOR THE ADDRESS. `getFeatureState` on a VECTOR source
+ * needs `sourceLayer`, and MapLibre does not throw without it — it fires an
+ * error event and returns, so every county reads back `undefined` and this
+ * function reports `colored: 0`. That is indistinguishable from "nothing is
+ * painted yet", which is exactly how a harness bug hides as an app bug: the
+ * first symptom of getting this wrong was twenty "the choropleth repainted"
+ * failures against an app that was painting perfectly. `handle.featureRef(id)`
+ * (kit v0.3.0) builds the right object for whichever source type the handle
+ * owns, so this probe cannot be right on one path and silently wrong on the
+ * other. Never hand-roll the ref here.
  */
 const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
   // No map, no geometry, or no app module at all means nothing is painted,
@@ -423,8 +446,11 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
     let colored = 0;
     let hash = 5381;
     if (!map || !c.getCounties()) return { colored: 0, hash: 0 };
+    const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
+    const ref = (id) => (handle && typeof handle.featureRef === 'function')
+      ? handle.featureRef(id) : { source: src, id };
     for (const id of c.getCounties().index.keys()) {
-      const st = map.getFeatureState({ source: src, id });
+      const st = map.getFeatureState(ref(id));
       const color = (st && st.color) || '';
       if (color) colored++;
       for (let i = 0; i < color.length; i++) {
@@ -438,11 +464,16 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
 }, sourceId);
 
 /** The paint color of one county, straight out of feature state. Null if there
-    is no map to ask — see snapshot() on why a broken boot does not throw. */
+    is no map to ask — see snapshot() on why a broken boot does not throw.
+    Through handle.featureRef() for the reason spelled out on paintSignature. */
 const colorOf = (page, id, sourceId) => page.evaluate(async ([i, src]) => {
   const app = await import(new URL('js/app.js', document.baseURI).href);
-  const map = app.ngpContext().getMap();
-  const st = map && map.getFeatureState({ source: src, id: i });
+  const c = app.ngpContext();
+  const map = c.getMap();
+  const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
+  const ref = (handle && typeof handle.featureRef === 'function')
+    ? handle.featureRef(i) : { source: src, id: i };
+  const st = map && map.getFeatureState(ref);
   return (st && st.color) || null;
 }, [id, sourceId]);
 
@@ -489,17 +520,39 @@ async function settledLiveText(page, test) {
 }
 
 /**
- * A boundary-vintage swap, waited out.
+ * A county-authority swap, waited out.
  *
- * Any year move across 2015 kicks off a debounced archive fetch and shows the
- * transient pill; a signature read before it lands is a read of the old
- * geometry. The main run asserts the pill and the swap in their own section —
- * this is the version for the sections that merely need to GET to a year.
+ * WAITS ON THE MARKER, not on the transient pill. `data-ngp-boundary` carries
+ * the tileset key that is actually on the map, so "the geometry the app intends
+ * is the geometry it has" is a single string comparison — and the app writes it
+ * in the same statement that assigns the geometry.
+ *
+ * The pill is the wrong signal and cost a debugging hour to prove it: it is
+ * shown by whoever starts a transition and cleared by whoever finishes one, so
+ * a section that arrives with it already hidden waits for nothing and reads the
+ * OLD geometry a moment later. That produced "dd22, 3104 polygons" — the right
+ * vintage and the previous vintage's polygons — against an app that was
+ * swapping correctly in both directions. The pill is still ASSERTED in the swap
+ * section, because showing it is a real obligation; it is just not a clock.
  */
 const settleVintage = async (page) => {
-  await page.waitForFunction(() => document.getElementById('app-note').hidden,
-    null, { timeout: CONFIG.switchMs }).catch(() => {});
+  await page.waitForFunction(() => {
+    const el = document.documentElement.dataset;
+    return el.ngpBoundary && document.getElementById('app-note').hidden;
+  }, null, { timeout: CONFIG.switchMs }).catch(() => {});
   await page.waitForTimeout(500);
+  await settleFrames(page);
+};
+
+/**
+ * The same, but for a caller that knows which authority it is waiting FOR —
+ * which is the only form that cannot race. Pass a tileset key.
+ */
+const settleBoundary = async (page, key) => {
+  await page.waitForFunction(
+    (k) => document.documentElement.dataset.ngpBoundary === k,
+    key, { timeout: CONFIG.switchMs }).catch(() => {});
+  await page.waitForTimeout(200);
   await settleFrames(page);
 };
 
@@ -1322,9 +1375,9 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   section('▸ Data table dialog');
   {
     await slideYear(page, 2026);
-    await page.waitForFunction(() => document.getElementById('app-note').hidden,
-      null, { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(500);
+    // Named, so this cannot pass by arriving early: the wait is for the dd22
+    // marker specifically, not for "some transition finished".
+    await settleBoundary(page, 'fsa-counties-dd22');
     const back = await snapshot(page);
     check('sliding back over 2015 swaps the vintage the other way (dd17 → dd22)',
       back.vintage === 'dd22' && back.geometryCount === 3106,
@@ -3111,22 +3164,28 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
     /* The unmatched count — the reason the default is what it is. */
     const unmatched = await iface.unmatchedOracle(page);
     const said = await liveText(page);
-    const claim = /(\d+)\s+reported areas could not be matched to an FSA county/i
-      .exec(said);
+    /* The sentence names the AUTHORITY now, not the crosswalk: each dataset is
+       drawn on the polygons its own numbers were computed against, so the miss
+       is "this archive reports a county the county set on screen does not
+       have" rather than "the crosswalk could not reach it". */
+    const claim = /(\d+)\s+reported areas? (?:is|are) not in /i.exec(said);
     if (typeof unmatched !== 'number') {
       skip(`${ds.label}: the unmatched-area count`, String(unmatched));
     } else if (ds.id === 'reported') {
-      check(`NDMC reported: the live region COUNTS the reported areas the FSA `
-        + `crosswalk cannot reach (${unmatched} of them — Connecticut is keyed `
-        + 'as its nine planning regions for the whole record, and no FSA county '
-        + 'covers them), rather than dropping them silently',
+      check(`NDMC reported: the live region COUNTS the reported areas its own `
+        + `authority does not have (${unmatched} of them — NDMC keys Connecticut `
+        + 'as its nine planning regions for the whole record, and the FSA LFP '
+        + 'determination boundaries answer Connecticut as eight traditional '
+        + 'counties), rather than dropping them silently',
       unmatched === DS.reported.unmatchedAtDefaultYear && !!claim
         && Number(claim[1]) === unmatched,
       `oracle says ${unmatched} (expected ${DS.reported.unmatchedAtDefaultYear}), `
         + `the live region says ${JSON.stringify(said.slice(0, 200))}`);
     } else if (ds.isDefault) {
-      check('FSA LFP boundaries: nothing is left over to report — FSA\'s own LFP '
-        + 'geometry is keyed the way this map is, which is why it is the default',
+      check('FSA LFP boundaries: nothing is left over to report — this archive '
+        + 'and the polygons it is drawn on are the SAME county set, 3,221 ids '
+        + 'either way with no symmetric difference, which is why it is the '
+        + 'default and why nothing here is crosswalked',
       unmatched === 0 && !claim,
       `oracle says ${unmatched}, live region `
         + JSON.stringify(said.slice(0, 200)));
@@ -3628,8 +3687,13 @@ const paintHistogram = (page, sourceId) => page.evaluate(async (src) => {
     const c = app.ngpContext();
     const map = c.getMap();
     if (!map || !c.getCounties()) return out;
+    // Through the handle — see paintSignature on why a hand-rolled ref reads
+    // back undefined on a vector source without throwing.
+    const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
+    const ref = (id) => (handle && typeof handle.featureRef === 'function')
+      ? handle.featureRef(id) : { source: src, id };
     for (const id of c.getCounties().index.keys()) {
-      const st = map.getFeatureState({ source: src, id });
+      const st = map.getFeatureState(ref(id));
       const color = ((st && st.color) || '').toLowerCase();
       if (color) out[color] = (out[color] || 0) + 1;
     }
@@ -5042,6 +5106,130 @@ section('▸ Four views, four memories');
     params: disAgain.params }));
   s.clean('four views, four memories');
   await s.shot('24-four-views');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE AUTHORITY TABLE — which polygons each dataset is actually drawn on.
+   ══════════════════════════════════════════════════════════════════════════
+
+   The gate this whole change exists for, and the one no screenshot can stand in
+   for. A map drawn on the WRONG county authority looks perfect: every county has
+   a colour, every shape is a real county, nothing is missing, and the boundaries
+   are simply from the wrong archive or the wrong year. There is no pixel to
+   inspect and no count to notice.
+
+   So this drives the app through every row of the declared mapping and reads
+   `data-ngp-boundary` — the tileset key the app wrote in the same statement that
+   assigned the geometry. `tools/check-boundaries.mjs` proves the RESOLVER is
+   right against the published data; this proves the app is using it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ Every dataset draws the authority it declares');
+{
+  const s = await open();
+  const { page } = s;
+  check('the page reaches ngpReady', s.ready);
+
+  const boundaryNow = () => page.evaluate(
+    () => document.documentElement.dataset.ngpBoundary || null);
+
+  /* row → [what to do, the tileset key it must land on].
+     The census rows carry a YEAR because that authority's answer moves with it —
+     which is the half of this that a fixed table could not express. */
+  const ROWS = [
+    ['grazing periods · FSA Official (boot)', null, 'fsa-counties-dd22'],
+    ['grazing periods · a pre-2015 year', { year: 2012 }, 'fsa-counties-dd17'],
+    ['drought · FSA LFP boundaries', { view: 'usdm' }, 'fsa-lfp-counties'],
+    ['drought · NDMC reported', { view: 'usdm', dataset: 'reported' }, 'fsa-lfp-counties'],
+    ['drought · Census counties, 2026', { view: 'usdm', dataset: 'census' }, 'census-counties-2025'],
+    ['drought · Census counties, 2011 (the gap year: 2011 → the 2010 vintage)',
+      { view: 'usdm', dataset: 'census', year: 2011 }, 'census-counties-2010'],
+    ['drought · Census counties, 2023 (where Connecticut changes shape)',
+      { view: 'usdm', dataset: 'census', year: 2023 }, 'census-counties-2022'],
+    ['LFP eligibility', { view: 'eligibility' }, 'fsa-counties-dd22'],
+    ['disaster designations', { view: 'disasters' }, 'fsa-counties-dd22'],
+  ];
+
+  check(`boot draws ${ROWS[0][2]}`, (await boundaryNow()) === ROWS[0][2],
+    String(await boundaryNow()));
+
+  for (const [label, nav, want] of ROWS.slice(1)) {
+    const q = new URLSearchParams();
+    if (nav.view) q.set('view', nav.view);
+    if (nav.dataset) q.set('dataset', nav.dataset);
+    if (nav.year) q.set('year', String(nav.year));
+    const t = await open({ query: '?' + q.toString() });
+    // A deep-linked view lands AFTER boot, so wait for the named key rather
+    // than for "a transition finished" — see MARKERS.boundary.
+    await settleBoundary(t.page, want);
+    const got = await t.page.evaluate(
+      () => document.documentElement.dataset.ngpBoundary || null);
+    const n = await t.page.evaluate(async () => {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const c = app.ngpContext();
+      return c.getCounties() ? c.getCounties().index.size : 0;
+    });
+    check(`${label} draws ${want}`, got === want, `drew ${got} (${n} polygons)`);
+    t.clean(`authority · ${nav.view || 'ngp'}/${nav.dataset || 'default'}`);
+    await t.ctx.close();
+  }
+  s.clean('authority table');
+  await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE CROSSWALK LEFT THE DROUGHT VIEW — asserted by its absence.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ The crosswalk is not in the drought view\'s paint path');
+{
+  const s = await open({ query: '?view=usdm' });
+  const { page } = s;
+  await settleBoundary(page, 'fsa-lfp-counties');
+
+  /* Two independent readings, because either alone could lie: the app's own
+     handle on the crosswalk, and whether the browser ever asked for the file.
+     Before this change all three drought datasets fetched it. */
+  const state = await page.evaluate(async () => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const asked = performance.getEntriesByType('resource')
+      .map((e) => e.name)
+      .filter((n) => /fsa-fips-crosswalk\.json/.test(n));
+    return {
+      crosswalk: typeof c.getCrosswalk === 'function' ? !!c.getCrosswalk() : null,
+      asked: asked.length,
+      boundary: document.documentElement.dataset.ngpBoundary,
+    };
+  });
+
+  check('the drought monitor holds no crosswalk — its keys ARE its authority\'s ids',
+    state.crosswalk === false, JSON.stringify(state));
+  check('...and the page never even requested the crosswalk file',
+    state.asked === 0, `${state.asked} request(s)`);
+
+  /* The control: a view that still crosses key spaces must still fetch it, or
+     the assertion above would pass for the wrong reason (a crosswalk that
+     stopped working everywhere). */
+  const d = await open({ query: '?view=disasters' });
+  await settleBoundary(d.page, 'fsa-counties-dd22');
+  const dis = await d.page.evaluate(async () => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    return {
+      crosswalk: !!app.ngpContext().getCrosswalk(),
+      asked: performance.getEntriesByType('resource')
+        .filter((e) => /fsa-fips-crosswalk\.json/.test(e.name)).length,
+    };
+  });
+  check('the disaster designations STILL crosswalk — FIPS-keyed with no boundary '
+    + 'archive of their own, so the crosswalk did not stop working, it stopped '
+    + 'being needed in one place',
+  dis.crosswalk === true && dis.asked > 0, JSON.stringify(dis));
+  d.clean('disasters crosswalk control');
+  await d.ctx.close();
+
+  s.clean('drought crosswalk absence');
   await s.ctx.close();
 }
 

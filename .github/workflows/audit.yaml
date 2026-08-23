@@ -7,8 +7,10 @@
 # tools/payloads.txt — and must be cheap enough to run on every pull request.
 #
 # WHAT THE NETWORK IS FOR. The app loads the house style kit by full pinned URL
-# (https://sustainable-fsa.com/style/v0.2.1/…), fetches the two FSA county
-# boundary archives at runtime, and fetches each data payload by RELATIVE path
+# (https://sustainable-fsa.com/style/v0.3.1/…), fetches its county geometry at
+# runtime as PMTiles vector tiles from https://data.sustainable-fsa.com — a
+# second origin, because it serves the HTTP range requests GitHub Pages does not
+# — and fetches each data payload by RELATIVE path
 # (../<repo>/<file>), which in production is that archive repo's same-origin
 # GitHub Pages copy. All are fetched LIVE here — the payloads are curled into
 # the sibling directories the relative paths expect, since the harnesses serve
@@ -73,7 +75,7 @@ jobs:
     # right one. Measured on this workflow's own history the whole job ran 7.2
     # minutes with one interface and 9.8 with two; measured locally at the fourth
     # (Apple silicon, warm network) the two harnesses are 7.2 minutes of axe and
-    # 2.7 of behavioural verification for 509 checks, so even several times over
+    # 2.7 of behavioural verification for 518 checks, so even several times over
     # on a runner the backstop has room to spare. It moves when a PR measures
     # that it has to — not when the app grows.
     timeout-minutes: 45
@@ -139,10 +141,12 @@ jobs:
       # Runs AFTER the staging step above, because it reads the payloads from
       # their sibling slots to check each dataset against the authority it
       # declares. It also fetches the 21 county index sidecars live from
-      # https://data.sustainable-fsa.com — a THIRD contract origin, and the
-      # first thing in this workflow to touch it. The app itself does not yet:
-      # js/boundaries.js is not on the render path until the cut-over, so the
-      # kit pin above is still v0.2.1 and this step is the only consumer.
+      # https://data.sustainable-fsa.com, which is also where the app itself now
+      # gets every polygon it draws. A Pages deploy of the KIT while this
+      # workflow runs has been seen to produce one transient CORS failure on one
+      # theme/viewport combo; if a run fails with "No
+      # 'Access-Control-Allow-Origin' header" against a /style/ URL, check
+      # whether something was deploying before investigating.
       - name: County authority contract
         run: node tools/check-boundaries.mjs
 

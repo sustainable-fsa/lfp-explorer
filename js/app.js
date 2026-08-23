@@ -93,20 +93,19 @@
 import {
   createLiveRegion, getTheme, initThemeToggle, lsGet, lsSet, reducedMotion,
   replaceUrlState, showToast, urlParams, viewport,
-} from 'https://sustainable-fsa.com/style/v0.2.1/core/core.js';
+} from 'https://sustainable-fsa.com/style/v0.3.1/core/core.js';
 import {
   addFitControl, addNavigation, cameraParamsIfDefault, createCompositeMap,
   fitDefault, installZoomFloor,
-} from 'https://sustainable-fsa.com/style/v0.2.1/map/map.js';
+} from 'https://sustainable-fsa.com/style/v0.3.1/map/map.js';
 import {
-  addCountyLayers, countyCentroid, initCountyTooltip, loadCounties,
-  searchItems, vintageForYear,
-} from 'https://sustainable-fsa.com/style/v0.2.1/county/county.js';
-import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.2.1/ui/search.js';
-import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.2.1/ui/card.js';
-import { initDrawer } from 'https://sustainable-fsa.com/style/v0.2.1/ui/drawer.js';
-import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.2.1/ui/legend.js';
-import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.2.1/ui/help.js';
+  addCountyLayers, countyCentroid, initCountyTooltip, searchItems,
+} from 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
+import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.3.1/ui/search.js';
+import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.3.1/ui/card.js';
+import { initDrawer } from 'https://sustainable-fsa.com/style/v0.3.1/ui/drawer.js';
+import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.3.1/ui/legend.js';
+import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.3.1/ui/help.js';
 
 /* js/data.js is the GRAZING-PERIOD family's facade, not the app's data layer
    (see § Live state): the search index, the county gazetteer and the type
@@ -117,7 +116,13 @@ import {
   typeFromSlug, typeSlug, types,
 } from './data.js';
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
-import { PROJECTED_BOUNDS, projectCounties } from './projection.js';
+import { PROJECTED_BOUNDS } from './projection.js';
+/* Which polygons a selection is allowed to be drawn on. The ONLY module that
+   knows; app.js resolves a declaration and never a tileset name (§ Geometry). */
+import {
+  AUTHORITIES, boundaryFor, fsaVintageFor, loadBoundary, needsCrosswalk,
+  prefetchBoundary,
+} from './boundaries.js';
 import {
   DEFAULT_VIEW, INTERFACES, aliasType, defaultDatasetOf, viewFromSlug,
 } from './interfaces/registry.js';
@@ -198,9 +203,11 @@ const LS = Object.freeze({
     are STRINGS from end to end — no parse, no arithmetic, ever. */
 const FSA_ID_RE = /^[0-9]{5}$/;
 
-/** How long the year slider must rest before a boundary-vintage swap starts.
-    Dragging 2016 → 2010 crosses the 2015 line once, not six times. */
-const VINTAGE_DEBOUNCE_MS = 250;
+/** How long the year slider must rest before a boundary swap starts. Dragging
+    2016 → 2010 crosses the FSA line once rather than six times — and on the
+    Census authority it crosses FOUR annual vintages, which is the case that
+    turns this from a nicety into the thing that keeps a drag cheap. */
+const BOUNDARY_DEBOUNCE_MS = 250;
 
 /** How long a scrubbed control must rest before the live region says what it
     landed on. A dragged week slider repaints every frame — announcing every
@@ -393,12 +400,22 @@ let viewSeq = 1;              // monotonic; every fetch-involving switch bumps i
 let map = null;
 let mapLoaded = null;         // resolves on the map's own 'load' event
 let fitOpts = null;
-let counties = null;          // the decoded vintage in use
+let counties = null;          // the loaded authority's index — see loadBoundary()
+let boundary = null;          // the BoundaryRef `counties` came from
+let boundarySeq = 0;          // monotonic; the in-flight race guard
 let handle = null;            // addCountyLayers() handle
 let zoomFloor = null;
 let cardPushed = false;       // the card is a column, not an overlay — see revealSelectedCounty()
-let vintage = null;           // 'dd17' | 'dd22'
-let vintageTimer = null;
+/* NO `vintage` GLOBAL. It used to be one, written from three places, and the
+   fourth writer would have been the next bug — but more importantly the word
+   now means two different things and only one of them is a global fact. The FSA
+   program-year vintage is a pure function of state.year (fsaVintageFor), and
+   what is DRAWN is `boundary`, which follows the dataset as well as the year.
+   On the drought monitor the two are unrelated: a map on the 2011 Census
+   counties still has an FSA vintage, because that is what indexes the
+   crosswalk, and it is dd17. Conflating them would index the crosswalk with
+   '2011' and match nothing. */
+let boundaryTimer = null;
 let searchCtl = null;
 let drawerCtl = null;
 let cardCtl = null;
@@ -534,13 +551,37 @@ function isNgpShaped(instance) {
 }
 
 /**
+ * The county authority a dataset declares, validated.
+ *
+ * A dataset with no declaration is a CONTRACT VIOLATION, not a case to default
+ * quietly through: drawing an archive's numbers on the wrong county set is the
+ * exact failure this machinery exists to prevent, and it looks perfect on
+ * screen. So it is announced through console.error — which the audit harnesses
+ * DO collect, unlike console.warn — and the map still draws on the authority
+ * the program is administered on, so a reader is not left with a blank page
+ * while the gate goes red.
+ *
+ * @param {object|null} ds a dataset descriptor entry
+ * @returns {string} an id in js/boundaries.js § AUTHORITIES
+ */
+function authorityIdOf(ds) {
+  const id = ds && ds.boundary;
+  if (id && AUTHORITIES[id]) return id;
+  console.error('[ngp] dataset ' + JSON.stringify(ds && ds.id) + ' declares no '
+    + 'county authority (or an unknown one, ' + JSON.stringify(id) + '). Every '
+    + 'dataset must name one in js/interfaces/*.js § DATASETS — see '
+    + 'js/boundaries.js. Drawing "fsa".');
+  return 'fsa';
+}
+
+/**
  * The `sel` argument every descriptor leaf takes: everything needed to paint or
  * describe the current view, in one plain object. Rebuilt per call — it is a
  * snapshot, never a live handle, so a leaf cannot mutate the app's state.
  *
  * @returns {{year: number, type: string, variable: string, dataset: string,
- *            source: string|null, vintage: string|null, week: number|null,
- *            universe: number}}
+ *            source: string|null, vintage: string|null, authority: string,
+ *            boundary: object|null, week: number|null, universe: number}}
  */
 function selection() {
   const vs = activeViewState();
@@ -554,7 +595,13 @@ function selection() {
     // dataset that publishes one, so a leaf can tell "the only answer" from
     // "the answer they chose".
     source: iface.controls.source ? (vs.source || null) : null,
-    vintage,
+    // THE FSA PROGRAM-YEAR VINTAGE, and only that. It is what indexes the
+    // crosswalk (js/decoders/crosswalk.js is built per FSA vintage), and it is
+    // now INDEPENDENT of what is drawn: a drought map on the 2011 Census
+    // counties has no FSA vintage in play at all, and a leaf that reached for
+    // the DRAWN authority's vintage here would index the crosswalk with '2011'
+    // and match nothing. What is drawn is `boundary`, below.
+    vintage: fsaVintageFor(state.year),
     // Absolute index into a weekly payload's series, for the families that have
     // one; null for the families that do not, so a leaf can tell "no week" from
     // "week zero" (which is a real week — 2000-01-04).
@@ -565,7 +612,14 @@ function selection() {
     // is looking at must not report "1,208 of 2,829" as if the rest had been
     // asked. Zero before the boundaries land.
     universe: counties ? counties.index.size : 0,
+    // WHICH COUNTY AUTHORITY this dataset's numbers were computed against, and
+    // the one published tileset that answers for it at this year. Two fields
+    // because two questions: `authority` is what the DATA says, `boundary` is
+    // where it lands. Resolved here so every descriptor leaf reads the same
+    // answer the map is drawing (js/boundaries.js).
+    authority: authorityIdOf(activeDataset()),
   };
+  sel.boundary = boundaryFor(sel);
   // Whatever enumerated choices the active family declares, by name — so a
   // descriptor leaf reads its own slice off `sel` exactly the way it reads
   // `sel.year`. Every shipped family declares none today and therefore carries
@@ -1034,7 +1088,7 @@ function addRow(dl, term, value, isNote) {
  * the descriptor turns it into the row that says so.
  */
 function fillCard(id) {
-  const nm = (counties && counties.names.get(id)) || countyName(id);
+  const nm = nameOf(id);
   els.cardTitle.textContent = nm ? nm.county + ', ' + nm.state : id;
 
   const sel = { ...selection(), hasGeometry: !!(counties && counties.index.has(id)) };
@@ -1176,15 +1230,50 @@ function selectCounty(id, { fly = false } = {}) {
 /* ── Search ──────────────────────────────────────────────────────────────── */
 
 /**
- * Rows for the combobox: every county in the current vintage's geometry, PLUS
- * every id that is in the data but has no polygon. A search that silently
- * omits the island territories tells the user they do not exist.
+ * Name one county id, in the vocabulary of what is on screen.
+ *
+ * PAYLOAD FIRST, then the drawn authority, then FSA's own gazetteer. The payload
+ * is first because the numbers in the card are its numbers and the reader should
+ * see the county named the way the dataset names it — and because it is the only
+ * precedence under which every surface of one card AGREES. That matters now:
+ * the LFP determination boundaries carry the LSAD form ("Autauga County",
+ * "Bethel Census Area") while every other authority carries the bare form, so
+ * without one seam the card TITLE would read "Autauga County, Alabama" while a
+ * card ROW read "Autauga, Alabama" — the same county, two names, an inch apart.
+ *
+ * Neither form is normalized, and neither should be: stripping a trailing type
+ * word turns "Carson City" into "Carson", and appending one turns "Bethel
+ * Census Area" into "Bethel Census Area County". They are the archives' own
+ * strings, and the label changing when the reader switches authority is
+ * information — it is the archive saying this is a different county set.
+ *
+ * @param {string} id a 5-character county id
+ * @returns {{county: string, state: string}|null}
+ */
+function nameOf(id) {
+  const key = String(id);
+  const own = (activeData && typeof activeData.countyName === 'function')
+    ? activeData.countyName(key) : null;
+  if (own && own.county) return own;
+  const geo = counties && counties.names.get(key);
+  if (geo && geo.county) return geo;
+  return countyName(key);
+}
+
+/**
+ * Rows for the combobox: every county the DRAWN AUTHORITY has, plus every id
+ * that is in the ACTIVE DATASET and has no polygon on it. A search that
+ * silently omits the island territories tells the user they do not exist — and
+ * one that offers FSA county codes on a map of Census counties tells them
+ * something worse.
  */
 function buildSearchItems() {
   const extras = [];
-  for (const id of allCountyIds()) {
+  const ids = (activeData && typeof activeData.allCountyIds === 'function')
+    ? activeData.allCountyIds() : allCountyIds();
+  for (const id of ids) {
     if (counties.index.has(id)) continue;
-    const nm = countyName(id);
+    const nm = nameOf(id);
     extras.push({ id, label: nm ? nm.county + ', ' + nm.state : id, code: id });
   }
   return searchItems(counties, extras);
@@ -1301,12 +1390,12 @@ function clampYear() {
   if (!booted) {
     // Boot: there is no layer handle to repaint, no card to refill and no URL
     // to rewrite from a half-read view. Set the year and let loadAndRender's
-    // own sequence carry it — including the boundary vintage, which it
-    // re-checks against what it fetched.
+    // own sequence carry it — including the boundary, which it re-checks
+    // against what it fetched. Nothing to write here any more: the drawn
+    // authority is derived from the year and the dataset, not stored.
     state.year = want;
     els.year.value = String(want);
     els.yearOut.textContent = String(want);
-    vintage = vintageForYear(want);
     return;
   }
   // Hold the live region across the rest of this transition. Clamping happens
@@ -1342,35 +1431,97 @@ function setYear(next) {
   // never changes with the year, only its words.
   syncLegend();
 
-  const want = vintageForYear(year);
-  if (want === vintage) {
-    recolor();
-    return;
-  }
-  // Crossing the 2015 line: debounce, because a dragged slider crosses it once
-  // per drag and not once per frame.
-  clearTimeout(vintageTimer);
-  note(want === 'dd17'
-    ? 'Switching to pre-2015 county boundaries…'
-    : 'Switching to 2015-and-later county boundaries…');
-  vintageTimer = setTimeout(() => swapVintage(want), VINTAGE_DEBOUNCE_MS);
+  // The drawn authority may follow the year on EITHER of its two axes — FSA's
+  // 2015 split, or the Census annual vintage — and on most datasets it does not
+  // move at all. ensureBoundary() answers all three cases from one comparison;
+  // when it has nothing to do, the paint is ours.
+  if (!ensureBoundary()) recolor();
 }
 
-async function swapVintage(want) {
+/**
+ * Bring the county authority the current selection DEMANDS onto the map.
+ *
+ * ONE FUNNEL, five callers. What is drawn now moves on a year change (the FSA
+ * line at 2015; eighteen annual Census vintages), a dataset toggle, an
+ * aggregation change and a view switch — four controls that used to have
+ * nothing to do with geometry between them.
+ *
+ * DIFFING THE RESOLVED KEY rather than any of those inputs is what makes that
+ * safe, and it is the whole design: 2016 → 2018 on the FSA authority resolves
+ * to the same tileset twice and does nothing, and so does a toggle between the
+ * two drought datasets that share fsa-lfp-counties. The common case is no work.
+ *
+ * @param {{immediate?: boolean}} [opts] immediate for a CLICK — a dataset,
+ *        aggregation or view change is one decision, and making the reader wait
+ *        250 ms for it would be a bug. Debounced for a SCRUB, because a year
+ *        slider dragged 2016 → 2010 crosses four Census vintages and means one.
+ * @returns {boolean} true when a swap was needed and is now under way. A caller
+ *        that would otherwise paint uses this to decide whether the paint is
+ *        its own job or the swap's.
+ */
+function ensureBoundary() {
+  const want = selection().boundary;
+  if (boundary && boundary.key === want.key) return false;
+  clearTimeout(boundaryTimer);
+  note('Switching to ' + want.label + '…');
+  boundaryTimer = setTimeout(() => { swapBoundary(want).catch(() => {}); },
+    BOUNDARY_DEBOUNCE_MS);
+  return true;
+}
+
+/**
+ * The same, awaited and undebounced — for a caller that must not paint until the
+ * right polygons are underneath.
+ *
+ * A separate function rather than an option on ensureBoundary() because the two
+ * differ in RETURN TYPE, and a function that sometimes returns a boolean and
+ * sometimes a promise is a function every caller has to read twice. Callers
+ * here are the decisions — a dataset toggle, a view switch — never a scrub.
+ *
+ * @returns {Promise<boolean>} whether a swap was needed
+ */
+async function ensureBoundaryNow() {
+  const want = selection().boundary;
+  if (boundary && boundary.key === want.key) return false;
+  clearTimeout(boundaryTimer);
+  note('Switching to ' + want.label + '…');
+  await swapBoundary(want);
+  return true;
+}
+
+/**
+ * Load one authority and put it on the map. Never call this directly — go
+ * through ensureBoundary(), which is where the no-op case and the debounce are.
+ *
+ * @param {object} want a BoundaryRef
+ * @returns {Promise<boolean>} whether it landed
+ */
+async function swapBoundary(want) {
+  const seq = ++boundarySeq;
   try {
-    // projectCounties BEFORE anything touches `next` — the geometry has to be
-    // in the map's projected space before it reaches a GL source or a centroid
-    // (js/projection.js). Idempotent, which matters here: loadCounties() serves
-    // a cached object, so a slider dragged back and forth across 2015 hands the
-    // same already-projected vintage over again.
-    const next = projectCounties(await loadCounties(want));
-    // The user may have dragged back across the line while this was in flight.
-    if (vintageForYear(state.year) !== want) return;
-    vintage = want;
+    // Already in the map's space, and loadBoundary() has ASSERTED that against
+    // js/projection.js's own constants before returning it. There is no
+    // client-side projection step on this path — the producer applied the very
+    // transform projection.js documents, and its gate proves it to 1e-9.
+    const next = await loadBoundary(want);
+
+    // TWO GUARDS, not one, because there are two ways to lose this race.
+    // The SEQUENCE kills a load that lost outright — dataset A → B → A hands
+    // back A's index after B's, and B is what the reader asked for. The KEY
+    // re-derivation is the old swapVintage guard generalised: the reader may
+    // have dragged back across a vintage line while this was in flight, in
+    // which case the answer is already on screen and this one is history.
+    if (seq !== boundarySeq) return false;
+    if (selection().boundary.key !== want.key) return false;
+
+    boundary = want;
     counties = next;
+    document.documentElement.dataset.ngpBoundary = want.key;
     handle.swapVintage(next);
+
     // The handle drops a selection whose polygon is gone; the DATA for that
-    // county is still real, so the card stays open and says so.
+    // county is still real, so the card stays open and now says WHICH authority
+    // is missing it.
     if (state.countyId) {
       if (next.index.has(state.countyId)) handle.setSelected(state.countyId);
       fillCard(state.countyId);
@@ -1378,10 +1529,14 @@ async function swapVintage(want) {
     if (searchCtl) searchCtl.refresh(buildSearchItems());
     recolor();
     clearNote();
+    return true;
   } catch (err) {
+    if (seq !== boundarySeq) return false;
     console.error('[ngp] boundary swap failed', err);
-    failNote('Could not load the county boundaries for ' + state.year + '.',
-      () => swapVintage(want));
+    failNote('Could not load ' + want.label + '.', () => {
+      swapBoundary(want).catch(() => {});
+    });
+    return false;
   }
 }
 
@@ -1685,6 +1840,14 @@ function populateSourceSelect(instance) {
  * fetched and nothing waits. It does NOT bump `data-ngp-view-seq` — that counter
  * means "a transition that involved a fetch has landed" (tools/config.mjs §
  * MARKERS), and a week scrub does not bump it either.
+ *
+ * STILL SYNCHRONOUS, and not by oversight. Every convention this picker offers
+ * recomputed the ladder against a different county set, so it is tempting to
+ * make the polygons follow — but the determination it reports is an FSA-county
+ * fact either way, and this payload is keyed that way (its `counties` array is
+ * FSA codes, with ids no FIPS-keyed tileset has). The dataset therefore declares
+ * one authority regardless of source, ensureBoundary() would be a no-op here,
+ * and the geometry does not move. What changes is the numbers.
  *
  * @param {string} next an aggregation id from the payload's dictionary
  */
@@ -2002,9 +2165,13 @@ async function applyDataset(ds) {
   try {
     const [inst, xw] = await Promise.all([
       loadDataset(ds),
-      // Only a FIPS-keyed dataset needs the crosswalk, and only once per
-      // session — an FSA-keyed one joins straight onto the geometry.
-      ds.keySpace === 'fips' ? loadCrosswalk() : null,
+      // The JOIN decides, not the key space. A crosswalk is needed exactly
+      // when the dataset's keys and its authority's ids are different kinds of
+      // thing (js/boundaries.js § needsCrosswalk) — so the three FIPS-keyed
+      // drought datasets, now drawn on FIPS-keyed authorities, never fetch it,
+      // while the two FIPS-keyed payloads with no boundary archive of their own
+      // still do. Once per session either way.
+      needsCrosswalk(ds.keySpace, boundaryFor(selection())) ? loadCrosswalk() : null,
       // An interface may need an asset of its own before it can paint (the
       // eligibility map's payment-months ramp). Fetched HERE rather than at
       // boot, so the boot path stays one payload and two ramps wide, and
@@ -2048,6 +2215,18 @@ async function applyDataset(ds) {
   applySource(instance);
   syncSourceControl();
   syncYearControl();
+
+  // AND BEFORE THE PAINT, the geometry. This is the whole reason the boundary is
+  // settled here rather than beside the payload fetch above: painting a
+  // dataset's numbers on the PREVIOUS dataset's polygons, even for one frame, is
+  // the 97%-right map this machinery exists to prevent. `immediate`, because a
+  // dataset toggle is one decision and not a scrub.
+  //
+  // swapBoundary() recolors for itself, so the recolor below would be a second
+  // one — harmless (it is idempotent and rAF-coalesced) but the await is what
+  // guarantees the ORDER.
+  await ensureBoundaryNow();
+
   persist();
   pushState();
 
@@ -2294,7 +2473,6 @@ async function boot() {
   syncChoiceButtons();
 
   live = createLiveRegion();
-  vintage = vintageForYear(state.year);
 
   const created = createCompositeMap({
     // The ELEMENT, not a selector: MapLibre resolves a string container with
@@ -2310,6 +2488,19 @@ async function boot() {
   });
   map = created.map;
   fitOpts = created.fitOpts;
+
+  /* THE ZOOM CEILING, and it is arithmetic rather than taste.
+     The county tilesets are lossless at their maxzoom — z15, tile extent 8192,
+     unsimplified — which puts their coordinate quantum at
+       360 / 2^15 / 8192 dummy degrees = 1.34e-6 = 0.72 m on the ground,
+     finer than the archives' own ~6.5 m quantization. Screen scale at display
+     zoom z is 2^(z-15) times the z15 tile's, so 0.72 m first fills one CSS pixel
+     at z = 19 exactly. Past that the geometry stairsteps: the reader is zooming
+     into the quantization, not into the county.
+     MapLibre's default is 22, which is three doublings of visible faceting on
+     the one thing this app asks a reader to look closely at. Set after
+     creation because createCompositeMap does not forward it. */
+  map.setMaxZoom(19);
 
   // Zoom + fit go TOP-LEFT, which is the corner nothing else claims: the county
   // card docks against the whole RIGHT edge of #map-frame on desktop and
@@ -2371,11 +2562,20 @@ async function loadAndRender() {
   note('Loading county boundaries and grazing periods…');
 
   let payloads;
+  // Declared out here because the boot fetch is inside the try and the assign
+  // below is outside it.
+  let bootRef = null;
   try {
     // initData() decodes the FIRST dataset of the default interface and binds it
     // as the facade's active instance — the one fetch boot makes, exactly as
     // before the app grew a dataset toggle.
-    payloads = await Promise.all([loadCounties(state.year), initData(), loadRamps()]);
+    // The BOOT view's own authority, resolved from its own default dataset —
+    // which for the grazing periods is the FSA composite, the same geometry the
+    // TopoJSON path fetched. A deep-linked non-default view or dataset arrives
+    // at the END of this function as an ordinary switch and brings its own
+    // authority with it, so boot still fetches exactly one.
+    bootRef = boundaryFor(selection());
+    payloads = await Promise.all([loadBoundary(bootRef), initData(), loadRamps()]);
   } catch (err) {
     console.error('[ngp] boot failed', err);
     els.main.removeAttribute('aria-busy');
@@ -2383,10 +2583,14 @@ async function loadAndRender() {
       loadAndRender);
     return;
   }
-  // Into the map's projected space before anything else can read it: the GL
-  // sources, every centroid, the reveal push and the PNG export all assume the
-  // geometry has already been through js/projection.js.
-  counties = projectCounties(payloads[0]);
+  // ALREADY in the map's space — the tiles and the sidecar's bounding boxes
+  // were built there, and loadBoundary() asserted it against
+  // js/projection.js's own constants before handing this over. There is no
+  // client-side projection step on this path, and a call to one would be a
+  // double application that flings the composite into the next hemisphere.
+  counties = payloads[0];
+  boundary = bootRef;
+  document.documentElement.dataset.ngpBoundary = bootRef.key;
   activeData = activeNgpDataset();
 
   // A slug parked for a dataset — or a FAMILY — that is not the one booting is
@@ -2399,14 +2603,17 @@ async function loadAndRender() {
   populateTypeSelect();
 
   // The slider's range is authored in the HTML; the payload is the authority.
-  const fetchedFor = vintage;
   applyYearDomain(activeData);
-  if (vintage !== fetchedFor) {
-    // The clamp above crossed the 2015 line, and the boundaries in hand are the
-    // ones the pre-clamp year asked for. Cached either way (boot fetched one and
-    // the idle prefetch at the end of this function warms the other), so this is
-    // a re-read and not a second download in the common case.
-    counties = projectCounties(await loadCounties(state.year));
+  // applyYearDomain may have CLAMPED the year — including across a boundary
+  // line — so the authority is re-checked against whatever the year became.
+  // The handle does not exist yet, so this cannot go through ensureBoundary();
+  // it is the one place that loads a boundary by hand, and the one place where
+  // doing so is safe.
+  const clamped = boundaryFor(selection());
+  if (clamped.key !== boundary.key) {
+    counties = await loadBoundary(clamped);
+    boundary = clamped;
+    document.documentElement.dataset.ngpBoundary = clamped.key;
   }
 
   await mapLoaded;
@@ -2471,7 +2678,7 @@ async function loadAndRender() {
   initCountyTooltip(map, handle, {
     element: els.tooltip,
     render(feature, id) {
-      const nm = counties.names.get(id) || countyName(id);
+      const nm = nameOf(id);
       return {
         name: nm ? nm.county + ', ' + nm.state : id,
         sub: id,
@@ -2527,12 +2734,15 @@ async function loadAndRender() {
     setDataset(wanted);
   }
 
-  // Warm the other boundary vintage while the browser is idle, so the first
-  // slide across 2015 does not stall on a 2 MB fetch.
+  // Warm the OTHER FSA vintage while the browser is idle, so the first slide
+  // across 2015 does not stall. Deliberately not the eighteen Census vintages:
+  // a reader who never opens the drought monitor must not pay for them, and the
+  // sidecar that matters there is fetched when that view is asked for.
   const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1500));
   idle(() => {
-    loadCounties(vintage === 'dd17' ? 'dd22' : 'dd17')
-      .catch((err) => console.warn('[ngp] prefetch of the other vintage failed', err));
+    prefetchBoundary(boundaryFor({
+      authority: 'fsa', year: fsaVintageFor(state.year) === 'dd17' ? 2026 : 2012,
+    }));
   });
 }
 
@@ -2680,7 +2890,11 @@ export function ngpContext() {
   return Object.freeze({
     // Live state — a copy, so a feature cannot mutate the app's state object.
     getState: () => ({ ...state }),
-    getVintage: () => vintage,
+    // The FSA program-year axis — what indexes the crosswalk. NOT what is
+    // drawn; for that see getBoundary().
+    getVintage: () => fsaVintageFor(state.year),
+    /** The BoundaryRef currently on the map, or null before boot lands. */
+    getBoundary: () => boundary,
     // The active interface and what it is showing. getSelection() is the same
     // `sel` object the descriptor's own leaves are called with, assembled once
     // here so a feature never has to reassemble it (and never gets it wrong).

@@ -23,6 +23,13 @@
 #
 # The FIPS↔FSA crosswalk is deliberately absent: it is a committed repo asset
 # (assets/fsa-fips-crosswalk.json), served by the checkout itself.
+#
+# The county GEOMETRY is absent for a different reason, and it is not a payload
+# at all. It is fetched at runtime as PMTiles vector tiles from
+# data.sustainable-fsa.com/data-tiles/tiles/ — 21 tilesets and their
+# -index.json sidecars, a RUNTIME ORIGIN like sustainable-fsa.com rather than a
+# sibling checkout. js/boundaries.js is their manifest, and
+# tools/check-boundaries.mjs is what fetches every one of them in CI.
 
 # 1 · Grazing periods — the boot payload, and the only fetch on the boot path.
 fsa-normal-grazing-period/fsa-normal-grazing-period.json
@@ -32,9 +39,11 @@ nclimgrid-normal-grazing-period/nclimgrid-normal-grazing-period.json
 
 # 2 · Drought monitor — the weekly USDM, one worst-class series per county for
 # every week since 2000-01-04. Three answers to the same question, differing
-# only in what a "county" is; all three are FIPS-keyed and reach the FSA
-# composite through the crosswalk. All fetched lazily, on the switch or the
-# dataset toggle that asks for one.
+# only in what a "county" is; all three are FIPS-keyed, and each is now drawn on
+# its OWN county authority, so NONE of them touches the crosswalk. MEASURED:
+# usdm-counties-fsa-lfp's county dictionary and fsa-lfp-counties' id set are
+# identical, 3,221 each. All fetched lazily, on the switch or the dataset toggle
+# that asks for one.
 #
 # FSA's own FOIA'd LFP boundary statistics — this view's default.
 usdm-counties-fsa-lfp/usdm-counties-fsa-lfp.json

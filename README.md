@@ -37,15 +37,28 @@ broader instrument around the program.
   The kit owns the two side surfaces this app is built around: the left
   controls drawer (`.sfsa-drawer` + `ui/drawer.js`) and the right-docked county
   card (`.sfsa-card.dock-right` + `ui/card.js`).
-- County boundaries are fetched at runtime from the boundary archives'
-  own Pages (`fsa-counties-dd17` for program years ≤ 2014, `fsa-counties-dd22`
-  for ≥ 2015).
+- County geometry is fetched at runtime as **PMTiles vector tiles** from
+  `data.sustainable-fsa.com/data-tiles/`, and **every dataset draws the
+  polygons its own numbers were computed against** — there are three
+  authorities, not one. FSA's administrative composite (`fsa-counties-dd17`
+  for program years ≤ 2014, `fsa-counties-dd22` for ≥ 2015); the FSA LFP
+  determination boundaries; and vintage-matched Census counties, eighteen
+  annual TIGER releases. `js/boundaries.js` owns that policy and nothing else
+  knows it. Each tileset has a companion `-index.json` sidecar carrying the
+  county gazetteer and per-county bounding boxes, because
+  `queryRenderedFeatures` returns only what is rendered and tiles therefore
+  cannot supply a county index or a centroid.
 - The map is displayed in CONUS Albers Equal Area (EPSG:5070) with Alaska,
   Hawaii, and Puerto Rico repositioned as insets, matching every other figure
-  the project publishes. MapLibre renders only Mercator, so `js/projection.js`
-  projects the fetched boundaries client-side and rescales them into a fixed
-  dummy lng/lat box — which is also what the `?lng`/`?lat`/`?zoom` camera
-  params are expressed in.
+  the project publishes. MapLibre renders only Mercator, so the geometry is
+  pre-projected into a fixed dummy lng/lat box — which is also what the
+  `?lng`/`?lat`/`?zoom` camera params are expressed in. That transform now
+  happens **upstream**, in the tile producer; `js/projection.js` keeps the
+  reference implementation (its twelve-point PROJ table is what the producer's
+  own gate is checked against) and adds `assertProjectedSpace()`, which every
+  loaded boundary passes through. Geometry that arrives in the wrong space
+  renders a map that lines up at the centre and drifts at the edges, with
+  nothing on screen to say so, so the app refuses to draw it at all.
 - Help-modal copy lives in the sidecar [`help.md`](help.md).
 
 ## Data
@@ -128,7 +141,7 @@ working branch:
 ```sh
 # Dev-ward — point every kit reference at the local style/ checkout.
 # NEVER push this state.
-sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.2\.0/|/style/|g' \
+sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.3\.1/|/style/|g' \
           -e 's|https://sustainable-fsa\.com/style/vendor/|/style/vendor/|g' \
           -e 's|https://sustainable-fsa\.com/style/assets/|/style/assets/|g' \
           index.html js/*.js js/*/*.js tools/verify.mjs
@@ -136,7 +149,7 @@ sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.2\.0/|/style/|g' \
 # Prod-ward — re-pin after the kit release: versioned surface, then the
 # deliberately unversioned vendor and brand-asset surfaces.
 for d in theme core map county ui; do
-  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.2.1/$d/|g" \
+  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.3.1/$d/|g" \
     index.html js/*.js js/*/*.js tools/verify.mjs
 done
 for d in vendor assets; do
@@ -145,6 +158,13 @@ for d in vendor assets; do
 done
 grep -rn "'/style/\|\"/style/" index.html js/ tools/verify.mjs   # must come back empty
 ```
+
+The `js/*.js js/*/*.js` glob is doing real work: every module that imports the
+kit has to move together, and that now includes **`js/boundaries.js`** (it takes
+`loadCountyIndex`, `TILE_BASE` and `vintageForYear` from `county/county.js`). Two
+kit URLs at different versions are two module instances — two `viewport`
+pub-subs, and two `pmtiles` protocol registrations — so a file left behind is
+not a cosmetic miss. The final `grep` is the check that matters.
 
 Two rules make this safe rather than clever:
 

@@ -387,104 +387,14 @@ export function assertProjectedSpace(loaded, label = 'a boundary index') {
   return loaded;
 }
 
-/* ── Transforming a decoded vintage ──────────────────────────────────────── */
+/* ── What is NOT here any more ───────────────────────────────────────────────
+   `projectCounties()` and its helpers are gone, along with the kit-cache keys
+   they had to invalidate. Nothing projects geometry client-side: `data-tiles`
+   builds the tiles and the sidecars' bounding boxes through this same
+   transform, and `assertProjectedSpace()` above is what checks that it did.
 
-/**
- * Every position in a GeoJSON coordinate array, projected — as a NEW nested
- * array rather than in place.
- *
- * Not in place, deliberately. topojson-client decodes a QUANTIZED topology
- * through a transform function that allocates a fresh [x, y] per point, so the
- * archives as they stand today have no aliasing between features. An
- * unquantized topology decodes with the identity transform instead and hands
- * back the topology's OWN arc arrays, shared by every polygon that uses the
- * arc — and an in-place walk would then project those shared points once per
- * neighbouring county. Rebuilding is O(same) and cannot be wrong.
- *
- * @param {any} coords a position, or any depth of array of them
- * @returns {any} the same shape, projected
- */
-function projectCoords(coords) {
-  if (!coords || !coords.length) return coords;
-  if (typeof coords[0] === 'number') return projectPoint(coords);
-  const out = new Array(coords.length);
-  for (let i = 0; i < coords.length; i++) out[i] = projectCoords(coords[i]);
-  return out;
-}
-
-// The kit's own per-feature geometry caches (county/county.js § Geometry
-// helpers). They are non-enumerable and configurable, and `_sfsaBBox` is
-// ALREADY POPULATED when loadCounties() resolves — _decodeTopology() calls
-// featureBBox() on every feature to build `bounds`. Leaving a geographic bbox
-// behind would make countyCentroid() return a geographic centre for projected
-// geometry, which is a fly-to and a card-reveal landing in the ocean. Deleting
-// rather than rewriting: the kit recomputes lazily with its own descriptor, so
-// this file only has to know the key names, not the caching contract.
-const KIT_GEOMETRY_CACHE_KEYS = ['_sfsaBBox', '_sfsaCentroid'];
-
-/**
- * Project a decoded boundary vintage into the dummy space, IN PLACE.
- *
- * Call this on the resolved value of the kit's loadCounties() and hand the
- * result on unchanged; from that point every coordinate in the object — the
- * county features, the state mesh, `bounds` — is in dummy units, and so is
- * everything the kit and the app derive from them (centroids, feature
- * geometry in MapLibre, map.project() input).
- *
- * MUST run before anything reads a centroid or hands `fc` to a GL source — so
- * the call belongs at each `await loadCounties(...)`, on the same line as it if
- * that reads better, and nowhere else.
- *
- * IDEMPOTENT, because it has to be: loadCounties() resolves a per-session
- * cached promise, so the SAME object comes back for every later request of a
- * vintage. Sliding 2016 → 2010 → 2016 hands the 2015-and-later object back a
- * second time, and Albers applied to Albers metres would fling the composite
- * into the next hemisphere. The `projected` marker is what makes the second
- * pass a no-op.
- *
- * @param {{vintage: string|null, fc: object, statesMesh: object,
- *          bounds: number[][], index: Map<string, object>,
- *          names: Map<string, object>}} loaded
- * @returns {object} the same object, mutated
- */
-export function projectCounties(loaded) {
-  if (!loaded || !loaded.fc || !Array.isArray(loaded.fc.features)) {
-    throw new Error('[ngp/projection] projectCounties() expects a loadCounties() '
-      + 'result with fc.features.');
-  }
-  if (loaded.projected) return loaded;   // already in dummy units — see above
-
-  // Bounds are recomputed here rather than run through projectPoint: Albers is
-  // not axis-aligned, so the projected corners of the geographic box are not
-  // the box of the projected geometry (see § The measured composite extent).
-  // Features only, matching the kit's own definition of `bounds`; the state
-  // mesh is derived from the same arcs and adds nothing.
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-
-  for (const feature of loaded.fc.features) {
-    const geometry = feature && feature.geometry;
-    if (geometry && geometry.coordinates) {
-      geometry.coordinates = projectCoords(geometry.coordinates);
-      (function walk(a) {
-        if (!a || !a.length) return;
-        if (typeof a[0] === 'number') {
-          if (a[0] < w) w = a[0];
-          if (a[1] < s) s = a[1];
-          if (a[0] > e) e = a[0];
-          if (a[1] > n) n = a[1];
-          return;
-        }
-        for (let i = 0; i < a.length; i++) walk(a[i]);
-      })(geometry.coordinates);
-    }
-    for (const key of KIT_GEOMETRY_CACHE_KEYS) delete feature[key];
-  }
-
-  if (loaded.statesMesh && loaded.statesMesh.coordinates) {
-    loaded.statesMesh.coordinates = projectCoords(loaded.statesMesh.coordinates);
-  }
-
-  if (Number.isFinite(w)) loaded.bounds = [[w, s], [e, n]];
-  loaded.projected = 'EPSG:5070';
-  return loaded;
-}
+   A call to a projection on this path would be a DOUBLE APPLICATION — Albers
+   over Albers metres — which flings the composite into the next hemisphere. If
+   a consumer ever needs geometry projected in the browser again the forward
+   transform is `projectPoint()`, and the walker that was deleted is twenty
+   lines of `git log`; do not reconstruct it from memory. */
