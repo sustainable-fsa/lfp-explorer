@@ -149,7 +149,7 @@ sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.4\.0/|/style/|g' \
 # Prod-ward — re-pin after the kit release: versioned surface, then the
 # deliberately unversioned vendor and brand-asset surfaces.
 for d in theme core map county ui; do
-  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.4.0/$d/|g" \
+  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.4.1/$d/|g" \
     index.html js/*.js js/*/*.js tools/verify.mjs
 done
 for d in vendor assets; do

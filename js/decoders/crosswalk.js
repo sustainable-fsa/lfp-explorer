@@ -50,7 +50,7 @@
    designations Primary beats Contiguous.
    ========================================================================== */
 
-import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.4.0/core/core.js';
+import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.4.1/core/core.js';
 import { assertSchema } from './common.js';
 
 /** Same-origin, in this repo. Relative like every other asset path, so the app
