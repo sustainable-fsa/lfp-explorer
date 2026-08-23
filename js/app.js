@@ -93,19 +93,19 @@
 import {
   createLiveRegion, getTheme, initThemeToggle, lsGet, lsSet, reducedMotion,
   replaceUrlState, showToast, urlParams, viewport,
-} from 'https://sustainable-fsa.com/style/v0.3.1/core/core.js';
+} from 'https://sustainable-fsa.com/style/v0.4.0/core/core.js';
 import {
   addFitControl, addNavigation, cameraParamsIfDefault, createCompositeMap,
   fitDefault, installZoomFloor,
-} from 'https://sustainable-fsa.com/style/v0.3.1/map/map.js';
+} from 'https://sustainable-fsa.com/style/v0.4.0/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, searchItems,
-} from 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
-import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.3.1/ui/search.js';
-import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.3.1/ui/card.js';
-import { initDrawer } from 'https://sustainable-fsa.com/style/v0.3.1/ui/drawer.js';
-import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.3.1/ui/legend.js';
-import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.3.1/ui/help.js';
+} from 'https://sustainable-fsa.com/style/v0.4.0/county/county.js';
+import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.4.0/ui/search.js';
+import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.4.0/ui/card.js';
+import { initDrawer } from 'https://sustainable-fsa.com/style/v0.4.0/ui/drawer.js';
+import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.4.0/ui/legend.js';
+import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.4.0/ui/help.js';
 
 /* js/data.js is the GRAZING-PERIOD family's facade, not the app's data layer
    (see § Live state): the search index, the county gazetteer and the type
@@ -919,6 +919,35 @@ function persist() {
  * cost here is one Map of ~3,000 colors, and the decoder memoizes the lookup
  * behind it.
  */
+/**
+ * The colours the current selection wants, and nothing else — no paint, no
+ * announcement, no card refill.
+ *
+ * For the buffered boundary swap, which has to hand the arriving geometry its
+ * choropleth before it is ever shown (§ swapBoundary). `selection()` already
+ * resolves `boundary` to the INCOMING authority, because it derives it from the
+ * year and the dataset rather than from what is drawn — so this is the picture
+ * for the polygons that are about to arrive, computed on the polygons they were
+ * computed against.
+ *
+ * Guarded rather than trusted: a descriptor leaf that throws here would take the
+ * swap down with it and leave the reader on the old authority with a failure
+ * note, when the honest degradation is "flip with the last colours, and let the
+ * recolour after the flip throw where the harness can see it".
+ *
+ * @returns {Map<string, string>|null}
+ */
+function colorsNow() {
+  if (!activeData) return null;
+  try {
+    return currentInterface().colorsFor(activeData, crosswalk, selection()).colors;
+  } catch (err) {
+    console.error('[ngp] could not compute the colours for the arriving county '
+      + 'authority; flipping to it with the previous ones', err);
+    return null;
+  }
+}
+
 function recolor() {
   const data = activeData;
   if (!handle || !data) return;
@@ -1478,20 +1507,43 @@ function ensureBoundary() {
  * sometimes a promise is a function every caller has to read twice. Callers
  * here are the decisions — a dataset toggle, a view switch — never a scrub.
  *
- * @returns {Promise<boolean>} whether a swap was needed
+ * @returns {Promise<boolean>} whether a swap LANDED — and therefore whether it
+ *        has already painted, refilled the card and announced. False covers
+ *        both "no swap was needed" and "the swap did not land" (it lost a race,
+ *        or it failed and left its own note), and in every one of those cases
+ *        the paint is the caller's again. Same contract as ensureBoundary()'s,
+ *        so both read `if (!…) recolor();`.
  */
 async function ensureBoundaryNow() {
   const want = selection().boundary;
   if (boundary && boundary.key === want.key) return false;
   clearTimeout(boundaryTimer);
   note('Switching to ' + want.label + '…');
-  await swapBoundary(want);
-  return true;
+  return swapBoundary(want);
 }
 
 /**
  * Load one authority and put it on the map. Never call this directly — go
  * through ensureBoundary(), which is where the no-op case and the debounce are.
+ *
+ * TWO AWAITS, AND THE SECOND ONE IS THE POINT. The sidecar has to arrive, and
+ * then the GEOMETRY has to arrive: since kit v0.4.0 the swap is double-buffered,
+ * so `handle.swapVintage()` builds the incoming archive's own layers, paints
+ * them with the colours handed to it while they are invisible, and resolves only
+ * once it has flipped to them. Everything below the second await is therefore
+ * describing what is ALREADY on screen — including `data-ngp-boundary`, which
+ * says which authority a reader is looking at and used to be written a few
+ * hundred milliseconds before it was true.
+ *
+ * WHY THE COLOURS TRAVEL WITH THE SWAP. The kit wipes feature state on the way
+ * through (state is keyed by id and would otherwise survive onto a county that
+ * changed shape), and a wipe whose repaint lands one frame later is a frame of
+ * every county grey. Passing them fuses the two into one task. It also means the
+ * arriving polygons are never painted with the OUTGOING dataset's numbers, and
+ * the outgoing polygons are never painted with the arriving dataset's — which,
+ * before v0.4.0, was a real ~100 ms window on every dataset switch, because
+ * `setUrl()` clears its tiles when the new TileJSON resolves rather than when it
+ * is called.
  *
  * @param {object} want a BoundaryRef
  * @returns {Promise<boolean>} whether it landed
@@ -1514,10 +1566,21 @@ async function swapBoundary(want) {
     if (seq !== boundarySeq) return false;
     if (selection().boundary.key !== want.key) return false;
 
+    const flip = await handle.swapVintage(next, { colors: colorsNow() });
+
+    // BOTH GUARDS AGAIN. The geometry warm-up is the long part of this function
+    // — a cold archive is a TileJSON resolution plus a screenful of tiles — and
+    // a reader can drag the year twice inside it. The kit has its own race guard
+    // and reports `superseded`; this one is the app's, and it is what stops the
+    // card, the search index and the live region being re-authored for an
+    // authority that lost.
+    if (seq !== boundarySeq) return false;
+    if (selection().boundary.key !== want.key) return false;
+    if (!flip.flipped && !flip.reused) return false;
+
     boundary = want;
     counties = next;
     document.documentElement.dataset.ngpBoundary = want.key;
-    handle.swapVintage(next);
 
     // The handle drops a selection whose polygon is gone; the DATA for that
     // county is still real, so the card stays open and now says WHICH authority
@@ -1538,6 +1601,97 @@ async function swapBoundary(want) {
     });
     return false;
   }
+}
+
+/* ── Warming the geometry a click away ───────────────────────────────────────
+   A blank-free swap is not yet an IMMEDIATE one: the archive still has to be
+   fetched, and on a cold one that is a TileJSON resolution (a pmtiles header and
+   two directory range reads) plus a screenful of tiles — measured locally at
+   around a second, and the reader spends it looking at the map they are leaving
+   with a pill that says what is coming.
+
+   So the app tells the kit what is one click away, and the signal is INTENT: a
+   pointer arriving at the button that would cause the swap, or focus landing on
+   it. That is roughly half a second before the click, which is roughly what the
+   archive needs, and it costs nothing at all for a reader who does not switch.
+
+   Bounded on purpose. `handle.warmGeometry()` counts against the kit's `buffers`
+   cap (two, counting what is on screen), so warming a third archive retires the
+   coldest — the LAST thing hovered is the thing that stays warm, which is the
+   right answer for a hover. And a failure is swallowed: a warm-up that did not
+   happen costs a slower swap and nothing else, so it must never reach the reader
+   as an error. */
+
+/** The last key warming was asked for, so re-entering a button — pointerenter
+    then focus, or a pointer crossing it twice — is one warm-up, not three. */
+let warmedKey = null;
+
+/**
+ * Warm one authority's geometry, best-effort.
+ *
+ * @param {object|null} ref a BoundaryRef, or null for "nothing to warm"
+ */
+function warmBoundary(ref) {
+  if (!ref || !handle || !handle.tiled) return;
+  // Already on screen, already warming, or already warmed: nothing to do.
+  if (boundary && ref.key === boundary.key) return;
+  if (warmedKey === ref.key) return;
+  warmedKey = ref.key;
+  loadBoundary(ref)
+    .then((c) => handle.warmGeometry(c))
+    .catch(() => { warmedKey = null; });
+}
+
+/**
+ * The geometry a dataset button WOULD land on, warmed.
+ *
+ * Best-effort in one more way than the note above admits: the year can CLAMP
+ * into the arriving family's domain (applyYearDomain), and a clamp across a
+ * vintage line means the archive warmed here is not the one the click needs. The
+ * cost of being wrong is one unused fetch, and the common case — a dataset
+ * toggle inside one family, at a year both families cover — is right.
+ *
+ * @param {string} datasetId a `data-dataset` attribute value
+ */
+function warmForDataset(datasetId) {
+  if (!datasetId) return;
+  for (const iface of INTERFACES) {
+    const ds = iface.datasets.find((d) => d.id === datasetId);
+    if (!ds) continue;
+    warmBoundary(boundaryFor({ authority: authorityIdOf(ds), year: state.year }));
+    return;
+  }
+}
+
+/**
+ * The geometry a view button would land on: that family's remembered dataset, or
+ * its default.
+ *
+ * @param {string} viewId a `data-view-btn` attribute value
+ */
+function warmForView(viewId) {
+  const iface = viewFromSlug(String(viewId ?? '').toLowerCase());
+  if (!iface || iface.id === state.view) return;
+  // Every view's entry in `viewState` declares a dataset, and it is the one a
+  // switch would bring up — remembered from earlier in the session if the reader
+  // has been there, its declared default if not.
+  warmForDataset(viewState[iface.id].dataset);
+}
+
+/**
+ * The year slider's intent, which is only actionable on ONE authority.
+ *
+ * FSA's axis has exactly two values, so "the other one" is a single archive and
+ * warming it is what makes the first drag across 2015 free. The Census axis has
+ * eighteen, one per year, and a slider that has not moved yet says nothing about
+ * direction — so there is nothing honest to warm there, and a year step on the
+ * drought monitor pays the warm-up it always did (blank-free now, but not
+ * instant).
+ */
+function warmForYearControl() {
+  if (!boundary || boundary.authority !== 'fsa') return;
+  const other = fsaVintageFor(state.year) === 'dd17' ? 2026 : 2012;
+  warmBoundary(boundaryFor({ authority: 'fsa', year: other }));
 }
 
 /* ── The week scrubber ───────────────────────────────────────────────────────
@@ -2161,6 +2315,21 @@ async function applyDataset(ds) {
   // "Loading Derived from USDM…" reads as a hung app.
   note(ds.loadingNote || ('Loading ' + ds.label + '…'));
 
+  // START THE GEOMETRY NOW, alongside the payload. They are independent fetches
+  // from two origins, and they were SERIAL: the payload was awaited below, and
+  // only then did ensureBoundaryNow() go looking for the archive. Measured on a
+  // cold switch to the FSA LFP drought dataset, 1,177 ms to the flip, of which
+  // roughly 400 ms was geometry that could have been in flight the whole time —
+  // overlapping them makes a cold switch about as slow as its slower half
+  // instead of as slow as both.
+  //
+  // Best-effort, and deliberately not awaited: the real load is
+  // ensureBoundaryNow()'s below, which is where the ordering guarantee lives.
+  // The one way this can be wrong is a year that CLAMPS into the arriving
+  // family's domain across a vintage line, which warms an archive the click
+  // does not need; the cost of that is one unused fetch (§ warmForDataset).
+  warmForDataset(ds.id);
+
   let instance;
   try {
     const [inst, xw] = await Promise.all([
@@ -2222,15 +2391,23 @@ async function applyDataset(ds) {
   // the 97%-right map this machinery exists to prevent. `immediate`, because a
   // dataset toggle is one decision and not a scrub.
   //
-  // swapBoundary() recolors for itself, so the recolor below would be a second
-  // one — harmless (it is idempotent and rAF-coalesced) but the await is what
-  // guarantees the ORDER.
-  await ensureBoundaryNow();
+  // swapBoundary() paints, refills the card and ANNOUNCES for itself, so the
+  // recolor below is skipped when it landed — exactly the shape setYear() uses.
+  //
+  // It was an unconditional second recolor until the swap became awaited, and
+  // then it was a bug rather than a harmless duplicate. The live region holds a
+  // sentence for LIVE_REST_MS and speaks the last one (§ deferAnnounce), which
+  // is what fuses a clamp's explanation to the summary it belongs to. Two
+  // recolors used to land inside one rest window, so the reader heard one
+  // sentence; with the geometry awaited, the first landed ~a second earlier, the
+  // notice was spoken with it and cleared, and the second overwrote the live
+  // region with a summary that no longer said why the year had moved.
+  const drawn = await ensureBoundaryNow();
 
   persist();
   pushState();
 
-  recolor();      // paints, refills the card, and announces through the descriptor
+  if (!drawn) recolor();   // paints, refills the card, and announces
   syncLegend();
   if (tableCtl) tableCtl.invalidate();
   clearNote();
@@ -2418,12 +2595,28 @@ function wireControls() {
     btn.addEventListener('click', () => setVariable(btn.dataset.variable));
   }
 
+  // Both switchers get the same pair of handlers: the click, and the INTENT
+  // that precedes it (§ Warming the geometry a click away). `focus` rather than
+  // `focusin` because these are buttons, and pointerenter rather than
+  // mouseenter so a stylus or a hovering trackpad counts too. Touch has no
+  // hover at all, which is why the kit keeps the outgoing archive resident —
+  // the second flip is instant for everyone.
   for (const btn of els.viewBtns) {
-    btn.addEventListener('click', () => setView(btn.getAttribute('data-view-btn')));
+    const view = btn.getAttribute('data-view-btn');
+    btn.addEventListener('click', () => setView(view));
+    btn.addEventListener('pointerenter', () => warmForView(view));
+    btn.addEventListener('focus', () => warmForView(view));
   }
 
   for (const btn of els.datasetBtns) {
-    btn.addEventListener('click', () => setDataset(btn.getAttribute('data-dataset')));
+    const id = btn.getAttribute('data-dataset');
+    btn.addEventListener('click', () => setDataset(id));
+    btn.addEventListener('pointerenter', () => warmForDataset(id));
+    btn.addEventListener('focus', () => warmForDataset(id));
+  }
+
+  for (const ev of ['pointerenter', 'focus']) {
+    els.year.addEventListener(ev, warmForYearControl);
   }
 
   for (const btn of els.choiceBtns) {

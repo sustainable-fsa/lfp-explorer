@@ -38,7 +38,7 @@
    knows whether a week, a year or a pasture type is part of its identity.
    ========================================================================== */
 
-import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.3.1/core/core.js';
+import { initInfoModal } from 'https://sustainable-fsa.com/style/v0.4.0/core/core.js';
 import { interfaceOf, viewSelection } from './interfaces/registry.js';
 
 /** Above this, a rebuild is worth warning the user about — measured on the

@@ -110,9 +110,14 @@ const CONFIG = {
       no assertion below depends on which side of 2015 the slider sits. */
   county: INTERFACES.ngp.county,
 
-  /** The source id the kit's addCountyLayers creates. Feature state lives
-      here, and feature state is how a repaint is proved. */
-  sourceId: 'sfsa-counties',
+  /* NO SOURCE ID AND NO LAYER IDS. They used to be here, and on kit v0.4.0's
+     tiled path a constant would be a lie: the map holds one layer stack per
+     resident archive, the ids carry a slot suffix, and both move when the front
+     does. Every probe below asks the handle — `handle.featureRef(id)`,
+     `handle.layers.fill` — at the moment of use. A retired stack is transparent
+     rather than hidden and therefore still answers queryRenderedFeatures, so a
+     literal here would not fail loudly; it would quietly measure the archive the
+     reader stopped looking at. */
 };
 /* ══════════════════════════════════════════════════════════════════════════ */
 
@@ -122,7 +127,7 @@ const CONFIG = {
     README § Developing against an unreleased kit lists this file alongside
     index.html and js/. It is passed INTO page.evaluate as an argument: a
     string built in-page from an outer-scope binding would not exist. */
-const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
+const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.4.0/county/county.js';
 
 const server = serveWorkspace(CONFIG.root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -433,7 +438,7 @@ const viewControls = (page) => page.evaluate(() => {
  * owns, so this probe cannot be right on one path and silently wrong on the
  * other. Never hand-roll the ref here.
  */
-const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
+const paintSignature = (page) => page.evaluate(async () => {
   // No map, no geometry, or no app module at all means nothing is painted,
   // which is a signature too — and one that fails every "the paint changed"
   // comparison rather than throwing the run away. The module can genuinely be
@@ -447,8 +452,11 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
     let hash = 5381;
     if (!map || !c.getCounties()) return { colored: 0, hash: 0 };
     const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
-    const ref = (id) => (handle && typeof handle.featureRef === 'function')
-      ? handle.featureRef(id) : { source: src, id };
+    if (!handle || typeof handle.featureRef !== 'function') {
+      return { colored: 0, hash: 0, error: 'no handle.featureRef to address the '
+        + 'front stack with — there is no constant to fall back to' };
+    }
+    const ref = (id) => handle.featureRef(id);
     for (const id of c.getCounties().index.keys()) {
       const st = map.getFeatureState(ref(id));
       const color = (st && st.color) || '';
@@ -461,21 +469,19 @@ const paintSignature = (page, sourceId) => page.evaluate(async (src) => {
   } catch (err) {
     return { colored: 0, hash: 0, error: String(err).split('\n')[0] };
   }
-}, sourceId);
+});
 
 /** The paint color of one county, straight out of feature state. Null if there
     is no map to ask — see snapshot() on why a broken boot does not throw.
     Through handle.featureRef() for the reason spelled out on paintSignature. */
-const colorOf = (page, id, sourceId) => page.evaluate(async ([i, src]) => {
+const colorOf = (page, id) => page.evaluate(async (i) => {
   const app = await import(new URL('js/app.js', document.baseURI).href);
   const c = app.ngpContext();
   const map = c.getMap();
-  const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
-  const ref = (handle && typeof handle.featureRef === 'function')
-    ? handle.featureRef(i) : { source: src, id: i };
-  const st = map && map.getFeatureState(ref);
+  const handle = c.getHandle();
+  const st = map && map.getFeatureState(handle.featureRef(i));
   return (st && st.color) || null;
-}, [id, sourceId]);
+}, id);
 
 /** Move the year slider the way a pointer does: set the value, fire `input`. */
 const slideYear = (page, year) => page.evaluate((y) => {
@@ -524,8 +530,10 @@ async function settledLiveText(page, test) {
  *
  * WAITS ON THE MARKER, not on the transient pill. `data-ngp-boundary` carries
  * the tileset key that is actually on the map, so "the geometry the app intends
- * is the geometry it has" is a single string comparison — and the app writes it
- * in the same statement that assigns the geometry.
+ * is the geometry it has" is a single string comparison — and since the swap
+ * became double-buffered (kit v0.4.0) the app writes it AFTER the flip, which
+ * makes it a stronger signal than it was: it now means "this authority is on
+ * screen", not "this authority has been asked for".
  *
  * The pill is the wrong signal and cost a debugging hour to prove it: it is
  * shown by whoever starts a transition and cleared by whoever finishes one, so
@@ -770,13 +778,13 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
       'no county changes duration between two dd22 program years — the data '
       + 'cannot support this assertion');
   } else {
-    const sigBefore = await paintSignature(page, CONFIG.sourceId);
-    const colorBefore = await colorOf(page, yearProbe.id, CONFIG.sourceId);
+    const sigBefore = await paintSignature(page);
+    const colorBefore = await colorOf(page, yearProbe.id);
     await slideYear(page, yearProbe.year);
     await page.waitForTimeout(400);
     await settleFrames(page);
-    const sigAfter = await paintSignature(page, CONFIG.sourceId);
-    const colorAfter = await colorOf(page, yearProbe.id, CONFIG.sourceId);
+    const sigAfter = await paintSignature(page);
+    const colorAfter = await colorOf(page, yearProbe.id);
     const after = await snapshot(page);
 
     check(`year slider moved the app to ${yearProbe.year}`,
@@ -821,11 +829,11 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   if (!typeProbe) {
     skip('pasture type repaints the choropleth', 'no second type differs on any county');
   } else {
-    const sigBefore = await paintSignature(page, CONFIG.sourceId);
+    const sigBefore = await paintSignature(page);
     await page.selectOption('#type-select', typeProbe.type);
     await page.waitForTimeout(400);
     await settleFrames(page);
-    const sigAfter = await paintSignature(page, CONFIG.sourceId);
+    const sigAfter = await paintSignature(page);
     const after = await snapshot(page);
     check(`pasture type select changed the app to ${JSON.stringify(typeProbe.type)}`,
       after.state.type === typeProbe.type, 'state.type is ' + after.state.type);
@@ -916,7 +924,7 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
     // Against the DATA, not a round number. 2012 Native Pasture has 2,979
     // reporting counties — a hardcoded "> 3000" here passes for the default
     // year and fails for this one, which says nothing about the app.
-    const painted = await paintSignature(page, CONFIG.sourceId);
+    const painted = await paintSignature(page);
     const expected = await page.evaluate(async () => {
       const d = await import(new URL('js/data.js', document.baseURI).href);
       const app = await import(new URL('js/app.js', document.baseURI).href);
@@ -1152,14 +1160,18 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
          have saved, and the one this app is full of. */
       const ring = (id) => page.evaluate(async (id) => {
         const app = await import(new URL('js/app.js', document.baseURI).href);
-        const map = app.ngpContext().getMap();
+        const c = app.ngpContext();
+        const map = c.getMap();
+        // The FRONT stack's ids, asked for now. Kit v0.4.0 keeps more than one
+        // archive on the map and suffixes the ids per stack, so the literals
+        // that used to be here would query a retired stack half the time — and
+        // a retired stack is transparent, not hidden, so it answers.
+        const L = c.getHandle().layers;
         const n = (layer) => {
           try { return map.queryRenderedFeatures({ layers: [layer] }).length; }
           catch { return -1; }
         };
-        return { id, ring: n('sfsa-county-selected'),
-          casing: n('sfsa-county-selected-casing'),
-          fill: n('sfsa-county-fill') };
+        return { id, ring: n(L.selected), casing: n(L.selectedCasing), fill: n(L.fill) };
       }, id);
 
       const litHere = await ring(CONFIG.county.id);
@@ -1589,7 +1601,7 @@ section('▸ Deep link ?county=30063&year=2012&type=native-pasture&variable=star
   check('a deep link suppresses the first-visit help tour',
     !st.helpOpen);
   check('the choropleth painted for the deep-linked view',
-    (await paintSignature(s.page, CONFIG.sourceId)).colored > 2000);
+    (await paintSignature(s.page)).colored > 2000);
   s.clean('deep link');
   await s.shot('12-deep-link');
   await s.ctx.close();
@@ -1667,7 +1679,7 @@ section('▸ High-contrast theme');
   check('the theme is applied to <html>',
     (await s.page.evaluate(() => document.documentElement.dataset.theme)) === 'high-contrast');
   check('the choropleth painted in high contrast',
-    (await paintSignature(s.page, CONFIG.sourceId)).colored > 2000);
+    (await paintSignature(s.page)).colored > 2000);
   // Before the toggle below, or the file named "high-contrast" holds a light
   // -theme page and the screenshot set quietly stops being evidence.
   await s.shot('14-high-contrast');
@@ -2298,7 +2310,7 @@ async function verifyInterfaceSection(iface, {
   section(`▸ View ${iface.slug} — ${iface.label}`);
 
   /* 1 · Switch. */
-  const sigBefore = await paintSignature(page, CONFIG.sourceId);
+  const sigBefore = await paintSignature(page);
   const seq = await viewSeq(page);
   const clicked = await clickControl(page, iface.switchSel);
   const bumped = clicked && await awaitViewSeq(page, seq);
@@ -2325,7 +2337,7 @@ async function verifyInterfaceSection(iface, {
     + `now ${fetched.filter((n) => n.includes(ds.payload)).length}`);
 
   /* 4 · Repaint, with an oracle rather than a number. */
-  const sigAfter = await paintSignature(page, CONFIG.sourceId);
+  const sigAfter = await paintSignature(page);
   check(`the choropleth repainted for ${iface.label} (feature-state signature `
     + 'changed)', sigBefore.hash !== sigAfter.hash,
   `${sigBefore.colored} @${sigBefore.hash} → ${sigAfter.colored} @${sigAfter.hash}`);
@@ -2691,7 +2703,7 @@ section('▸ View switcher + NGP datasets — FSA Official ↔ NAP-190 Derived')
      to move together: the paint (through the crosswalk), the year control (a
      climatology has no year), the type dictionary (three seasons, not fifteen
      pasture types), the legend's text key, and the URL. */
-  const sigOfficial = await paintSignature(page, CONFIG.sourceId);
+  const sigOfficial = await paintSignature(page);
   const seq0 = await viewSeq(page);
   const clicked = await clickControl(page, CLIMO.sel);
   const bumped = clicked && await awaitViewSeq(page, seq0);
@@ -2717,7 +2729,7 @@ section('▸ View switcher + NGP datasets — FSA Official ↔ NAP-190 Derived')
     climoSnap.state.dataset === CLIMO.id,
     JSON.stringify(climoSnap.state));
 
-  const sigClimo = await paintSignature(page, CONFIG.sourceId);
+  const sigClimo = await paintSignature(page);
   check('the choropleth repainted onto the climatology (feature-state signature '
     + 'changed)', sigOfficial.hash !== sigClimo.hash,
   `${sigOfficial.colored} colored @${sigOfficial.hash} → `
@@ -2799,7 +2811,7 @@ section('▸ View switcher + NGP datasets — FSA Official ↔ NAP-190 Derived')
   const bumpedBack = clickedBack && await awaitViewSeq(page, seq1);
   const back = await viewControls(page);
   const backSnap = await snapshot(page);
-  const sigBack = await paintSignature(page, CONFIG.sourceId);
+  const sigBack = await paintSignature(page);
   check('the toggle back to FSA official completes on the same marker', bumpedBack,
     `data-ngp-view-seq stayed at ${seq1}`);
   check('?dataset is DROPPED at the default, not rewritten to ?dataset=fsa',
@@ -2840,7 +2852,7 @@ section('▸ View switcher + NGP datasets — FSA Official ↔ NAP-190 Derived')
   await settleFrames(page);
   const settled = await viewControls(page);
   const settledSnap = await snapshot(page);
-  const sigSettled = await paintSignature(page, CONFIG.sourceId);
+  const sigSettled = await paintSignature(page);
   check('a double toggle with no waiting comes to rest where the LAST click '
     + 'asked (official), not where the slowest fetch did',
   settled.datasets.length === 1 && settled.datasets[0] === OFFICIAL.id
@@ -3025,12 +3037,12 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
     JSON.stringify({ value: w0.value, max: w0.max, week: w0.weekParam }));
 
     /* One scrub, and everything that has to move with it. */
-    const sigBefore = await paintSignature(page, CONFIG.sourceId);
+    const sigBefore = await paintSignature(page);
     const seqBefore = await viewSeq(page);
     await scrubWeek(page, 10);
     await settleWeek(page);
     const w1 = await weekProbe(page);
-    const sigAfter = await paintSignature(page, CONFIG.sourceId);
+    const sigAfter = await paintSignature(page);
     const n1 = weekNumber(w1.out);
     check('scrubbing repaints the choropleth (feature-state signature changed) '
       + '— the drought map is a different map every week',
@@ -3113,14 +3125,14 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
      in this section and open on the wrong county set. */
   section('▸ Drought monitor — three county keys, and what each one cannot reach');
   const wantOrder = Object.values(DS).map((d) => ({ id: d.id, label: d.label }));
-  let prevSig = await paintSignature(page, CONFIG.sourceId);
+  let prevSig = await paintSignature(page);
   for (const ds of [DS.census, DS.reported, DS['fsa-lfp']]) {
     const seq = await viewSeq(page);
     const clicked = await clickControl(page, ds.sel);
     const bumped = clicked && await awaitViewSeq(page, seq);
     const vc = await viewControls(page);
     const snap = await snapshot(page);
-    const sig = await paintSignature(page, CONFIG.sourceId);
+    const sig = await paintSignature(page);
     const probe = await weekProbe(page);
     check(`the ${JSON.stringify(ds.label)} toggle completes on data-ngp-view-seq `
       + '(fetch, crosswalk re-join, recolor, feature-state flush)',
@@ -3396,7 +3408,7 @@ section('▸ Deep link ?view=usdm&year=2012&week=30&county=30063');
   check('the swatches legend is the visible body, and neither continuous one is',
     vc.legend.swatches === true && vc.legend.wheel === false
       && vc.legend.bar === false, JSON.stringify(vc.legend));
-  const painted = await paintSignature(page, CONFIG.sourceId);
+  const painted = await paintSignature(page);
   const expect = await USDM.paintOracle(page);
   if (typeof expect === 'number') {
     check('the choropleth painted for the deep-linked week, county for county',
@@ -3680,7 +3692,7 @@ const selectOption = (page, sel, wanted) => page.evaluate(([s, want]) => {
     paint signature says THAT the map changed; this says which colours are on it
     and how many counties carry each, which is how a categorical claim ("the
     undated counties took the slate") is checked. */
-const paintHistogram = (page, sourceId) => page.evaluate(async (src) => {
+const paintHistogram = (page) => page.evaluate(async () => {
   const out = {};
   try {
     const app = await import(new URL('js/app.js', document.baseURI).href);
@@ -3688,18 +3700,17 @@ const paintHistogram = (page, sourceId) => page.evaluate(async (src) => {
     const map = c.getMap();
     if (!map || !c.getCounties()) return out;
     // Through the handle — see paintSignature on why a hand-rolled ref reads
-    // back undefined on a vector source without throwing.
-    const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
-    const ref = (id) => (handle && typeof handle.featureRef === 'function')
-      ? handle.featureRef(id) : { source: src, id };
+    // back undefined on a vector source without throwing, and why there is no
+    // constant left to fall back to.
+    const handle = c.getHandle();
     for (const id of c.getCounties().index.keys()) {
-      const st = map.getFeatureState(ref(id));
+      const st = map.getFeatureState(handle.featureRef(id));
       const color = ((st && st.color) || '').toLowerCase();
       if (color) out[color] = (out[color] || 0) + 1;
     }
     return out;
   } catch (err) { return out; }
-}, sourceId);
+});
 
 /** The committed ramp asset, fetched by the PAGE (so it is the same bytes the
     app read) rather than from disk. Null when it is not there yet. */
@@ -3764,7 +3775,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
     const bumped = clicked && await awaitViewSeq(page, seq);
     const vc = await viewControls(page);
     const snap = await snapshot(page);
-    const sig = await paintSignature(page, CONFIG.sourceId);
+    const sig = await paintSignature(page);
     const p = await eligProbe(page);
     check(`the ${JSON.stringify(ds.label)} toggle completes on data-ngp-view-seq `
       + `(fetch${ds.id === 'derived' ? ' of an 11 MB payload' : ''}, decode, `
@@ -3933,12 +3944,12 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
          what is checked below, is that they are not one map relabelled. Each
          convention is still held to its own reduction, county for county, by the
          oracle. */
-      const sigs = { [iface.source.default]: await paintSignature(page, CONFIG.sourceId) };
+      const sigs = { [iface.source.default]: await paintSignature(page) };
       for (const conv of iface.source.conventions.slice(1)) {
         const chosen = await selectOption(page, iface.source.selectSel, conv.id);
         await settleRepaint(page);
         const p = await eligProbe(page);
-        const next = await paintSignature(page, CONFIG.sourceId);
+        const next = await paintSignature(page);
         const expect = await iface.paintOracle(page);
         sigs[conv.id] = next;
         check(`${conv.label}: the select accepted it and the app is reading it`,
@@ -4025,7 +4036,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
   {
     const months0 = await eligProbe(page);
     const vc0 = await viewControls(page);
-    const sig0 = await paintSignature(page, CONFIG.sourceId);
+    const sig0 = await paintSignature(page);
     check('it opens on payment months, with the swatches legend and no '
       + '?variable in the URL',
     months0.monthsPressed === 'true' && months0.datePressed === 'false'
@@ -4045,7 +4056,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
     await settleRepaint(page);
     const onDate = await eligProbe(page);
     const vcDate = await viewControls(page);
-    const sigDate = await paintSignature(page, CONFIG.sourceId);
+    const sigDate = await paintSignature(page);
     check('the qualifying date is painted on the cyclic month wheel — the same '
       + 'legend body the grazing periods use, because a date is a date',
     clickedDate && vcDate.legend.wheel === true && vcDate.legend.swatches === false
@@ -4071,7 +4082,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
     await clickControl(page, iface.variables.months.sel);
     await settleRepaint(page);
     const backToMonths = await eligProbe(page);
-    const sigBack = await paintSignature(page, CONFIG.sourceId);
+    const sigBack = await paintSignature(page);
     check('going back to payment months drops ?variable and restores that paint '
       + 'bit for bit — the toggle is a restore, not a rebuild',
     backToMonths.params.variable === null && sigBack.hash === sig0.hash,
@@ -4091,12 +4102,12 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
   section('▸ LFP eligibility — all types (worst case)');
   {
     const before = await eligProbe(page);
-    const sigOne = await paintSignature(page, CONFIG.sourceId);
+    const sigOne = await paintSignature(page);
     const oneType = await iface.eligibleOracle(page);
     const chosen = await selectOption(page, iface.type.selectSel, iface.type.all.slug);
     await settleRepaint(page);
     const after = await eligProbe(page);
-    const sigAll = await paintSignature(page, CONFIG.sourceId);
+    const sigAll = await paintSignature(page);
     const allTypes = await iface.eligibleOracle(page);
     check('the pasture-type select offers the payload\'s fifteen types PLUS the '
       + 'all-types sentinel, and the sentinel is first',
@@ -4127,7 +4138,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
     await selectOption(page, iface.type.selectSel, iface.type.default);
     await settleRepaint(page);
     const home = await eligProbe(page);
-    const sigHome = await paintSignature(page, CONFIG.sourceId);
+    const sigHome = await paintSignature(page);
     check(`going back to ${iface.type.default} drops ?type at its default and `
       + 'restores that paint bit for bit',
     home.params.type === null && sigHome.hash === sigOne.hash,
@@ -4244,7 +4255,7 @@ async function eligExtraChecks({ page, check, skip, clean, shot, iface }) {
     await settleRepaint(page);
     const snap = await snapshot(page);
     const ramp = await dfRamp(page, iface.ramp.path);
-    const hist = await paintHistogram(page, CONFIG.sourceId);
+    const hist = await paintHistogram(page);
     const dateless = await iface.datelessOracle(page);
     check(`setup: the FOIA archive at ${U.year}, coloured by qualifying date`,
       snap.state.year === U.year && snap.state.variable === 'date'
@@ -4406,7 +4417,7 @@ section(`▸ Deep link ${ELIG.deepLink}`);
   card.figure && card.caption.length > 20 && card.twinRows > 5,
   JSON.stringify({ figure: card.figure, caption: card.caption.slice(0, 160),
     twinRows: card.twinRows }));
-  const painted = await paintSignature(page, CONFIG.sourceId);
+  const painted = await paintSignature(page);
   const expect = await ELIG.paintOracle(page);
   if (typeof expect === 'number') {
     check('the choropleth painted for the deep-linked year and type, county for '
@@ -4702,7 +4713,7 @@ async function disastersExtraChecks({ page, check, skip, clean, shot, iface }) {
     const snap = await snapshot(page);
     const p = await disProbe(page);
     const join = await iface.joinOracle(page);
-    const fixtureSig = await paintSignature(page, CONFIG.sourceId);
+    const fixtureSig = await paintSignature(page);
     /* The absence chip on this view NAMES THE YEAR ("No designation in 2021"),
        and the year is the only control it has: a chip left on the year the map
        booted at would be telling a reader the gray counties are gray for a
@@ -4920,7 +4931,7 @@ section(`▸ Deep link ${DIS.deepLink}`);
     + 'is no canvas here to caption',
   p.card.items > 0 && p.card.figures === 0,
   JSON.stringify({ items: p.card.items, figures: p.card.figures }));
-  const painted = await paintSignature(page, CONFIG.sourceId);
+  const painted = await paintSignature(page);
   const expect = await DIS.paintOracle(page);
   if (typeof expect === 'number') {
     check('the choropleth painted for the deep-linked year and slice, county for '
@@ -5120,9 +5131,10 @@ section('▸ Four views, four memories');
    inspect and no count to notice.
 
    So this drives the app through every row of the declared mapping and reads
-   `data-ngp-boundary` — the tileset key the app wrote in the same statement that
-   assigned the geometry. `tools/check-boundaries.mjs` proves the RESOLVER is
-   right against the published data; this proves the app is using it.
+   `data-ngp-boundary` — the tileset key the app writes once the geometry it
+   names is really on screen, because the buffered swap resolves first.
+   `tools/check-boundaries.mjs` proves the RESOLVER is right against the
+   published data; this proves the app is using it.
    ══════════════════════════════════════════════════════════════════════════ */
 
 section('▸ Every dataset draws the authority it declares');
@@ -5176,6 +5188,293 @@ section('▸ Every dataset draws the authority it declares');
   }
   s.clean('authority table');
   await s.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   A CHANGE OF AUTHORITY NEVER SHOWS A HOLE.
+   ══════════════════════════════════════════════════════════════════════════
+
+   The reader's complaint, and the reason kit v0.4.0 exists: switching dataset —
+   or, on the Census authority, stepping the year — flashed. Twice for an
+   archive that had not been fetched yet, once for one that had.
+
+   Measured before the fix, on a switch from the 2025 Census counties to the FSA
+   LFP determination boundaries: ~100 ms with every county grey (the
+   feature-state wipe, repainted a frame later), then ~100 ms of the NEW
+   dataset's numbers on the OLD authority's polygons, then ~400 ms of blank. The
+   middle one is the one that matters most here — a map that is 97% right is the
+   failure this app's whole boundary machinery exists to prevent, and it was
+   arriving through the one call that was supposed to prevent it, because
+   `setUrl()` clears its tiles when the new TileJSON RESOLVES rather than when it
+   is called.
+
+   FOUR WITNESSES PER RENDERED FRAME, and every one of them is exact — no colour
+   classification, because "is this pixel the right shade" is the assertion that
+   passed while the bug was shipping:
+
+     1. PIXELS, for the blank. Sample points verified to be over painted
+        counties before the swap starts; not one frame may turn any of them into
+        the map background. Read inside a 'render' handler, which is the only
+        place a live map's drawing buffer is readable — a live map has no
+        preserveDrawingBuffer (ui/export.js sets it on its own throwaway map for
+        exactly this reason), and a read between frames comes back BLACK, which
+        would look like a blank and be a measurement bug.
+     2. FEATURE STATE, for the grey. The probe county's colour must be present in
+        every frame: the buffered swap leaves the outgoing stack's paint alone,
+        so a frame with no colour on it is the wipe leaking.
+     3. THE AUTHORITY PAIR, for the misregistration. `data-ngp-boundary` and the
+        county count the app is describing must move TOGETHER — never a frame
+        where the marker says one authority and the app is holding the other's
+        index, which is what "assign the geometry, then start the swap" used to
+        produce for as long as the swap took.
+     4. CONNECTICUT, for what is actually drawn. The state is eight traditional
+        counties on the FSA LFP set and nine PLANNING REGIONS on Census 2022+,
+        and the two sets share no id — so the id rendered at a point in Hartford
+        says which archive the reader is looking at, independently of what the
+        app claims. It must agree with the marker in every frame.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ A change of authority never shows a hole');
+{
+  /**
+   * Watch one transition frame by frame.
+   *
+   * @param {object} page
+   * @param {(ctx: object) => void} actionName what to do, as a name the in-page
+   *        probe understands — the action has to run INSIDE the page, after the
+   *        render listener is installed, or the first frames are lost.
+   * @param {any} arg the action's argument
+   */
+  const watch = (page, actionName, arg, probe) => page.evaluate(async ([action, a, probeId]) => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const map = c.getMap();
+    const canvas = map.getCanvas();
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const px = new Uint8Array(4);
+
+    const bgToken = getComputedStyle(document.documentElement)
+      .getPropertyValue('--map-bg').trim();
+    // The token as the renderer sees it: paint it into a 2D canvas and read it
+    // back, rather than parsing hex or rgb() by hand here.
+    const probe2d = document.createElement('canvas').getContext('2d');
+    probe2d.fillStyle = bgToken;
+    probe2d.fillRect(0, 0, 1, 1);
+    const bg = Array.from(probe2d.getImageData(0, 0, 1, 1).data).slice(0, 3);
+
+    const at = (fx, fy) => [Math.round(canvas.width * fx), Math.round(canvas.height * fy)];
+    const POINTS = [[0.32, 0.42], [0.45, 0.52], [0.58, 0.46], [0.5, 0.66], [0.66, 0.6]]
+      .map(([fx, fy]) => at(fx, fy));
+    const read = (p) => {
+      // readPixels' origin is the BOTTOM-left.
+      gl.readPixels(p[0], canvas.height - p[1], 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return [px[0], px[1], px[2]];
+    };
+    const isBg = (v) => Math.abs(v[0] - bg[0]) < 6 && Math.abs(v[1] - bg[1]) < 6
+      && Math.abs(v[2] - bg[2]) < 6;
+
+    // A point in Connecticut, from whichever CT ids the authority on screen has.
+    const ctIds = [...c.getCounties().index.keys()].filter((k) => k.startsWith('09'));
+    const rec = ctIds.length ? c.getCounties().index.get(ctIds[0]) : null;
+    const ctPoint = rec
+      ? map.project([(rec.bbox[0] + rec.bbox[2]) / 2, (rec.bbox[1] + rec.bbox[3]) / 2])
+      : null;
+
+    const frame = () => {
+      const handle = c.getHandle();
+      const ct = ctPoint
+        ? map.queryRenderedFeatures([ctPoint.x, ctPoint.y], { layers: [handle.layers.fill] })
+        : [];
+      // The COLOUR WITNESS is a fixed county the caller chose, not whatever
+      // happens to be painted: it has to exist in both authorities, or the
+      // frames after the flip would read back empty feature state and the
+      // "never colourless" assertion would fail on a county that simply is not
+      // in the arriving county set.
+      const st = map.getFeatureState(handle.featureRef(probeId));
+      const pixels = POINTS.map(read);
+      return {
+        pixels,
+        bgHits: pixels.filter(isBg).length,
+        colour: (st && st.color) || null,
+        marker: document.documentElement.dataset.ngpBoundary || null,
+        n: c.getCounties() ? c.getCounties().index.size : 0,
+        ct: ct.length ? String(ct[0].properties.id) : null,
+        geometry: handle.geometry ? handle.geometry() : null,
+      };
+    };
+
+    // Establish the resting state INSIDE a render, and refuse to measure if the
+    // sample points are not over painted counties — a probe over the ocean would
+    // pass every assertion below and prove nothing.
+    const restBefore = await new Promise((resolve) => {
+      const once = () => { map.off('render', once); resolve(frame()); };
+      map.on('render', once);
+      map.triggerRepaint();
+    });
+
+    const frames = [];
+    const onRender = () => { frames.push(frame()); };
+    map.on('render', onRender);
+
+    if (action === 'dataset') c.setDataset(a);
+    else if (action === 'year') c.setYear(a);
+    else if (action === 'view') c.setView(a);
+
+    // Wait for the transition to land: the marker changes only after the flip.
+    const t0 = performance.now();
+    while (performance.now() - t0 < 25000) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (document.documentElement.dataset.ngpBoundary !== restBefore.marker
+          && map.areTilesLoaded()) break;
+    }
+    await new Promise((r) => setTimeout(r, 600));
+    map.off('render', onRender);
+    const restAfter = await new Promise((resolve) => {
+      const once = () => { map.off('render', once); resolve(frame()); };
+      map.on('render', once);
+      map.triggerRepaint();
+    });
+
+    return { restBefore, restAfter, frames, probeId, ctPoint: ctPoint || null };
+  }, [actionName, arg, probe]);
+
+  /** Every frame's (marker, n) pair must be one of the two endpoints. */
+  const pairs = (log) => {
+    const key = (f) => f.marker + '/' + f.n;
+    const ok = new Set([key(log.restBefore), key(log.restAfter)]);
+    return log.frames.filter((f) => !ok.has(key(f)))
+      .map((f) => f.marker + '/' + f.n);
+  };
+
+  /** Connecticut, cross-examined: the ids the marker's archive should have. */
+  const ctDisagreements = (log) => log.frames.filter((f) => {
+    if (!f.ct || !f.marker) return false;
+    const planningRegion = /^09(1[1-9]0)$/.test(f.ct);
+    if (/^census-counties-20(2[2-9])$/.test(f.marker)) return !planningRegion;
+    if (f.marker === 'fsa-lfp-counties' || /^fsa-counties-/.test(f.marker)) {
+      return planningRegion;
+    }
+    return false;      // an older Census vintage has traditional CT counties too
+  }).map((f) => f.marker + ' drew ' + f.ct);
+
+  const report = (log) => JSON.stringify({
+    frames: log.frames.length,
+    before: { marker: log.restBefore.marker, n: log.restBefore.n, ct: log.restBefore.ct },
+    after: { marker: log.restAfter.marker, n: log.restAfter.n, ct: log.restAfter.ct },
+    blankFrames: log.frames.filter((f) => f.bgHits > 0).length,
+    colourlessFrames: log.frames.filter((f) => !f.colour).length,
+  });
+
+  /* ── (a) A DATASET SWITCH, cold: Census counties → FSA LFP boundaries. ──── */
+  {
+    const s = await open({ query: '?view=usdm&dataset=census' });
+    check('the drought monitor boots on the Census counties', s.ready);
+    await settleBoundary(s.page, 'census-counties-2025');
+    const log = await watch(s.page, 'dataset', 'fsa-lfp', CONFIG.county.id);
+
+    check('the probe is measuring something: painted counties under every sample '
+      + 'point, a colour witness that both authorities have, and a different '
+      + 'authority at the end',
+    log.restBefore.bgHits === 0 && !!log.restBefore.colour && !!log.restAfter.colour
+      && log.restBefore.marker === 'census-counties-2025'
+      && log.restAfter.marker === 'fsa-lfp-counties' && log.frames.length >= 3,
+    report(log));
+    check('NOT ONE BLANK FRAME across a cold dataset switch — the ~400 ms of map '
+      + 'background this release removes',
+    log.frames.every((f) => f.bgHits === 0), report(log));
+    check('NOT ONE COLOURLESS FRAME — the feature-state wipe never reaches the '
+      + 'geometry the reader is looking at',
+    log.frames.every((f) => !!f.colour), report(log));
+    check('the authority marker and the county set the app describes move '
+      + 'TOGETHER: no frame claims one authority while holding another\'s index',
+    pairs(log).length === 0, JSON.stringify(pairs(log).slice(0, 4)));
+    check('and Connecticut agrees with the marker in every frame — nine planning '
+      + 'regions on Census 2022+, eight traditional counties on the LFP set',
+    ctDisagreements(log).length === 0, JSON.stringify(ctDisagreements(log).slice(0, 4)));
+    check('both archives stay resident afterwards, so going back is a repaint '
+      + 'rather than a download',
+    (log.restAfter.geometry || {}).resident
+      && log.restAfter.geometry.resident.length === 2,
+    JSON.stringify(log.restAfter.geometry));
+    s.clean('cold dataset switch · no hole');
+    await s.shot('25-authority-switch');
+    await s.ctx.close();
+  }
+
+  /* ── (b) A YEAR STEP on the Census authority, which changes archive. ────── */
+  {
+    const s = await open({ query: '?view=usdm&dataset=census&year=2023' });
+    await settleBoundary(s.page, 'census-counties-2022');
+    // 2023 → 2020 crosses two published vintages and lands on census-2019.
+    const log = await watch(s.page, 'year', 2020, CONFIG.county.id);
+
+    check('a year step on the Census authority really does change archive',
+      log.restBefore.marker === 'census-counties-2022'
+      && log.restAfter.marker === 'census-counties-2019', report(log));
+    check('NOT ONE BLANK FRAME across a year step either — this is the second '
+      + 'flash the reader reported, and it is the same defect',
+    log.frames.every((f) => f.bgHits === 0), report(log));
+    check('NOT ONE COLOURLESS FRAME across a year step',
+      log.frames.every((f) => !!f.colour), report(log));
+    check('marker and index still move together',
+      pairs(log).length === 0, JSON.stringify(pairs(log).slice(0, 4)));
+    check('Connecticut is nine planning regions before the step and eight '
+      + 'counties after it (vintage 2019 predates the change), and every frame '
+      + 'agrees with its own marker',
+    ctDisagreements(log).length === 0
+      && /^09(1[1-9]0)$/.test(String(log.restBefore.ct))
+      && !/^09(1[1-9]0)$/.test(String(log.restAfter.ct)),
+    JSON.stringify({ before: log.restBefore.ct, after: log.restAfter.ct,
+      bad: ctDisagreements(log).slice(0, 4) }));
+    s.clean('year step across vintages · no hole');
+    await s.ctx.close();
+  }
+
+  /* ── (c) WARM-ON-INTENT: hovering the button loads the archive. ─────────── */
+  {
+    const s = await open({ query: '?view=usdm&dataset=census' });
+    await settleBoundary(s.page, 'census-counties-2025');
+    const warmed = await s.page.evaluate(async () => {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const c = app.ngpContext();
+      const before = c.getHandle().geometry();
+      const btn = document.querySelector('.seg-btn[data-dataset="fsa-lfp"]');
+      btn.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }));
+      // Wait for THE ARCHIVE THIS BUTTON WOULD SHOW, by name. "more than one
+      // resident" is already true at this point — boot draws the FSA composite
+      // before the deep-linked drought view swaps off it, so that stack is
+      // still there — and a probe that watched the COUNT would have answered
+      // before the warm-up had done anything, which is how it read three
+      // residents under a cap of two: the eviction had not run yet.
+      const t0 = performance.now();
+      const wanted = (g) => g.resident.some((k) => /fsa-lfp-counties\.pmtiles$/.test(k));
+      while (performance.now() - t0 < 20000) {
+        await new Promise((r) => setTimeout(r, 100));
+        const g = c.getHandle().geometry();
+        if (wanted(g)) {
+          // One more beat, so the LRU trim that follows a warm-up is included:
+          // the cap is a promise about memory and bandwidth, and a warm-up that
+          // kept a third archive resident would be breaking it.
+          await new Promise((r) => setTimeout(r, 400));
+          return { before, after: c.getHandle().geometry(), hovered: btn.textContent.trim() };
+        }
+      }
+      return { before, after: c.getHandle().geometry(), hovered: btn.textContent.trim() };
+    });
+    check('hovering a dataset button WARMS the archive it would switch to — the '
+      + 'half-second before a click is about what an archive needs, and it is '
+      + 'why the switch feels immediate rather than merely gapless',
+    warmed.after.resident.some((k) => /fsa-lfp-counties\.pmtiles$/.test(k))
+      && !warmed.before.resident.some((k) => /fsa-lfp-counties\.pmtiles$/.test(k))
+      && warmed.after.front === warmed.before.front,
+    JSON.stringify(warmed));
+    check('...and it stays inside the resident cap: the archive hovered is the '
+      + 'one kept, and something colder was retired for it',
+    warmed.after.resident.length <= warmed.after.cap,
+    JSON.stringify({ resident: warmed.after.resident, cap: warmed.after.cap }));
+    s.clean('warm on intent');
+    await s.ctx.close();
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

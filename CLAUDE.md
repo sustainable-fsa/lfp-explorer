@@ -18,7 +18,7 @@ every push.
 ## House style
 
 This app consumes the Sustainable FSA style kit, pinned by full versioned URL
-in index.html (https://sustainable-fsa.com/style/v0.2.1/…). Design tokens,
+in index.html (https://sustainable-fsa.com/style/v0.4.0/…). Design tokens,
 a11y mandates, and interaction conventions: see HOUSE-STYLE.md in
 https://github.com/sustainable-fsa/style — tokens only (no raw hexes),
 --accent is fill-only, aria-pressed drives toggle styling, canvas data needs a
@@ -42,6 +42,15 @@ Specifics that bite in this repo:
   URL > localStorage > default. A view entirely at defaults must emit **no query
   string at all**; `?kbd=off` is the WCAG 2.1.4 opt-out for the `/` shortcut and
   is never persisted.
+- **Never write a kit layer id as a literal, and never hold one.** From kit
+  v0.4.0 the tiled path keeps more than one archive's geometry on the map — that
+  is what makes a change of authority arrive without a blank — so its layer ids
+  carry a stack slot suffix (`sfsa-county-fill#0`) and they MOVE when the front
+  does. Ask `handle.layers` at the moment of use. A retired stack is transparent
+  rather than hidden, which is what keeps it warm for the trip back, so it still
+  answers `queryRenderedFeatures`: a stale literal does not fail loudly, it
+  quietly measures the archive the reader stopped looking at. `tools/verify.mjs`
+  holds no source id and no layer ids for this reason.
 - **Kit URLs are pinned and consistent.** Mixing versions is forbidden: two
   `core.js` URLs are two module instances and therefore two `viewport`
   pub-subs. Sweeping them for local kit development is all-or-nothing across
@@ -105,7 +114,77 @@ Specifics that bite in this repo:
   year-domain `years.max` warn is still in, and it should be fixed. The Census
   vintage tripwire in `js/boundaries.js` uses `console.error` for this reason.
 
-## Where we left off (2026-08-23)
+## Where we left off (2026-08-23, later the same day)
+
+**A change of county authority no longer shows the reader a hole**, and the
+reader who reported it was right twice over: it flashed twice for an archive
+that had not been fetched yet and once for one that had.
+
+### What was actually happening
+
+Three wrong maps in about 600 ms, measured per rendered frame on a switch from
+the 2025 Census counties to the FSA LFP determination boundaries (local server,
+warm CDN). The witnesses were the id rendered at a point in Connecticut — eight
+traditional counties on one authority, nine planning regions on the other — and
+the feature-state colour on a county both sets have:
+
+| t | `ngpBoundary` | id at a CT point | 48001 | what a reader saw |
+| --- | --- | --- | --- | --- |
+| 32 ms | census-counties-2025 | `09190` | `#fcd37f` | the census map |
+| 359 ms | fsa-lfp-counties | `09190` | *(none)* | **grey** — the wipe, repainted a frame late |
+| 460 ms | fsa-lfp-counties | `09190` | `#ffff00` | **the new numbers on the OLD polygons** |
+| 563 ms | fsa-lfp-counties | *none* | `#ffff00` | **blank** — `clearTiles()` |
+| 963 ms | fsa-lfp-counties | `09005` | `#ffff00` | the LFP map |
+
+The middle row is the one that mattered most here: for ~100 ms the app painted
+one dataset's numbers on another authority's boundaries — the exact
+misregistration `js/boundaries.js` exists to prevent — and it did so THROUGH the
+machinery meant to prevent it. `applyDataset()` awaited the swap before
+painting, deliberately and with a comment saying why, but **`setUrl()` does not
+clear its tiles when it is called; it clears them when the new TileJSON
+resolves**, which is a pmtiles header plus two directory range reads later.
+
+### What replaced it
+
+Kit **v0.4.0**: `swapVintage()` is double-buffered and awaited. The incoming
+archive gets its own source and its own six layers at zero opacity, is handed
+the colours and the selection while nobody can see it, and is flipped to — one
+`setPaintProperty` per layer, zero-duration transitions — only once it is really
+drawable. The outgoing stack keeps drawing the last true picture until that
+instant. Retired stacks stay resident (cap two, counting the front) and
+transparent rather than hidden, because **a hidden layer's source is never
+updated by MapLibre**, so a hidden buffer would not be warm to come back to.
+
+App side, three things:
+
+- `swapBoundary()` computes the arriving geometry's colours FIRST (`colorsNow()`)
+  and hands them to the swap, so the wipe and the repaint are one task; and
+  everything downstream of the flip — `boundary`, `counties`,
+  `data-ngp-boundary`, the card, the search index, the live region — now happens
+  after it, so the marker means "this authority is on screen" rather than "has
+  been asked for".
+- **Warm on intent.** `pointerenter`/`focus` on a dataset or view button warms
+  the archive that click would need (`handle.warmGeometry`); the year slider
+  warms the OTHER FSA vintage, and deliberately nothing on the Census axis,
+  where eighteen annual archives and a slider that has not moved yet give no
+  honest direction to guess.
+- **The payload and the geometry now fetch in parallel.** They were serial —
+  payload awaited, then the archive looked for — and overlapping them took a
+  cold dataset switch from ~1,180 ms to ~790 ms. The rest is the 4.4 MB payload,
+  which is why there is still a pill.
+
+Measured after: one transition, two states, nothing in between. A cold switch is
+~790 ms, a warmed one ~330 ms, and the trip BACK is ~250 ms with no refetch at
+all — which is what makes *Census counties* ⇄ *FSA LFP boundaries* at z14–15,
+the app's sharpest demonstration, finally feel like a comparison.
+
+**A year step on the Census authority still costs a full warm-up** (~1.4 s,
+250 ms of it the scrub debounce), and during it the map holds the PREVIOUS
+year's colours behind the pill. That is pre-existing behaviour — the old code
+skipped the recolour across a pending swap too — and it is the honest one while
+each year is a separate archive.
+
+## The per-dataset geometry cutover (shipped 2026-08-23)
 
 **Every dataset now draws the polygons its own numbers were computed against.**
 That was the whole job, it is shipped, and the geometry is PMTiles vector tiles
@@ -171,12 +250,22 @@ that in CI, and an injected off-by-one fails five of its assertions.
 
 ### Cross-repo state
 
-- **kit v0.3.0** is released, live and tagged — the tiled path in
-  `county/county.js`, `loadCountyIndex`, `handle.featureRef`, `MAX_BOUNDS_PAD_DEG`,
+- **kit v0.4.0** is cut (source + snapshot committed) and is what this app
+  pins — the DOUBLE-BUFFERED `swapVintage()`, `warmGeometry()`,
+  `handle.geometry()`, `addCountyLayers({buffers, swapTimeoutMs})`, and the
+  slot-suffixed tiled layer ids. Its gate is `tools/check-tiled.mjs`, now 79
+  assertions, three of which have teeth: a pixel-level one that colours dd22's
+  eight Connecticut counties blue and census-2022's nine planning regions green
+  and reads the centre pixel on every rendered frame of a swap (every frame is
+  one authority or the other, never grey, never background), and two eviction
+  ones that caught a real bug in the first draft — a warm-up that disposed the
+  archive it had just fetched.
+- **kit v0.3.0** brought the tiled path in `county/county.js` —
+  `loadCountyIndex`, `handle.featureRef`, `MAX_BOUNDS_PAD_DEG`,
   `captureCompositeMap({idleTimeoutMs})` + `timedOut`. `BOUNDARY_URLS` and
-  `loadCounties()` are byte-identical, so consumers on v0.2.1 are untouched.
-  Its gate is `tools/check-tiled.mjs`, 49 assertions including a TopoJSON
-  no-regression half.
+  `loadCounties()` are byte-identical through v0.4.0, so TopoJSON consumers on
+  v0.2.1 are untouched — and the canonical six layer ids are still theirs,
+  unsuffixed.
 - **`data-tiles`** publishes 21 tilesets (dd17, dd22, fsa-lfp, census
   2000 + 2009–2025), each with a `-index.json` sidecar and an
   `-outline-dummy.geojson`. `census-counties` unblocked and published
@@ -196,7 +285,8 @@ owner's 2026-08-21 reordering — landed as four serial PRs plus a
 refinements PR, with
 shared year/county/camera/theme surviving every switch and per-interface
 memory for everything else. Gates at completion: verify.mjs prints its own
-count — 494 at that release, 518 after the boundary work; axe clean
+count — 494 at that release, 518 after the boundary work, 535 after the
+buffered swap; axe clean
 2 themes × 2 viewports × 11 states;
 html-validate clean; LHCI a11y 1.0:
 
@@ -309,13 +399,20 @@ App-side, in rough priority order:
    the tiled path adds: at maximum zoom on one county the boundary must be
    smooth, and flipping *Census counties* ⇄ *FSA LFP boundaries* at z14–15 on
    one coastal county must visibly move the boundary without moving the camera.
+   That flip is now instant in both directions (both archives stay resident), so
+   the pass is a real A/B comparison rather than a wait — and the keyboard-only
+   walk should confirm that focusing a dataset button warms it, since `focus` is
+   the keyboard's half of warm-on-intent and touch has no hover at all.
 3. **A cancelled tile request used to be reported as an error.** MapLibre
    decides whether a rejection was a cancellation with exactly one test —
    `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
    with that name; at the network layer Chrome gives
    `TypeError: Failed to fetch` (`net::ERR_ABORTED`). Kit **v0.3.1** normalises
    the cases where the abort controller is demonstrably the cause, which
-   silenced every swap-time instance.
+   silenced every swap-time instance. (The swap no longer calls `setUrl()` at
+   all, so that particular cancellation is gone with it; camera moves and map
+   teardown still abort tiles, and the normalisation is still what keeps them
+   quiet.)
 
    The remaining one was on the export path, and it was diagnosed rather than
    tolerated: the app builds a **throwaway offscreen map** for the PNG, and
