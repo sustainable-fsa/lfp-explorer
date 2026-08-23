@@ -18,7 +18,7 @@ every push.
 ## House style
 
 This app consumes the Sustainable FSA style kit, pinned by full versioned URL
-in index.html (https://sustainable-fsa.com/style/v0.4.0/…). Design tokens,
+in index.html (https://sustainable-fsa.com/style/v0.4.1/…). Design tokens,
 a11y mandates, and interaction conventions: see HOUSE-STYLE.md in
 https://github.com/sustainable-fsa/style — tokens only (no raw hexes),
 --accent is fill-only, aria-pressed drives toggle styling, canvas data needs a
@@ -250,16 +250,31 @@ that in CI, and an injected off-by-one fails five of its assertions.
 
 ### Cross-repo state
 
-- **kit v0.4.0** is cut (source + snapshot committed) and is what this app
-  pins — the DOUBLE-BUFFERED `swapVintage()`, `warmGeometry()`,
-  `handle.geometry()`, `addCountyLayers({buffers, swapTimeoutMs})`, and the
-  slot-suffixed tiled layer ids. Its gate is `tools/check-tiled.mjs`, now 79
-  assertions, three of which have teeth: a pixel-level one that colours dd22's
-  eight Connecticut counties blue and census-2022's nine planning regions green
-  and reads the centre pixel on every rendered frame of a swap (every frame is
-  one authority or the other, never grey, never background), and two eviction
-  ones that caught a real bug in the first draft — a warm-up that disposed the
-  archive it had just fetched.
+- **kit v0.4.1** is released, live and tagged, and is what this app pins — the
+  DOUBLE-BUFFERED `swapVintage()`, `warmGeometry()`, `handle.geometry()`,
+  `addCountyLayers({buffers, swapTimeoutMs})`, and the slot-suffixed tiled layer
+  ids. Its gate is `tools/check-tiled.mjs`, now 81 assertions, and several have
+  teeth: a pixel-level one that colours dd22's eight Connecticut counties blue
+  and census-2022's nine planning regions green and reads the centre pixel on
+  every rendered frame of a swap (every frame is one authority or the other,
+  never grey, never background); two eviction ones that caught a warm-up
+  disposing the archive it had just fetched; and two that hold the invariant
+  v0.4.1 exists for.
+- **NEVER FLIP A DATA-DRIVEN PAINT PROPERTY, AND NEVER TRANSITION ONE.** v0.4.0
+  hid a retired stack by zeroing every layer's opacity, and the hover layer's
+  `line-opacity` is the feature-state `['case', …]` that decides which county
+  wears the halo. Flipping that property while the zero-duration transition is
+  declared on it leaves MapLibre's paint binder holding a value whose
+  `expression` has no `evaluate`, and the NEXT feature-state change — the next
+  mouse move — throws `TypeError: this.expression.evaluate is not a function`
+  inside a render, which is an uncaught page error rather than a rejected
+  promise, so the transition it belonged to stops half-done. **THIS SUITE COULD
+  NOT REPRODUCE IT LOCALLY**; CI could, because a runner hovers and swaps closer
+  together. Hence `VERIFY_THROTTLE` / `VERIFY_STACKS` in `tools/verify.mjs`
+  (§ open) — CPU throttling and full stack traces, inert unless set. The forty-
+  line reduction is what isolated it: flipping `line-opacity` throws only WITH
+  the transition, and flipping `line-width` never throws. v0.4.1 hides the hover
+  layer by width.
 - **kit v0.3.0** brought the tiled path in `county/county.js` —
   `loadCountyIndex`, `handle.featureRef`, `MAX_BOUNDS_PAD_DEG`,
   `captureCompositeMap({idleTimeoutMs})` + `timedOut`. `BOUNDARY_URLS` and

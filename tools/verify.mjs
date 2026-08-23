@@ -127,7 +127,7 @@ const CONFIG = {
     README § Developing against an unreleased kit lists this file alongside
     index.html and js/. It is passed INTO page.evaluate as an argument: a
     string built in-page from an outer-scope binding would not exist. */
-const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.4.0/county/county.js';
+const KIT_COUNTY_URL = 'https://sustainable-fsa.com/style/v0.4.1/county/county.js';
 
 const server = serveWorkspace(CONFIG.root);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -216,7 +216,27 @@ async function open({
       : '';
     errors.push(m.text() + where);
   });
-  page.on('pageerror', (e) => errors.push('pageerror: ' + String(e).split('\n')[0]));
+  /* TWO ENV KNOBS, BOTH INERT UNLESS SET, and both earned. A CI runner is
+     several times slower than a developer's machine, so it interleaves things a
+     local run never does — a pointer warming an archive while a click's swap is
+     in flight, say. That is how kit v0.4.0 shipped a page error this suite could
+     not reproduce locally:
+
+       VERIFY_THROTTLE=4   CPU throttling, which is what a runner IS
+       VERIFY_STACKS=1     the whole stack of a pageerror, not just its message
+
+     `String(e).split('\n')[0]` is the right DEFAULT — one line per failure keeps
+     the report readable — but it threw away the frame that named the culprit
+     (`updatePaintArray`), and reconstructing it took a separate reduction. */
+  page.on('pageerror', (e) => errors.push('pageerror: ' + String(e).split('\n')[0]
+    + (process.env.VERIFY_STACKS
+      ? '\n      ' + String(e.stack || '').split('\n').slice(0, 6).join('\n      ')
+      : '')));
+  if (process.env.VERIFY_THROTTLE) {
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate',
+      { rate: Number(process.env.VERIFY_THROTTLE) });
+  }
   const downloadList = [];
   page.on('download', (d) => downloadList.push(d));
 

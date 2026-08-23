@@ -93,19 +93,19 @@
 import {
   createLiveRegion, getTheme, initThemeToggle, lsGet, lsSet, reducedMotion,
   replaceUrlState, showToast, urlParams, viewport,
-} from 'https://sustainable-fsa.com/style/v0.4.0/core/core.js';
+} from 'https://sustainable-fsa.com/style/v0.4.1/core/core.js';
 import {
   addFitControl, addNavigation, cameraParamsIfDefault, createCompositeMap,
   fitDefault, installZoomFloor,
-} from 'https://sustainable-fsa.com/style/v0.4.0/map/map.js';
+} from 'https://sustainable-fsa.com/style/v0.4.1/map/map.js';
 import {
   addCountyLayers, countyCentroid, initCountyTooltip, searchItems,
-} from 'https://sustainable-fsa.com/style/v0.4.0/county/county.js';
-import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.4.0/ui/search.js';
-import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.4.0/ui/card.js';
-import { initDrawer } from 'https://sustainable-fsa.com/style/v0.4.0/ui/drawer.js';
-import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.4.0/ui/legend.js';
-import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.4.0/ui/help.js';
+} from 'https://sustainable-fsa.com/style/v0.4.1/county/county.js';
+import { initSearchBox } from 'https://sustainable-fsa.com/style/v0.4.1/ui/search.js';
+import { initDetailCard } from 'https://sustainable-fsa.com/style/v0.4.1/ui/card.js';
+import { initDrawer } from 'https://sustainable-fsa.com/style/v0.4.1/ui/drawer.js';
+import { colorbar, swatches } from 'https://sustainable-fsa.com/style/v0.4.1/ui/legend.js';
+import { initHelpModal } from 'https://sustainable-fsa.com/style/v0.4.1/ui/help.js';
 
 /* js/data.js is the GRAZING-PERIOD family's facade, not the app's data layer
    (see § Live state): the search index, the county gazetteer and the type
