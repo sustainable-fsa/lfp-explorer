@@ -7,3 +7,9 @@ tools/node_modules/
 verify-out/
 .lighthouseci/
 .DS_Store
+
+# R session droppings. `R/web-assets.R` is a real, tracked script — these are
+# what running it interactively leaves behind, and they are per-machine.
+.Rhistory
+.RData
+.Rproj.user/
