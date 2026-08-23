@@ -141,7 +141,7 @@ working branch:
 ```sh
 # Dev-ward — point every kit reference at the local style/ checkout.
 # NEVER push this state.
-sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.3\.1/|/style/|g' \
+sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.4\.0/|/style/|g' \
           -e 's|https://sustainable-fsa\.com/style/vendor/|/style/vendor/|g' \
           -e 's|https://sustainable-fsa\.com/style/assets/|/style/assets/|g' \
           index.html js/*.js js/*/*.js tools/verify.mjs
@@ -149,7 +149,7 @@ sed -i '' -e 's|https://sustainable-fsa\.com/style/v0\.3\.1/|/style/|g' \
 # Prod-ward — re-pin after the kit release: versioned surface, then the
 # deliberately unversioned vendor and brand-asset surfaces.
 for d in theme core map county ui; do
-  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.3.1/$d/|g" \
+  sed -i '' "s|/style/$d/|https://sustainable-fsa.com/style/v0.4.0/$d/|g" \
     index.html js/*.js js/*/*.js tools/verify.mjs
 done
 for d in vendor assets; do
@@ -165,6 +165,12 @@ kit has to move together, and that now includes **`js/boundaries.js`** (it takes
 kit URLs at different versions are two module instances — two `viewport`
 pub-subs, and two `pmtiles` protocol registrations — so a file left behind is
 not a cosmetic miss. The final `grep` is the check that matters.
+
+`tools/check-boundaries.mjs` is the one gate that runs in EITHER state — it
+stubs the kit import rather than fetching it — and its rewrite regex accepts
+both forms for that reason. It is worth running while the sweep is dev-ward,
+because a kit-development branch is exactly when the two vintage resolvers are
+being edited.
 
 Two rules make this safe rather than clever:
 

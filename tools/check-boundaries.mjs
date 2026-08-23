@@ -77,8 +77,14 @@ export async function loadCountyIndex() {
 }
 `);
   const src = await readFile(join(ROOT, 'js', 'boundaries.js'), 'utf8');
+  // BOTH FORMS of the kit import: the pinned production URL, and the
+  // root-absolute path the dev-ward sweep leaves behind (README § Developing
+  // against an unreleased kit). This gate is the one that can run in either
+  // state — it stubs the kit rather than fetching it — and a regex that only
+  // knew the pinned form made it the one gate a kit-development branch could
+  // not run, which is exactly when the vintage resolvers are being edited.
   const stubbed = src.replace(
-    /import \{[^}]*\} from 'https:\/\/sustainable-fsa\.com\/style\/[^']*\/county\/county\.js';/,
+    /import \{[^}]*\} from '(?:https:\/\/sustainable-fsa\.com\/style\/[^']*|\/style)\/county\/county\.js';/,
     "import { TILE_BASE, loadCountyIndex, vintageForYear } from './__boundaries-gate-stub.mjs';");
   if (stubbed === src) {
     throw new Error('the kit import line in js/boundaries.js did not match the '

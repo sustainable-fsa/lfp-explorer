@@ -82,7 +82,7 @@
 
 import {
   TILE_BASE, loadCountyIndex, vintageForYear,
-} from 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
+} from 'https://sustainable-fsa.com/style/v0.4.0/county/county.js';
 import { assertProjectedSpace } from './projection.js';
 
 /* ── The catalogue ───────────────────────────────────────────────────────── */
