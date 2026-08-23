@@ -130,6 +130,14 @@ const DATASETS = Object.freeze([
     url: '../usdm-counties/usdm-counties.json',
     schema: 'usdm-max-class/1',
     keySpace: 'fips',
+    /** Vintage-matched Census counties, BY CONSTRUCTION: this archive
+        intersects each week with the counties in force for it, so its county
+        dictionary is the union over eighteen vintages (3,251 ids) and a county
+        outside a week's vintage is a real '.' in the series. Measured for all
+        27 years: the ids reporting in year Y are exactly
+        census-counties-<vintage(Y)>'s, plus the 13 territory ids the tilesets
+        drop. tools/check-boundaries.mjs re-runs that against the live data. */
+    boundary: 'census',
     expect: Object.freeze({ week0: '2000-01-04' }),
     expectedDataset: 'usdm-counties',
     decode: makeUsdmData,
@@ -140,6 +148,14 @@ const DATASETS = Object.freeze([
     url: '../usdm-counties-reported/usdm-counties-reported.json',
     schema: 'usdm-max-class/1',
     keySpace: 'fips',
+    /** The NDMC publishes against its own layer and no tileset of it exists.
+        Drawn on the LFP determination boundaries, the nearest authority in the
+        same key space: measured, this payload's 3,222 ids are that set's 3,221
+        with Connecticut swapped — nine planning regions in, eight counties out.
+        So nine reported areas reach no polygon and eight polygons stay
+        uncoloured, which is the honest picture and the one the live region has
+        always counted out loud. */
+    boundary: 'fsa-lfp',
     expect: Object.freeze({ week0: '2000-01-04' }),
     expectedDataset: 'usdm-counties-reported',
     decode: makeUsdmData,
@@ -150,6 +166,13 @@ const DATASETS = Object.freeze([
     url: '../usdm-counties-fsa-lfp/usdm-counties-fsa-lfp.json',
     schema: 'usdm-max-class/1',
     keySpace: 'fips',
+    /** The county set the program is administered on, now drawn on its own
+        polygons — and this is the join the whole change was worth making for:
+        measured, this payload's county dictionary and the tileset's id set are
+        IDENTICAL, 3,221 each, zero symmetric difference in both directions.
+        Nothing is crosswalked, nothing is reduced, nothing is lost. Through the
+        FSA composite it used to lose 131 counties. */
+    boundary: 'fsa-lfp',
     expect: Object.freeze({ week0: '2000-01-04' }),
     expectedDataset: 'usdm-counties-fsa-lfp',
     /** The county set the program is administered on — see the header. */
