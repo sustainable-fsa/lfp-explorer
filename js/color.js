@@ -36,8 +36,8 @@
       color here that IS a token is the no-data fill — see NO_DATA().
    ========================================================================== */
 
-import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.2.1/core/core.js';
-import { resolveToken } from 'https://sustainable-fsa.com/style/v0.2.1/map/map.js';
+import { fetchJSON, promiseCache } from 'https://sustainable-fsa.com/style/v0.3.1/core/core.js';
+import { resolveToken } from 'https://sustainable-fsa.com/style/v0.3.1/map/map.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 

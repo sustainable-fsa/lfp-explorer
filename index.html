@@ -129,7 +129,7 @@
        relative to that stylesheet, so this must point at the same path the
        stylesheet is loaded from. -->
   <link rel="preload" as="font" type="font/woff2" crossorigin
-        href="https://sustainable-fsa.com/style/v0.2.1/theme/fonts/roboto-v51-latin-wght.woff2">
+        href="https://sustainable-fsa.com/style/v0.3.1/theme/fonts/roboto-v51-latin-wght.woff2">
 
   <!-- The county tile origin. A preconnect rather than a preload: what is
        fetched first is a sidecar whose URL depends on the active dataset, so
@@ -137,7 +137,7 @@
   <link rel="preconnect" href="https://data.sustainable-fsa.com" crossorigin>
 
   <link rel="stylesheet" href="https://sustainable-fsa.com/style/vendor/maplibre-gl-5.18.0/maplibre-gl.css">
-  <link rel="stylesheet" href="https://sustainable-fsa.com/style/v0.2.1/theme/sfsa-theme.css">
+  <link rel="stylesheet" href="https://sustainable-fsa.com/style/v0.3.1/theme/sfsa-theme.css">
   <link rel="stylesheet" href="css/app.css">
 </head>
 
@@ -679,6 +679,12 @@
        runs after both and after the document has parsed. -->
   <script src="https://sustainable-fsa.com/style/vendor/maplibre-gl-5.18.0/maplibre-gl.js"></script>
   <script src="https://sustainable-fsa.com/style/vendor/topojson-client-3.1.0/topojson-client.min.js"></script>
+  <!-- The county geometry's transport. county.js registers a `pmtiles://`
+       protocol with MapLibre from this global; without it the tiled path throws
+       on the first boundary load with the tag it needs in the message.
+       topojson-client above is still here for the eligibility-derived card's
+       own decode path, not for boundaries. -->
+  <script src="https://sustainable-fsa.com/style/vendor/pmtiles-4.5.0/pmtiles.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

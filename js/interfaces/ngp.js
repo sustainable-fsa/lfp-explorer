@@ -58,6 +58,7 @@
 
 import { VARIABLES } from '../color.js';
 import { typeSlug } from '../decoders/common.js';
+import { boundaryNoteValue } from '../boundaries.js';
 import { makeNgpData } from '../decoders/ngp-web.js';
 import { toFsaMap } from '../decoders/crosswalk.js';
 import { programOffset, renderSpanFigure } from './ngp-chart.js';
@@ -508,8 +509,7 @@ function cardRows(data, xw, sel, id) {
   if (sel.hasGeometry === false) {
     rows.push({
       term: 'Boundary',
-      value: 'No boundary available to display — this county is not in the '
-        + (sel.vintage || 'current') + ' FSA boundary archive.',
+      value: boundaryNoteValue(sel),
       isNote: true,
     });
   }

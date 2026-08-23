@@ -44,19 +44,24 @@
                          it is. Rectangular (every county in every week) and
                          Connecticut-clean.
 
-   All three are keyed by Census FIPS and the map draws FSA counties, so all
-   three arrive through js/decoders/crosswalk.js.
+   All three are keyed by Census FIPS, and each is now DRAWN ON ITS OWN
+   POLYGONS — the vintage-matched Census counties, or the FSA LFP determination
+   boundaries (js/boundaries.js). So none of them touches the crosswalk, and
+   this file no longer performs a join of any kind: a class code is a colour for
+   the county it is keyed to. See § THERE IS NO JOIN ANY MORE below for what
+   that removed and what it cost.
 
-   ── The crosswalk rule, stated once ────────────────────────────────────────
-   One Census county split between two FSA offices replicates onto both. Several
-   Census counties administered by ONE FSA office collide, and reduceFips()
-   takes the WORST class — the same any-area logic one level up: if any part of
-   the FSA county was in D3, the FSA county was in D3. A county absent from the
-   week contributes nothing (it is not a zero), and an FSA county all of whose
-   constituents are absent is absent itself.
+   ── The rule that used to live here ────────────────────────────────────────
+   There was a crosswalk reduce in this file — one Census county split between
+   two FSA offices replicated onto both; several administered by one office
+   collided and the WORST class won. That rule is still correct and still runs,
+   for the two datasets in the app that genuinely cross key spaces: the
+   grazing periods' nClimGrid climatology and the disaster designations. It is
+   stated in each of those descriptors and in js/decoders/crosswalk.js. It is
+   not stated here any more, because here it would be a description of nothing.
    ========================================================================== */
 
-import { toFsaMap } from '../decoders/crosswalk.js';
+import { boundaryNoteValue } from '../boundaries.js';
 import { makeUsdmData } from '../decoders/usdm-max-class.js';
 
 /* ── The palette ─────────────────────────────────────────────────────────────
@@ -226,94 +231,34 @@ function instanceFor(sel) {
   return seen.get(sel && sel.dataset) || null;
 }
 
-/* ── The crosswalk join, memoized ────────────────────────────────────────────
-   A scrubbed week slider repaints every animation frame, and the expensive half
-   of a repaint is not reading the classes (one linear pass over 3,200 strings)
-   but JOINING them onto FSA counties: 3,200 crosswalk lookups, a bucket Map,
-   and an array per bucket, all of it identical from one week to the next.
+/* ── THERE IS NO JOIN ANY MORE ───────────────────────────────────────────────
+   This section used to hold a memoized crosswalk join: every FSA county with
+   the FIPS ids it administered, the FIPS ids the crosswalk could not reach, and
+   a bucket-and-reduce over them on every paint. It is gone, and its absence is
+   the whole point of this interface's part in the boundary work.
 
-   So the join's SHAPE is built once per (dataset, vintage) and only the values
-   move. What is cached is the grouping — every FSA county with the FIPS ids it
-   administers, plus the FIPS ids in this payload that the crosswalk cannot
-   reach at all — which is a fact about two tables and not about any week.
+   All three of these archives are keyed by Census FIPS, and each one now draws
+   the polygons its own numbers were computed against (js/boundaries.js): the
+   vintage-matched Census counties, or the FSA LFP determination boundaries. The
+   payload's keys ARE the tileset's ids. So the "join" is `colors.set(id, …)`.
 
-   Six entries at most (three datasets × two boundary vintages), so this never
-   grows. It is keyed by dataset id, and a dataset id is one payload for the
-   life of the session (decoders/common.js caches by URL), so an entry cannot
-   go stale under a reload of the same name. */
-const joins = new Map();
+   What that bought, measured: the counties whose data reached no polygon at all
+   went from 131 / 140 / 159 (fsa-lfp / reported / census, crosswalked onto the
+   FSA composite) to 0 / 9 / 13. The 9 are Connecticut's planning regions, which
+   no county in the determination boundaries covers, and the 13 are the
+   territories the tilesets drop — both real, both still reported.
 
-/**
- * @param {object} data the decoder instance
- * @param {object} xw the crosswalk
- * @param {object} sel {dataset, vintage}
- * @returns {{groups: Array<[string, string[]]>, orphans: string[],
- *            universe: number}|null}
- */
-function joinFor(data, xw, sel) {
-  const key = sel.dataset + '|' + sel.vintage;
-  const hit = joins.get(key);
-  if (hit) return hit;
-  if (!data || !xw || typeof data.allCountyIds !== 'function') return null;
+   Two things went with it, and it is worth being honest that they were losses.
+   The card's "Combined from" constituent-FIPS rows and its "part of this FSA
+   county is not in this week's county set" note had nothing left to say: an
+   identity authority has no constituents. That story survives on the grazing
+   periods' nClimGrid dataset and on the disaster designations, both of which
+   still cross key spaces and still crosswalk.
 
-  const buckets = new Map();
-  const orphans = [];
-  for (const fipsId of data.allCountyIds()) {
-    const fsaIds = xw.toFsa(sel.vintage, fipsId);
-    if (!fsaIds.length) {
-      orphans.push(fipsId);
-      continue;
-    }
-    for (const fsaId of fsaIds) {
-      const seenIds = buckets.get(fsaId);
-      if (seenIds) seenIds.push(fipsId);
-      else buckets.set(fsaId, [fipsId]);
-    }
-  }
-  const built = {
-    groups: Array.from(buckets.entries()),
-    orphans,
-    /* The DENOMINATOR, and deliberately not buckets.size: the question the live
-       region answers is "how many of the counties on this map are colored", and
-       the counties on this map are every FSA county this vintage has. A dataset
-       that can never reach some of them (the reported set cannot reach
-       Connecticut) must still count them as uncolored — with buckets.size the
-       sentence would read "3,095 of 3,095" and never mention the eight gray
-       counties the reader is looking at. */
-    universe: new Set(xw.pairs(sel.vintage).fsa).size,
-  };
-  joins.set(key, built);
-  return built;
-}
-
-/** The cached join for a selection, without building one. For the leaves that
-    need the denominator (how many FSA counties this vintage's crosswalk knows)
-    but are not handed the crosswalk — the table's caption. Null before the
-    first paint, which cannot happen: nothing can open a table for a map that
-    has not been drawn. */
-function cachedJoin(sel) {
-  return joins.get(sel.dataset + '|' + sel.vintage) || null;
-}
+   The per-frame cost went with it too. The expensive half of a week scrub used
+   to be the join, not the read; now there is only the read. */
 
 /* ── Records ─────────────────────────────────────────────────────────────── */
-
-/**
- * The worst class among the Census counties one FSA office administers.
- *
- * The any-area rule, one level up: LFP asks whether the county has HAD the
- * class, so if any constituent reached D3 the FSA county reached D3. An absent
- * constituent contributes nothing — it never reaches this function, because
- * classesFor() omits it rather than reporting a zero — and an FSA county whose
- * every constituent is absent is absent itself.
- *
- * @param {number[]} codes constituent class codes, at least one
- * @returns {number} the highest
- */
-export function reduceFips(codes) {
-  let worst = codes[0];
-  for (let i = 1; i < codes.length; i++) if (codes[i] > worst) worst = codes[i];
-  return worst;
-}
 
 /**
  * One FSA county's class this week, with what it was reduced from.
@@ -325,10 +270,15 @@ export function reduceFips(codes) {
  */
 function classFor(data, xw, sel, id) {
   const out = { code: ABSENT, parts: [], absent: 0 };
-  if (!data || !xw || typeof data.classCodeAt !== 'function') return out;
+  if (!data || typeof data.classCodeAt !== 'function') return out;
   if (!Number.isInteger(sel.week)) return out;
 
-  for (const fipsId of xw.toFips(sel.vintage, id)) {
+  /* ONE constituent, always: this archive's keys are the drawn authority's ids,
+     so a county is itself. `parts` keeps its shape because the card's rows and
+     the tooltip are written against it and the one-element case reads fine —
+     but the "Combined from" rows it used to feed can no longer appear here, and
+     `absent` is now 0 or 1 rather than a count of pieces. */
+  for (const fipsId of [String(id)]) {
     const code = data.classCodeAt(fipsId, sel.week);
     const nm = data.countyName(fipsId);
     if (code < 0) out.absent += 1;
@@ -379,41 +329,34 @@ function colorsFor(data, xw, sel) {
 
   const classes = data.classesFor(sel.week);
 
-  if (!xw) {
-    // The honest failure: treating FIPS ids as FSA ids would paint a map that
-    // is 97% right and therefore wrong in a way nobody sees.
-    console.warn('[usdm/iface] the ' + sel.dataset + ' dataset is FIPS-keyed and '
-      + 'the FSA ⇄ FIPS crosswalk is not loaded — nothing can be painted.');
-    return { colors, unmatchedFips: Array.from(classes.keys()), stats };
-  }
-
-  const join = joinFor(data, xw, sel);
-  if (!join) return { colors, unmatchedFips: [], stats };
-
-  for (const [fsaId, fipsIds] of join.groups) {
-    let worst = ABSENT;
-    for (let i = 0; i < fipsIds.length; i++) {
-      const code = classes.get(fipsIds[i]);
-      if (code !== undefined && code > worst) worst = code;
-    }
-    if (worst < 0) continue;              // every constituent absent this week
-    colors.set(fsaId, CLASS_COLORS[worst]);
-    if (worst >= D2_CODE) stats.severe += 1;
-  }
-
-  // Only the orphans that are actually IN this week count as unreached: on the
-  // Census set a planning region is '.' for two decades and reporting it as an
-  // unmatched area every one of those weeks would be noise, not honesty.
-  const unmatchedFips = [];
-  for (const fipsId of join.orphans) {
-    if (classes.has(fipsId)) unmatchedFips.push(fipsId);
+  /* One pass, no join. `classes` is keyed by this archive's own county ids and
+     so is the authority underneath it, so a class code IS a colour for that
+     polygon (§ THERE IS NO JOIN ANY MORE). A negative code is a county the
+     archive does not report this week — '.' in the series, which on the Census
+     set is how a county outside the week's boundary vintage appears — and it
+     falls through to --no-data rather than being coloured "None". */
+  for (const [id, code] of classes) {
+    if (code < 0) continue;
+    colors.set(id, CLASS_COLORS[code]);
+    if (code >= D2_CODE) stats.severe += 1;
   }
 
   stats.classed = colors.size;
-  stats.total = join.universe;
+  /* The DENOMINATOR is the MAP's county count, not this payload's: the question
+     the live region answers is "how many of the counties on screen are
+     coloured". `sel.universe` is the drawn authority's index size, which is
+     exactly that. */
+  stats.total = Number(sel.universe) || 0;
   stats.absent = Math.max(0, stats.total - stats.classed);
-  stats.unmatched = unmatchedFips.length;
-  return { colors, unmatchedFips, stats };
+  /* `unmatchedFips` is now always empty, and app.js is the one that reports the
+     misses. It already does it better than this function could: handle.recolor()
+     returns the ids it was HANDED that have no polygon in the loaded geometry,
+     which is the same question asked of the thing actually on screen. On the
+     reported set that is Connecticut's nine planning regions; on the Census set
+     the thirteen territories. Kept in the return shape because the descriptor
+     contract has it and every other interface still uses it. */
+  stats.unmatched = 0;
+  return { colors, unmatchedFips: [], stats };
 }
 
 /* ── Legend ──────────────────────────────────────────────────────────────── */
@@ -480,7 +423,16 @@ function cardRows(data, xw, sel, id) {
   const found = classFor(data, xw, sel, id);
   const inst = data || instanceFor(sel);
 
-  rows.push({ term: 'FSA county code', value: String(id) });
+  /* The label follows the AUTHORITY, because the id space does. This view used
+     to draw FSA service areas and every id was an FSA county code; it now draws
+     the polygons each archive was computed against, and all three of those are
+     keyed by Census FIPS. Leaving the old label would have been a small, fluent
+     lie on every card in the view. */
+  rows.push({
+    term: (sel.boundary && sel.boundary.keySpace === 'fsa')
+      ? 'FSA county code' : 'County code (FIPS)',
+    value: String(id),
+  });
   rows.push({
     term: 'Week',
     value: (inst && Number.isInteger(sel.week)) ? inst.weekLabel(sel.week) : '—',
@@ -497,10 +449,16 @@ function cardRows(data, xw, sel, id) {
     });
   }
 
-  // What was combined, and out of what. Only where there is something to
-  // reconcile: naming one constituent would be noise, and the reader of a
-  // five-county FSA office needs to see that the class on the map is the worst
-  // of five — with each one's own class, so the reduction is auditable.
+  /* What was combined, and out of what — DEAD ON THIS VIEW NOW, and left in
+     place deliberately rather than deleted. `parts` has exactly one entry once
+     an archive is drawn on its own polygons (§ THERE IS NO JOIN ANY MORE), so
+     this block cannot fire, and the guard below is what makes that a no-op
+     rather than a row reading "combined from itself".
+
+     It stays because the shape it renders is still the right shape for the
+     question, and the two views that DO still crosswalk render the same thing
+     from their own descriptors. If a future dataset arrives on this view that
+     does cross key spaces, this is what it needs and it already works. */
   if (found.parts.length > 1) {
     const parts = found.parts.map((part) => {
       const label = part.name ? part.name + ' (' + part.id + ')' : part.id;
@@ -513,17 +471,19 @@ function cardRows(data, xw, sel, id) {
     });
   }
 
-  // Partial coverage: the class on the map is real, but it is the worst of only
-  // SOME of this office's counties. Said once, in whichever form fits — the
-  // multi-county case has already listed each constituent above.
+  /* Partial coverage. On this view `parts` is always one entry — the county is
+     its own key — so the multi-county branch is unreachable and the remaining
+     case is simply "this county is not in the week's county set", which is a
+     fact about the ARCHIVE and not about any office. It kept saying "FSA
+     county" after the geometry stopped being FSA's. */
   if (found.absent && found.code >= 0) {
     rows.push({
       term: 'Coverage',
       value: found.parts.length > 1
         ? count(found.absent) + ' of ' + count(found.parts.length)
-          + ' Census counties in this FSA office are not in this week\'s county '
-          + 'set; the class shown is the worst of the rest.'
-        : 'Part of this FSA county is not in this week\'s county set.',
+          + ' constituent counties are not in this week\'s county set; the class '
+          + 'shown is the worst of the rest.'
+        : 'Part of this county is not in this week\'s county set.',
       isNote: true,
     });
   }
@@ -531,8 +491,7 @@ function cardRows(data, xw, sel, id) {
   if (sel.hasGeometry === false) {
     rows.push({
       term: 'Boundary',
-      value: 'No boundary available to display — this county is not in the '
-        + (sel.vintage || 'current') + ' FSA boundary archive.',
+      value: boundaryNoteValue(sel),
       isNote: true,
     });
   }
@@ -583,7 +542,10 @@ function htmlEl(name, attrs, text) {
  */
 function countySeries(data, xw, sel, id) {
   const out = new Int8Array(data.weeks).fill(ABSENT);
-  const fipsIds = xw ? xw.toFips(sel.vintage, id) : [];
+  // One id, not a bucket — see § THERE IS NO JOIN ANY MORE. The loop stays
+  // because the worst-of reduction over it is what the heatmap wants either
+  // way, and a one-element reduction is the identity.
+  const fipsIds = [String(id)];
   for (const fipsId of fipsIds) {
     for (let j = 0; j < data.weeks; j++) {
       const code = data.classCodeAt(fipsId, j);
@@ -610,15 +572,15 @@ function countySeries(data, xw, sel, id) {
  */
 function cardBody(container, data, xw, sel, id) {
   remember(sel, data);
-  if (!data || typeof data.classesFor !== 'function' || !xw) {
+  if (!data || typeof data.classesFor !== 'function') {
     container.replaceChildren();
     return null;
   }
 
   const years = data.years();
   const codes = countySeries(data, xw, sel, id);
-  const primary = (xw.toFips(sel.vintage, id) || [])[0];
-  const nm = primary ? data.countyName(primary) : null;
+  // The county IS its own key now, so there is no primary constituent to pick.
+  const nm = data.countyName(String(id));
   const place = nm && nm.county ? nm.county + ', ' + nm.state : String(id);
 
   const rowH = HM.cellH + HM.rowGap;
@@ -797,36 +759,59 @@ function liveSentence(sel, shown, total, missingGeometry, stats) {
     return head + ', ' + datasetLabel(sel) + ': nothing to show yet.';
   }
 
-  let msg = head + ', ' + datasetLabel(sel) + ': ' + count(stats.classed) + ' of '
-    + count(stats.total) + ' counties classed — ' + count(stats.severe)
+  /* `shown` and not stats.classed, and this is the whole reason app.js computes
+     it. stats.classed counts every county the ARCHIVE classed this week; `shown`
+     is that minus the ones with no polygon on the drawn authority, which is what
+     a reader is actually looking at. Using stats.classed here produced
+     "3,235 of 3,222 counties classed" on the Census set — a numerator above its
+     own denominator, because the payload reports thirteen territories the
+     tilesets do not carry. */
+  const classed = Number.isInteger(shown) ? shown : stats.classed;
+  const universe = Number(sel.universe) || stats.total;
+  let msg = head + ', ' + datasetLabel(sel) + ': ' + count(classed) + ' of '
+    + count(universe) + ' counties classed — ' + count(stats.severe)
     + ' in D2 or worse.';
-  if (stats.absent > 0) {
-    msg += ' ' + count(stats.absent) + (stats.absent === 1 ? ' county is' : ' counties are')
+  const absent = Math.max(0, universe - classed - (Number(missingGeometry) || 0));
+  if (absent > 0) {
+    msg += ' ' + count(absent) + (absent === 1 ? ' county is' : ' counties are')
       + ' not in this week\'s county set.';
   }
-  if (stats.unmatched > 0) {
-    // The Connecticut planning regions on the NDMC-reported set, and anything
-    // else the crosswalk cannot reach. Counted out loud, always.
-    msg += ' ' + count(stats.unmatched) + ' reported '
-      + (stats.unmatched === 1 ? 'area' : 'areas')
-      + ' could not be matched to an FSA county.';
-  }
-  if (missingGeometry > 0 && stats.unmatched !== missingGeometry) {
-    msg += ' ' + count(missingGeometry - stats.unmatched)
-      + ' more have data but no county boundary to draw.';
+  /* ONE clause for the misses now, because there is one kind. There used to be
+     two — areas the crosswalk could not reach, and areas it reached that had no
+     polygon — and with the crosswalk gone from this view they collapse into the
+     same fact: this archive reports a county that the authority on screen does
+     not have. On the NDMC-reported set that is Connecticut's nine planning
+     regions, which the LFP determination boundaries answer as eight counties;
+     on the Census set it is the thirteen territories the tilesets drop. Named
+     by authority, because "not in the FSA boundary archive" was wrong on two of
+     the three. */
+  if (missingGeometry > 0) {
+    msg += ' ' + count(missingGeometry) + ' reported '
+      + (missingGeometry === 1 ? 'area is' : 'areas are')
+      + ' not in ' + (sel.boundary ? sel.boundary.label : 'the county set on screen')
+      + '.';
   }
   return msg;
 }
 
 /* ── The data table ──────────────────────────────────────────────────────── */
 
-function tableColumns() {
+/**
+ * @param {object} sel the app's selection — table-view.js calls this as
+ *        `iface.table.columns(sel)`. Taken now because the id column's HEADER
+ *        depends on the drawn authority's key space.
+ */
+function tableColumns(sel) {
   return [
     { label: 'County', key: 'county', rowHeader: true },
     { label: 'State', key: 'state' },
-    // FSA, not FIPS: these rows are the JOIN's output — one per FSA county the
-    // map draws — even though the payload underneath is keyed by Census FIPS.
-    { label: 'FSA code', key: 'id', code: true },
+    /* The id space is the AUTHORITY's. This column said "FSA code" when the
+       rows were a crosswalk join's output; they are now the archive's own keys
+       drawn on the archive's own polygons, and all three of this view's
+       authorities are keyed by Census FIPS. Derived rather than hardcoded so it
+       stays true if an FSA-keyed drought dataset ever arrives. */
+    { label: (sel && sel.boundary && sel.boundary.keySpace === 'fsa')
+      ? 'FSA code' : 'FIPS code', key: 'id', code: true },
     { label: 'Class', key: 'klass' },
   ];
 }
@@ -845,19 +830,18 @@ function tableColumns() {
  */
 function tableRows(data, xw, sel, names) {
   const rows = [];
-  if (!data || !xw || typeof data.classesFor !== 'function') return rows;
+  if (!data || typeof data.classesFor !== 'function') return rows;
   if (!Number.isInteger(sel.week)) return rows;
 
-  // The shared join helper here, not colorsFor's memo: a table is built once
-  // per (dataset, week) and wants the VALUES, and reading them through the one
-  // documented crosswalk join is worth more than saving a millisecond. The two
-  // paths agree by construction — same reduce, same vintage — and the smoke
-  // test asserts it, because a table that disagreed with the map would be worse
-  // than no table.
+  // The same one-pass read colorsFor does, over the same Map — so the table and
+  // the map cannot disagree, because there is no longer a reduction for them to
+  // disagree ABOUT (§ THERE IS NO JOIN ANY MORE). A negative code is a county
+  // this archive does not report this week and gets no row, exactly as it gets
+  // no colour.
   const classes = data.classesFor(sel.week);
-  const { byFsa } = toFsaMap(xw, sel.vintage, classes, reduceFips);
 
-  for (const [id, code] of byFsa) {
+  for (const [id, code] of classes) {
+    if (code < 0) continue;
     const nm = (names && names(id)) || null;
     rows.push({
       id,
@@ -878,13 +862,16 @@ function tableCaption(sel, nRows) {
   const inst = instanceFor(sel);
   const when = (inst && Number.isInteger(sel.week))
     ? 'Week of ' + inst.weekLabel(sel.week) : 'Drought monitor';
-  const join = cachedJoin(sel);
   const n = Number(nRows) || 0;
   let msg = when + ' — ' + datasetLabel(sel) + ' — ' + count(n)
     + (n === 1 ? ' county classed' : ' counties classed');
-  if (join) {
-    const absent = Math.max(0, join.universe - n);
-    if (absent > 0) msg += '; ' + count(absent) + ' not in this week\'s county set';
+  // The denominator is the MAP's, handed down on `sel` — the drawn authority's
+  // county count. It used to come from the crosswalk's FSA table, which was the
+  // right number for a map drawn on FSA counties and is the wrong one now.
+  const universe = Number(sel.universe) || 0;
+  const absent = Math.max(0, universe - n);
+  if (universe && absent > 0) {
+    msg += '; ' + count(absent) + ' not in this week\'s county set';
   }
   return msg + '.';
 }
@@ -1010,7 +997,6 @@ export const USDM = Object.freeze({
   /** No pasture type and no color-by variable — one quantity, one scale — and a
       week within the year, which no other family has. */
   controls: Object.freeze({ type: false, variable: false, week: true }),
-  reduceFips,
   colorsFor,
   legend: Object.freeze({
     kind: legendKind,

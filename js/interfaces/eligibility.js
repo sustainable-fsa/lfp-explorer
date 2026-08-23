@@ -70,6 +70,7 @@ import { NO_DATA, cyclicColor, dfColor, dfRamps, loadDfRamp } from '../color.js'
    fallback for the surfaces that are not handed one. */
 import { countyName } from '../data.js';
 import { typeSlug } from '../decoders/common.js';
+import { boundaryNoteValue } from '../boundaries.js';
 import { ALL_TYPES, makeEligibilityData } from '../decoders/lfp-eligibility.js';
 import { renderEligibilityFigure } from './eligibility-chart.js';
 
@@ -638,8 +639,7 @@ function cardRows(data, xw, sel, id) {
 function boundaryNote(sel) {
   return {
     term: 'Boundary',
-    value: 'No boundary available to display — this county is not in the '
-      + (sel.vintage || 'current') + ' FSA boundary archive.',
+    value: boundaryNoteValue(sel),
     isNote: true,
   };
 }

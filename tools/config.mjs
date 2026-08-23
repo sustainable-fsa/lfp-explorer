@@ -127,6 +127,21 @@ export const MARKERS = Object.freeze({
       the next success. It exists so a harness can assert the failure UI
       instead of timing out on a transition that will never complete. */
   viewError: 'ngpViewError',
+  /** `data-ngp-boundary` — the tileset key of the county authority ACTUALLY on
+      the map ('fsa-counties-dd22', 'census-counties-2011', …). Written in the
+      same statement that assigns the geometry, so it cannot describe an
+      intention rather than a fact.
+
+      THIS IS THE SETTLE SIGNAL for anything that changes what is drawn, and the
+      transient pill is not. The pill is shown by whoever starts a transition and
+      cleared by whoever finishes one, so a wait that keys on it can return
+      immediately in a section that arrived with it already hidden — and then
+      read the PREVIOUS authority's geometry. That produced a real "dd22, 3104
+      polygons" failure: the right vintage, the previous vintage's polygons,
+      against an app that was swapping correctly in both directions. Wait on
+      this, and prefer waiting for a NAMED key (settleBoundary) over waiting for
+      "something changed". */
+  boundary: 'ngpBoundary',
 });
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -306,10 +321,21 @@ export const INTERFACES = Object.freeze({
         sel: '#btn-usdm-census',
         payload: 'usdm-counties.json',
         keySpace: 'fips',
+        /** The county authority it is DRAWN on — js/boundaries.js resolves the
+            annual vintage, so the key here is a template the harness fills. */
+        boundary: 'census-counties-{censusVintage}',
         /** Vintage-matched TIGER, so it is the one NON-rectangular set: a
             county absent from a week is a real '.' in the series, and the
             harness's absent-county copy is checked against this one. */
         rectangular: false,
+        /** MEASURED: the thirteen territory FIPS the tilesets drop (American
+            Samoa, Guam, the Northern Marianas, the US Virgin Islands). They
+            report from 2012 onward and are '.' before it, so on an early year
+            this is legitimately ZERO — which is why the harness computes it
+            from the payload and this literal is only what the live region is
+            checked to be talking about. Crosswalked onto the FSA composite it
+            used to be 159. */
+        unmatchedAtDefaultYear: 13,
       }),
       reported: Object.freeze({
         id: 'reported',
@@ -319,15 +345,21 @@ export const INTERFACES = Object.freeze({
         payload: 'usdm-counties-reported.json',
         keySpace: 'fips',
         rectangular: true,
+        boundary: 'fsa-lfp-counties',
         /** MEASURED, and the reason this dataset is not the default: NDMC keys
             Connecticut as the nine planning regions 09110–09190 for the whole
-            record, and the FSA crosswalk has no row for any of them. So on a
-            dd22 year exactly nine reported areas cannot reach an FSA county,
-            and the app must COUNT them out loud rather than drop them. The
-            harness still computes the number from the payload — this literal
-            is what the live region is checked to be talking about, not the
-            source of truth. (On a dd17 year it is eleven: Alaska's 02063 and
-            02066 post-date that vintage's crosswalk too.) */
+            record, and the FSA LFP determination boundaries answer Connecticut
+            as its eight traditional counties. So exactly nine reported areas
+            reach no polygon — and eight polygons stay uncoloured — and the app
+            must COUNT them out loud rather than drop them. The harness computes
+            the number from the payload; this literal is what the live region is
+            checked to be talking about.
+
+            NINE NOW ON EVERY YEAR, which it was not before. Crosswalked onto
+            the FSA composite this was 9 on a dd22 year and 11 on a dd17 one
+            (Alaska's 02063 and 02066 post-date that vintage), out of 140
+            unreachable in total. Drawn on its own polygons the vintage axis
+            drops out of the question entirely. */
         unmatchedAtDefaultYear: 9,
       }),
       'fsa-lfp': Object.freeze({
@@ -337,10 +369,15 @@ export const INTERFACES = Object.freeze({
         sel: '#btn-usdm-fsa-lfp',
         payload: 'usdm-counties-fsa-lfp.json',
         keySpace: 'fips',
+        boundary: 'fsa-lfp-counties',
         /** FSA's own FOIA'd LFP boundary statistics: rectangular (every county
             in every week) and CT-clean, which is why it is the default — last
-            button in the seg, and still the one `?dataset=` is elided at. */
+            button in the seg, and still the one `?dataset=` is elided at.
+            MEASURED: drawn on its own polygons this is an EXACT identity —
+            3,221 payload keys, 3,221 tileset ids, zero unmatched either way.
+            Through the FSA crosswalk it used to lose 131 counties. */
         rectangular: true,
+        unmatchedAtDefaultYear: 0,
       }),
     }),
 
@@ -969,7 +1006,13 @@ function usdmJoin(page) {
       const data = typeof c.getData === 'function' ? c.getData() : null;
       const xw = typeof c.getCrosswalk === 'function' ? c.getCrosswalk() : null;
       if (!data) return { error: 'the app has no active decoder' };
-      if (!xw) return { error: 'the crosswalk has not been fetched' };
+      /* NO CROSSWALK REQUIRED, and its ABSENCE is now part of what this oracle
+         proves. All three drought archives are drawn on the polygons their own
+         numbers were computed against (js/boundaries.js), so their keys are the
+         authority's ids and there is nothing to join. This function used to
+         re-implement the crosswalk reduce; it now counts an identity, which
+         makes it a STRONGER oracle than before — it no longer shares any code
+         path with the descriptor it is checking. */
       if (typeof data.classesFor !== 'function') {
         return { error: 'the active decoder is not a USDM one (no classesFor)' };
       }
@@ -982,24 +1025,30 @@ function usdmJoin(page) {
       if (j === null && m && range) j = range[0] + Number(m[1]) - 1;
       if (j === null) return { error: 'could not tell which week is on screen' };
 
-      const byFsa = new Map();
+      /* The identity: a class code IS a colour for that polygon. `unmatched` is
+         what the archive reports that the drawn authority does not have — the
+         nine Connecticut planning regions on the reported set, the thirteen
+         dropped territories on the Census set, and nothing at all on the LFP
+         set, where the two id sets are identical. */
+      const classed = new Map();
       const unmatched = [];
-      for (const [fips, code] of data.classesFor(j)) {
-        const fsa = xw.toFsa(sel.vintage, fips);
-        if (!fsa.length) { unmatched.push(fips); continue; }
-        for (const id of fsa) {
-          const prev = byFsa.get(id);
-          byFsa.set(id, prev === undefined ? code : Math.max(prev, code));
-        }
+      for (const [id, code] of data.classesFor(j)) {
+        if (code < 0) continue;               // '.' — not reported this week
+        classed.set(id, code);
+        if (!idx.has(id)) unmatched.push(id);
       }
       let painted = 0;
-      for (const id of byFsa.keys()) if (idx.has(id)) painted++;
+      for (const id of classed.keys()) if (idx.has(id)) painted++;
       return {
         j, week: m ? Number(m[1]) : null, weeks: m ? Number(m[2]) : null,
-        classed: byFsa.size, painted, unmatched: unmatched.length,
+        classed: classed.size, painted, unmatched: unmatched.length,
         unmatchedSample: unmatched.slice(0, 5),
         geometry: idx.size, dataset: sel.dataset, year: sel.year,
         vintage: sel.vintage,
+        // The DRAWN authority, which is the fact this oracle is really about.
+        boundary: (typeof c.getBoundary === 'function' && c.getBoundary())
+          ? c.getBoundary().key : null,
+        crosswalkLoaded: !!xw,
       };
     } catch (err) {
       return {

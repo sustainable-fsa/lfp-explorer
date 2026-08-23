@@ -36,10 +36,10 @@
    export job must not rewrite the visitor's own preference.
    ========================================================================== */
 
-import { getTheme, setTheme, urlParams } from 'https://sustainable-fsa.com/style/v0.2.1/core/core.js';
-import { captureCompositeMap, composeBranded } from 'https://sustainable-fsa.com/style/v0.2.1/ui/export.js';
-import { addCountyLayers } from 'https://sustainable-fsa.com/style/v0.2.1/county/county.js';
-import { resolveToken } from 'https://sustainable-fsa.com/style/v0.2.1/map/map.js';
+import { getTheme, setTheme, urlParams } from 'https://sustainable-fsa.com/style/v0.3.1/core/core.js';
+import { captureCompositeMap, composeBranded } from 'https://sustainable-fsa.com/style/v0.3.1/ui/export.js';
+import { addCountyLayers } from 'https://sustainable-fsa.com/style/v0.3.1/county/county.js';
+import { resolveToken } from 'https://sustainable-fsa.com/style/v0.3.1/map/map.js';
 
 import { activeNgpDataset, typeSlug } from './data.js';
 import { NO_DATA, VARIABLES, ramps } from './color.js';
@@ -401,9 +401,42 @@ export async function runExport(ctx = appCtx) {
       .map((f) => document.fonts.load(f).catch(() => {})));
   }
 
-  const { canvas, dispose } = await captureCompositeMap({
+  const { canvas, dispose, timedOut } = await captureCompositeMap({
     bounds: ctx.getBounds(),
+    /* The kit's 20 s default was sized for a GeoJSON composite that settles in
+       under a second. This one draws from VECTOR TILES, so "idle" is waiting on
+       range requests — cached from the live map in the common case, but the
+       protocol still re-parses every tile for a fresh map, and a cold cache on a
+       slow connection is a real 20 s. A poster that shipped half-drawn would
+       look like a poster. */
+    idleTimeoutMs: 30000,
     build: async (offscreen) => {
+      /* LISTEN TO THE THROWAWAY MAP. MapLibre's Evented.fire falls back to
+         console.error only when NOTHING is listening, so a map nobody listens to
+         reports its problems to the console and to nobody who can act on them.
+         This app creates this map; owning its errors is part of that.
+
+         What actually arrives here is a cancelled request. The composite is
+         captured and then the map is removed, and a range request still in
+         flight at that moment rejects — sometimes as `TypeError: Failed to
+         fetch` rather than an AbortError, which is the shape MapLibre cannot
+         recognise as a cancellation (kit v0.3.1 normalises the cases where the
+         abort controller is the cause; this is not one of them).
+
+         A WARN, not silence, and deliberately not an error: the poster's own
+         validity is asserted separately — tools/verify.mjs checks the PNG magic
+         bytes and that it is over 100 KB — so a tile failure that actually
+         mattered would show up as a blank or truncated poster and fail THAT,
+         which is the assertion with teeth. Swallowing this without saying so
+         would be the wrong trade; failing a console-clean gate on a request
+         nobody wanted any more is the other wrong trade. */
+      offscreen.on('error', (e) => {
+        const err = e && e.error;
+        console.warn('[ngp/export] the offscreen map reported an error, which is '
+          + 'usually a range request cancelled as the map was torn down: '
+          + ((err && (err.message || err.name)) || String(e)));
+      });
+
       // The off-screen map is a throwaway with its own sources and layers:
       // rebuild the composite on it, then let the rAF-coalesced recolor land
       // before the capture waits for idle.
@@ -412,6 +445,19 @@ export async function runExport(ctx = appCtx) {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
   });
+
+  /* A timeout is not an error — the canvas is real and the poster is a picture
+     of what had drawn. But an incomplete map with a confident title is worse
+     than a slow download, and the kit reports this rather than throwing
+     precisely because only the caller knows which. Here it is a hard stop: the
+     poster is a citable artifact that outlives the tab, and half a choropleth
+     over a full legend is a claim about the country that is simply false. */
+  if (timedOut) {
+    dispose();
+    throw new Error('[ngp/export] the offscreen map never finished drawing, so '
+      + 'the poster would show a partial composite. Try again — the county tiles '
+      + 'are cached after the first attempt.');
+  }
 
   try {
     const blob = await composeBranded(canvas, {

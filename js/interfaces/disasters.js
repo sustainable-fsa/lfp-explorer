@@ -75,6 +75,7 @@
 
 import { NO_DATA } from '../color.js';
 import { toFsaMap } from '../decoders/crosswalk.js';
+import { boundaryNoteValue } from '../boundaries.js';
 import { makeDisastersData } from '../decoders/fsa-disasters.js';
 
 /* ── The archive ─────────────────────────────────────────────────────────────
@@ -489,8 +490,7 @@ function cardRows(data, xw, sel, id) {
 function boundaryNote(sel) {
   return {
     term: 'Boundary',
-    value: 'No boundary available to display — this county is not in the '
-      + (sel.vintage || 'current') + ' FSA boundary archive.',
+    value: boundaryNoteValue(sel),
     isNote: true,
   };
 }

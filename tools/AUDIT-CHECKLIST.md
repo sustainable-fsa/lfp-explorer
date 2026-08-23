@@ -82,7 +82,20 @@ part of the app's contract — and it means an outage there fails the run.
   sends no `content-encoding`, so the 5.1 MB payload crosses the wire whole.
   It gzips to **98 KB**, and GitHub Pages does gzip it. The local score
   (~0.31, LCP ~35 s) is therefore a floor, not the production number — which is
-  exactly why performance is warn-only.
+  exactly why performance is warn-only. **Both numbers are STALE and must be
+  re-measured**: they predate the tiled county path, which cut the boundary
+  bytes (453 KB brotli TopoJSON → ~348 KB of sidecar plus tiles) while raising
+  the request count. Which way the score moved is not predictable from that and
+  should not be guessed at in this file.
+- **There are THREE contract origins now.** The kit comes from
+  `sustainable-fsa.com`, the payloads from sibling checkouts, and the county
+  geometry from `data.sustainable-fsa.com` — 21 tilesets and their sidecars.
+  `check-boundaries.mjs` fetches all 21 sidecars live. An outage at any of the
+  three fails the run, which is the correct signal, and a Pages deploy of the
+  KIT while an audit is running has been seen to produce exactly one transient
+  CORS failure on one theme/viewport combo. If a run fails with
+  `No 'Access-Control-Allow-Origin' header` against a `/style/` URL, check
+  whether something was deploying, and re-run before investigating.
 - **axe trips this page's own CSP.** axe-core applies `style` attributes to the
   nodes it measures and the page ships `style-src` with no `'unsafe-inline'`,
   so each axe pass logs two "Applying inline style violates…" errors.
@@ -214,6 +227,34 @@ kit ships behind `@media (hover: none)` stays inert in it.
 
 These are the ones a headless assertion can prove *ran* but not that they are
 *right*.
+
+### County boundaries — the whole point of the tiled path
+
+Automation proves the right tileset was fetched and the right number of
+counties painted. It cannot prove the boundary is where the archive says it is,
+or that it is smooth, and both are the reason this work happened.
+
+- [ ] **Lossless at high zoom.** Pick a county with a complicated shoreline —
+      Plaquemines, LA or Dorchester, MD — and zoom to the ceiling (19; the map
+      will not go further, by design). The boundary must read as a *coastline*,
+      not as a chain of straight segments. The old TopoJSON was simplified and
+      visibly faceted here.
+- [ ] **The authorities really differ.** On **1 · Drought monitor**, zoom to
+      that same coast at z14–15 and switch **Dataset** between *Census
+      counties* and *FSA LFP boundaries*. Those two name exactly the same 3,221
+      counties, so nothing should move except the boundary itself — the LFP set
+      is unclipped and not edge-matched, so it will run out into the water where
+      the Census set stops at the shoreline. **The camera must not move.**
+- [ ] **The annual vintage moves, and Connecticut proves it.** On *Census
+      counties*, drag the year across 2022 → 2023. Connecticut must change from
+      eight counties to **nine planning regions**. Then 2010 → 2011, which
+      crosses from the 2009 vintage to the 2010 one. The map must not flash,
+      tear, or leave a stale colour behind, and the transient pill must name the
+      county set it is switching to.
+- [ ] **A county with no polygon still reads honestly.** On *NDMC reported*,
+      Connecticut is uncoloured — nine planning regions with nowhere to draw
+      them. The summary beneath the map must say so in words, and the county
+      card for a Connecticut county must name the authority that is missing it.
 
 ### Month wheel
 

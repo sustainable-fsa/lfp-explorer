@@ -57,16 +57,137 @@ Specifics that bite in this repo:
   the `MutationObserver` on `#card-rows` in `js/card-content.js` are written
   against those ids. The kit's `dock-right` / bottom-sheet geometries are
   CSS-only for exactly that reason.
-- **Every `loadCounties()` result must pass through `projectCounties()`**
-  (`js/projection.js`) before anything touches it — the map renders a dummy
-  EPSG:5070 space, not lng/lat. Both existing call sites (boot and the 2015
-  vintage swap) already do; a new one that forgets will draw a second, tiny
-  geographic country near (0,0). Bounds are `PROJECTED_BOUNDS`, never the
-  kit's `COMPOSITE_BOUNDS`; `?lng`/`?lat`/`?zoom` are dummy-space positions.
-  The why, the reference table, and the rescale constants live in the
-  `js/projection.js` header.
+- **Nothing is projected client-side any more, and `projectCounties()` is
+  gone.** That bullet used to say the opposite: every `loadCounties()` result
+  had to pass through it. Geometry now ARRIVES in the dummy EPSG:5070 space —
+  `data-tiles` builds both the tiles and the sidecars' bounding boxes through
+  the same transform, gated against the twelve reference points in
+  `js/projection.js`'s header to 1e-9 dummy degrees — so a call to a projection
+  would be a double application that flings the composite into the next
+  hemisphere.
 
-## Where we left off (2026-08-20, the four-interface expansion is complete)
+  What replaces it is the other half of the same discipline, and it **cannot be
+  forgotten** because it does not live at a call site: `assertProjectedSpace()`
+  runs inside `loadBoundary()`, the only loader. It throws rather than warns. A
+  misregistered authority lines up at the centre of the map and drifts at the
+  edges, with nothing on screen to say so, and the error is largest exactly
+  where a reader zooms in to compare two county sets. It compares with a
+  TOLERANCE, not `===`: R prints 15 significant digits where JS round-trips at
+  17, so the published bounds differ from `PROJECTED_BOUNDS` by 1.8e-15.
+
+  Bounds are still `PROJECTED_BOUNDS`, never the kit's `COMPOSITE_BOUNDS`;
+  `?lng`/`?lat`/`?zoom` are still dummy-space positions. `projectPoint()` and
+  the reference table stay, because they are the cross-repo SPECIFICATION the
+  producer is checked against.
+
+- **Geometry is per-dataset, and the authority is declared, never inferred.**
+  `js/boundaries.js` owns the catalogue and the **two independent vintage
+  resolvers** — FSA's program-year split, and the Census annual TIGER vintage,
+  eighteen of them. They must never meet in one function. Every dataset
+  descriptor names its authority in one field (`boundary: 'fsa' | 'fsa-lfp' |
+  'census'`), and `ensureBoundary()` is the only thing that changes what is on
+  the map.
+
+  `sel.vintage` means the **FSA** axis and nothing else — it is what indexes the
+  crosswalk. `sel.boundary` is what is drawn. On the drought monitor they are
+  unrelated: a map on the 2011 Census counties has an FSA vintage of `dd17`,
+  and a leaf that reached for the drawn authority's vintage there would index
+  the crosswalk with `'2011'` and match nothing.
+
+  A crosswalk is needed **exactly** when `dataset.keySpace !== authority
+  .keySpace` (`needsCrosswalk()`), which is why no dataset declares a join.
+  Two datasets still cross: the nClimGrid grazing periods and the disaster
+  designations.
+
+- **A tripwire has to be `console.error`, not `console.warn`.** Both harnesses
+  collect `m.type() === 'error'` only (`tools/verify.mjs`,
+  `tools/a11y-audit.mjs`), so a `warn` gates nothing — which is the state the
+  year-domain `years.max` warn is still in, and it should be fixed. The Census
+  vintage tripwire in `js/boundaries.js` uses `console.error` for this reason.
+
+## Where we left off (2026-08-23)
+
+**Every dataset now draws the polygons its own numbers were computed against.**
+That was the whole job, it is shipped, and the geometry is PMTiles vector tiles
+instead of one simplified TopoJSON.
+
+### What changed, and what it bought
+
+The app drew ONE county composite — FSA's administrative boundaries — under all
+four interfaces, and bent every FIPS-keyed payload onto it through the
+crosswalk. Measured, on the drought monitor, the counties whose data reached no
+polygon at all:
+
+| dataset | crosswalked onto dd22 | on its own polygons |
+| --- | --- | --- |
+| `usdm-counties-fsa-lfp` | 131 | **0** — an exact identity, 3,221 = 3,221 |
+| `usdm-counties-reported` | 140 | **9** — Connecticut's planning regions |
+| `usdm-counties` | 159 | **13** — the dropped territories, and only from 2012, because that is when they start reporting |
+
+The 9 and the 13 are real and still counted out loud. The 131 was an artifact.
+
+### The three authorities and the two axes
+
+`js/boundaries.js` is the only module that knows which polygons a selection may
+be drawn on. Three authorities — `fsa` (FSA county codes, dd17/dd22 by program
+year), `fsa-lfp` (Census FIPS, one FOIA snapshot for the whole record), `census`
+(Census FIPS, eighteen annual TIGER vintages) — and each dataset names one in a
+single `boundary:` field. No functions: the eligibility view's aggregation
+picker chooses which drought convention recomputed the ladder, not which
+polygons it lands on, so all three of its datasets declare `fsa`.
+
+**The two vintage axes are independent and must never share a resolver.** See
+the House style bullet above; the short version is that `sel.vintage` is the FSA
+axis (it indexes the crosswalk) and `sel.boundary` is what is drawn, and on a
+drought map they are unrelated.
+
+`censusVintageFor(Y) = clamp(max{v ≤ Y−1}, 2000, newest)`, verified against the
+published data rather than the R source: `usdm-counties.json`'s `'.'` sentinels
+make each year's county set observable, and it equals the resolved vintage's
+sidecar set exactly for **all 27 years**. `tools/check-boundaries.mjs` re-runs
+that in CI, and an injected off-by-one fails five of its assertions.
+
+### Facts worth not rediscovering
+
+- **`census-counties-2022` and later carry Connecticut's NINE PLANNING REGIONS**
+  (`09110`–`09190`), not its eight traditional counties. So on the Census
+  authority Connecticut changes shape at program year 2023. Asserted.
+- **`fsa-lfp-counties` and `census-counties-2020` are the same id set with
+  different geometry** — 3,221 each, zero symmetric difference. The LFP set is
+  unclipped and not edge-matched. Flipping between those two at z14–15 is the
+  app's sharpest demonstration of why any of this mattered.
+- **MapLibre does not throw when `sourceLayer` is missing.** It fires an error
+  event and returns; `getFeatureState` answers `undefined`. The first symptom
+  was twenty "the choropleth repainted" failures in `verify.mjs` against an app
+  that was painting perfectly — the HARNESS was reading feature state without
+  it. Everything goes through `handle.featureRef()` now, app and harness alike.
+- **The tiles are `max-age=3600`, deliberately NOT `immutable`**, because the
+  filenames are stable across rebuilds. `tiles.url` is resolved relative to the
+  sidecar so the producer can rename or content-hash without a consumer change;
+  never compose an archive filename from a key.
+- **`maxZoom` is 19, and it is arithmetic**: z15 at extent 8192 quantizes to
+  0.720 m, and one CSS pixel at display zoom 19 is 0.720 m. Past that the reader
+  is zooming into the quantization.
+
+### Cross-repo state
+
+- **kit v0.3.0** is released, live and tagged — the tiled path in
+  `county/county.js`, `loadCountyIndex`, `handle.featureRef`, `MAX_BOUNDS_PAD_DEG`,
+  `captureCompositeMap({idleTimeoutMs})` + `timedOut`. `BOUNDARY_URLS` and
+  `loadCounties()` are byte-identical, so consumers on v0.2.1 are untouched.
+  Its gate is `tools/check-tiled.mjs`, 49 assertions including a TopoJSON
+  no-regression half.
+- **`data-tiles`** publishes 21 tilesets (dd17, dd22, fsa-lfp, census
+  2000 + 2009–2025), each with a `-index.json` sidecar and an
+  `-outline-dummy.geojson`. `census-counties` unblocked and published
+  2026-08-22, so the whole upstream chain is live.
+- **The USDM weekly-polygon overlay is NOT built.** No browser-ready form of
+  those polygons exists: the archive publishes 1,390 weekly GeoParquet files
+  (median 1.17 MB, five non-overlapping MultiPolygons per week, `usdm_class`
+  `"D0"`–`"D4"`, CRS84) and `data-tiles` has no USDM script. That is the next
+  piece of work and it is a producer job first.
+
+## The four-interface expansion (shipped 2026-08-20)
 
 The **four-interface expansion is done**: the administration story in four
 acts — displayed as 1 · Drought monitor (USDM weekly), 2 · Grazing periods
@@ -75,7 +196,8 @@ owner's 2026-08-21 reordering — landed as four serial PRs plus a
 refinements PR, with
 shared year/county/camera/theme surviving every switch and per-interface
 memory for everything else. Gates at completion: verify.mjs prints its own
-count — currently 494; axe clean 2 themes × 2 viewports × 11 states;
+count — 494 at that release, 518 after the boundary work; axe clean
+2 themes × 2 viewports × 11 states;
 html-validate clean; LHCI a11y 1.0:
 
 - The **interface framework** (PR 1): "What to show" switcher (top of the
@@ -168,41 +290,77 @@ html-validate clean; LHCI a11y 1.0:
   filter, which was the bug) for the run's county AND for a leading-zero id,
   plus that the ring clears when the card closes.
 
-Open threads, in rough priority order:
+## Open threads
 
-1. **Manual AUDIT-CHECKLIST walk** — the plan's PR-4 gate that automation
-   cannot do: the three manual passes (keyboard-only, 375 px on a real
-   phone, the figures pass) against the finished four-interface app, and
-   updating the checklist's manual sections to name the new controls.
-2. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
+The live question is now **the USDM weekly-polygon overlay**, and it is a
+PRODUCER job first: there is no browser-ready form of those polygons anywhere.
+The archive publishes 1,390 weekly GeoParquet files and `data-tiles` has no USDM
+script. Start there, not here.
+
+App-side, in rough priority order:
+
+1. **The `years.max` tripwire does not gate.** Both harnesses collect
+   `m.type() === 'error'` only, so `applyYearDomain`'s `console.warn` is
+   invisible to CI — the safety net described in this file for two releases has
+   never been connected. One line: make it `console.error`. `js/boundaries.js`'s
+   Census-vintage tripwire already does.
+2. **Manual AUDIT-CHECKLIST walk** — the three passes automation cannot do
+   (keyboard-only, 375 px on a real phone, the figures pass), now with two items
+   the tiled path adds: at maximum zoom on one county the boundary must be
+   smooth, and flipping *Census counties* ⇄ *FSA LFP boundaries* at z14–15 on
+   one coastal county must visibly move the boundary without moving the camera.
+3. **A cancelled tile request used to be reported as an error.** MapLibre
+   decides whether a rejection was a cancellation with exactly one test —
+   `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
+   with that name; at the network layer Chrome gives
+   `TypeError: Failed to fetch` (`net::ERR_ABORTED`). Kit **v0.3.1** normalises
+   the cases where the abort controller is demonstrably the cause, which
+   silenced every swap-time instance.
+
+   The remaining one was on the export path, and it was diagnosed rather than
+   tolerated: the app builds a **throwaway offscreen map** for the PNG, and
+   MapLibre falls back to `console.error` only when NOTHING is listening. An app
+   that creates a map and does not own its errors has left them to the console.
+   `js/export.js` now attaches an `error` listener, and
+   `console clean · export run` passes. The listener logs a WARN rather than
+   swallowing: the poster's own validity is asserted separately (PNG magic
+   bytes, >100 KB), which is the check with teeth if a tile failure ever
+   actually matters.
+
+   Two dead ends worth not re-walking. The shared-`pmtiles`-cache hypothesis —
+   an abort by one map poisoning a cache entry for another — was **tested and
+   disproved**: a second map is unaffected when the first is removed mid-flight.
+   And eight isolated reproductions of `?export=light` came back clean, which is
+   why this took two harness changes to place: the source LOCATION in the
+   console capture (now permanent, and what put it in the bundle rather than in
+   app code), then a `requestfailed` listener to name `net::ERR_ABORTED`.
+4. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
    fires on any `.sfsa-card-body` whose content has no focusable element at
    compact widths — the other views escape only because their card bodies
    contain a `<details><summary>`. The durable fix belongs in the kit's
    card component; this app carries a per-view `tabindex="0"` meanwhile.
-3. **Fire events for eligibility** remain out of scope until the archive
+5. **Fire events for eligibility** remain out of scope until the archive
    adds them to an events payload.
-2. **Annual maintenance tripwire**: both descriptors declare
-   `years: {min, max}` (currently max 2026). When the USDM archive rolls into
-   a new year, `applyYearDomain` console.warns and the console-clean gate
-   fails until the descriptors' `years.max` are bumped — deliberate, so the
-   slider ceiling never silently lags the data.
-3. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
+6. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
    for now; moving it behind an archive-published Pages URL is a one-line
-   URL change in `js/decoders/crosswalk.js`. A CT planning-region extension
-   (needs Census relationship files) would let NDMC-reported paint
-   Connecticut.
-4. **Compact reveal is best-effort only**: the bottom sheet gets a
+   URL change in `js/decoders/crosswalk.js`. It now serves TWO datasets rather
+   than five — the nClimGrid grazing periods and the disaster designations —
+   because everything else draws its own polygons.
+7. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
+   honest: the archive keys nine planning regions and the FSA LFP determination
+   boundaries answer eight traditional counties. Drawing it would need a
+   planning-region tileset, which nobody publishes. The *Census counties*
+   dataset already shows Connecticut correctly from program year 2023.
+8. **Compact reveal is best-effort only**: the bottom sheet gets a
    mesonet-style pan, which the bounds cage clamps at the fit floor. A
    vertical push (`#map { bottom: var(--sheet-h) }` + resize, mirroring the
    desktop push) is the symmetric fix if it ever matters on phones.
-5. **Archive-side projected artifact (optional)**: fsa-counties-dd17/dd22
-   already build the composite in Albers (`tigris::shift_geometry`,
-   ESRI:102003) and unproject one line before publishing. Publishing a
-   projected TopoJSON and pointing the kit's `BOUNDARY_URLS` at it (kit
-   v0.2.1+) would move the projection from `js/projection.js` into the data.
-   Client-side is a lossless inverse, so this is lineage hygiene, not a fix.
-6. `tools/AUDIT-CHECKLIST.md`'s three manual passes have not been walked
-   since the drawer restructure; the plan calls for the full walk at PR 4.
+9. **The card's "Combined from" rows are gone from the drought view**, and that
+   was a real loss to the reduction story, not an oversight — an identity
+   authority has no constituents. It survives on the two views that still
+   crosswalk.
 
 (The pre-expansion thread "fsa-lfp-eligibility-web drawer adoption" as a
-separate app is superseded — eligibility lands here as interface 3.)
+separate app is superseded — eligibility lands here as interface 3. The
+"archive-side projected artifact" thread is superseded too: the projection now
+lives in `data-tiles`, which is where that thread wanted it.)
