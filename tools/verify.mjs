@@ -64,7 +64,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import {
   CROSSWALK, DEFAULT_INTERFACE, INTERFACES, INIT_LS, PAGE_PATH, READY_MS,
-  THEMES, VIEWPORTS, renderEvidence, serveWorkspace, workspaceRoot,
+  SCALE, THEMES, VIEWPORTS, renderEvidence, serveWorkspace, workspaceRoot,
 } from './config.mjs';
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1621,6 +1621,339 @@ const main = await open({ permissions: ['clipboard-read', 'clipboard-write'] });
   }
 
   await main.ctx.close();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE SCALE BAR — a distance on a map whose coordinates are not distances.
+
+   Placed here, straight after the main run's "the rendered space is the
+   PROJECTED one" check, because it is the same subject seen from the other
+   end: that check asserts the dummy box is what the camera frames, and this one
+   asserts the app can still say how far across it is.
+
+   Its own session per camera, not the main run's, because two of the five
+   fixtures move the map a long way and one of them is a deliberately bad
+   camera. The main run's later assertions are written against a map that has
+   not been flung to Anchorage.
+
+   THE CHECK WITH TEETH is number three. Everything else here would still pass
+   with `maplibregl.ScaleControl` installed instead, because the built-in draws
+   a bar with a number on it too — a number 4.8× too small, read off dummy
+   degrees as if they were WGS84. So the gate computes exactly that wrong
+   answer, and requires the real one to differ from it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+section('▸ The scale bar tells the truth');
+{
+  /** Definitional; the same four units js/scale-bar.js can print. */
+  const UNIT_M = { m: 1, km: 1000, ft: 0.3048, mi: 1609.344 };
+
+  /** Everything about the control, plus the two reference points projected by
+      the app's OWN transform and where the live camera puts them on screen. */
+  const readScale = (page) => page.evaluate(async (S) => {
+    const proj = await import(new URL('js/projection.js', document.baseURI).href);
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const map = app.ngpContext().getMap();
+    const wrap = document.querySelector(S.ctrl);
+    if (!wrap) return { present: false };
+    const bar = (sel) => {
+      const el = wrap.querySelector(sel);
+      if (!el) return null;
+      return {
+        text: (el.textContent || '').trim(),
+        unit: el.dataset.unit || null,
+        px: el.getBoundingClientRect().width,
+      };
+    };
+    /* Ground truth. The reference points are lng/lat with PROJ's own EPSG:5070
+       metres beside them (tools/config.mjs § SCALE), so their true separation
+       is arithmetic this file did not do — and projectPoint() is the same
+       transform the tiles were built through. */
+    const pts = S.reference.map((r) => {
+      const d = proj.projectPoint([r.lng, r.lat]);
+      const p = map.project({ lng: d[0], lat: d[1] });
+      return { dummy: d, sx: p.x, sy: p.y, mx: r.x, my: r.y };
+    });
+    return {
+      present: true,
+      hidden: !!wrap.hidden,
+      inCorner: !!wrap.closest('.maplibregl-ctrl-bottom-left'),
+      region: wrap.dataset[S.regionAttr] || null,
+      title: wrap.getAttribute('title') || '',
+      label: wrap.getAttribute('aria-label') || '',
+      role: wrap.getAttribute('role') || '',
+      imperial: bar(S.bars.imperial),
+      metric: bar(S.bars.metric),
+      zoom: map.getZoom(),
+      pts,
+    };
+  }, SCALE);
+
+  /** metres per CSS pixel the bar CLAIMS: its own number over its own width. */
+  const claimed = (bar) => {
+    const m = /^([\d.]+) (mi|ft|km|m)$/.exec(bar.text);
+    return m ? (Number(m[1]) * UNIT_M[m[2]]) / bar.px : NaN;
+  };
+
+  /** metres per CSS pixel the SPECIFICATION implies, between the two reference
+      points: their true EPSG:5070 separation over their pixel separation. */
+  const truth = (s) => {
+    const [a, b] = s.pts;
+    return {
+      meters: Math.hypot(b.mx - a.mx, b.my - a.my),
+      px: Math.hypot(b.sx - a.sx, b.sy - a.sy),
+      get mPerPx() { return this.meters / this.px; },
+    };
+  };
+
+  /** What the built-in control would say those same two points are apart:
+      haversine over the dummy coordinates, read as WGS84. */
+  const naiveMeters = (s) => {
+    const R = 6371008.8;
+    const rad = (d) => (d * Math.PI) / 180;
+    const [a, b] = s.pts;
+    const dLat = rad(b.dummy[1] - a.dummy[1]);
+    const dLng = rad(b.dummy[0] - a.dummy[0]);
+    const h = Math.sin(dLat / 2) ** 2
+      + Math.cos(rad(a.dummy[1])) * Math.cos(rad(b.dummy[1])) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  };
+
+  const pct = (got, want) => Math.abs(got - want) / want * 100;
+  const fmt = (n, d = 3) => Number(n).toFixed(d);
+
+  /* ── (a) The national fit: four regions on screen, so no bar. ──────────── */
+  {
+    const s = await open({ query: SCALE.cameras.national });
+    const r = await readScale(s.page);
+    check('the control is built and lives in MapLibre\'s bottom-left corner',
+      r.present && r.inCorner, JSON.stringify({ present: r.present, corner: r.inCorner }));
+    check('at the default fit the bar is HIDDEN — the composite\'s four regions '
+      + 'are drawn at four different scales, and one bar cannot be true for a '
+      + 'view that holds more than one of them',
+    r.hidden === true && r.region === null,
+    JSON.stringify({ hidden: r.hidden, region: r.region }));
+    s.clean('scale bar · national fit');
+    await s.ctx.close();
+  }
+
+  /* ── (b) A CONUS camera: the bar, and whether it is telling the truth. ─── */
+  let conusMPerPx = null;
+  {
+    const s = await open({ query: SCALE.cameras.conus });
+    const r = await readScale(s.page);
+    check('zoomed into one CONUS county the bar appears, naming no inset',
+      r.hidden === false && r.region === 'conus'
+        && /^Scale\./.test(r.title) && r.role === 'img',
+      JSON.stringify({ hidden: r.hidden, region: r.region, title: r.title.slice(0, 40) }));
+    check('it draws TWO bars, miles above kilometres, each a 1/2/5 × 10ⁿ whole '
+      + 'number in one of four units',
+    !!r.imperial && !!r.metric
+      && SCALE.labelRe.test(r.imperial.text) && SCALE.labelRe.test(r.metric.text)
+      && ['mi', 'ft'].includes(r.imperial.unit) && ['km', 'm'].includes(r.metric.unit),
+    JSON.stringify({ imperial: r.imperial, metric: r.metric }));
+    check('neither bar is wider than its 100 px ceiling',
+      r.imperial.px > 0 && r.imperial.px <= 100.5
+        && r.metric.px > 0 && r.metric.px <= 100.5,
+      JSON.stringify({ mi: r.imperial.px, km: r.metric.px }));
+    check('the accessible name carries both readings, so the bar is one fact '
+      + 'to a screen reader rather than two loose numbers',
+    r.label.includes(r.imperial.text) && r.label.includes(r.metric.text),
+    JSON.stringify(r.label.slice(0, 80)));
+
+    /* TRUTH. */
+    const t = truth(r);
+    conusMPerPx = claimed(r.metric);
+    const err = pct(conusMPerPx, t.mPerPx);
+    check(`TRUTH: the km bar's own number over its own width is ${fmt(conusMPerPx, 2)} `
+      + `m/px, against ${fmt(t.mPerPx, 2)} m/px derived from two points of `
+      + 'js/projection.js\'s reference table and their PROJ EPSG:5070 separation '
+      + `— ${fmt(err, 4)}% apart, inside the ${SCALE.truthPct}% the gate allows`,
+    err < SCALE.truthPct,
+    JSON.stringify({ label: r.metric.text, px: fmt(r.metric.px, 2),
+      claimed: fmt(conusMPerPx, 4), truth: fmt(t.mPerPx, 4),
+      refMeters: fmt(t.meters, 1), refPx: fmt(t.px, 1) }));
+
+    /* TEETH. */
+    const naive = naiveMeters(r);
+    const ratio = t.meters / naive;
+    check('TEETH: the same two points read as WGS84 — which is exactly what '
+      + `maplibregl.ScaleControl does here — come out ${fmt(naive / 1000, 0)} km `
+      + `apart against the true ${fmt(t.meters / 1000, 0)} km, a factor of `
+      + `${fmt(ratio, 2)}. The bar agrees with the TRUE separation and differs `
+      + `from the naive one by more than ${SCALE.teethRatio}×, which is the check `
+      + 'that fails the day someone swaps the built-in control back in',
+    ratio > SCALE.teethRatio
+      && pct(conusMPerPx * t.px, t.meters) < SCALE.truthPct
+      && pct(conusMPerPx * t.px, naive) > 100 * (SCALE.teethRatio - 1),
+    JSON.stringify({ trueKm: fmt(t.meters / 1000, 1), naiveKm: fmt(naive / 1000, 1),
+      barKm: fmt(conusMPerPx * t.px / 1000, 1), ratio: fmt(ratio, 3) }));
+
+    /* The two bars are one measurement. */
+    const mi = claimed(r.imperial);
+    check('the two bars describe the SAME scale — mi × 1609.344 and km × 1000 '
+      + 'land on one metres-per-pixel, whatever each rounded its own number down to',
+    pct(mi, conusMPerPx) < 0.5,
+    JSON.stringify({ imperial: fmt(mi, 4), metric: fmt(conusMPerPx, 4),
+      apart: fmt(pct(mi, conusMPerPx), 4) + '%' }));
+
+    /* The bar moves with the camera. */
+    const before = { mi: r.imperial.text, km: r.metric.text };
+    await s.page.evaluate(async () => {
+      const app = await import(new URL('js/app.js', document.baseURI).href);
+      const map = app.ngpContext().getMap();
+      map.jumpTo({ zoom: map.getZoom() + 3 });
+    });
+    await s.page.waitForTimeout(600);
+    const z = await readScale(s.page);
+    const zt = truth(z);
+    const zc = claimed(z.metric);
+    check('three zoom levels in, both readings have changed and the new one is '
+      + `still true (${fmt(pct(zc, zt.mPerPx), 4)}% from the reference points)`,
+    z.hidden === false && z.metric.text !== before.km
+      && z.imperial.text !== before.mi && pct(zc, zt.mPerPx) < SCALE.truthPct,
+    JSON.stringify({ before, after: { mi: z.imperial.text, km: z.metric.text },
+      claimed: fmt(zc, 4), truth: fmt(zt.mPerPx, 4) }));
+    s.clean('scale bar · CONUS');
+    await s.shot('01c-scale-bar-conus');
+    await s.ctx.close();
+  }
+
+  /* ── (c) The insets: the bar is region-aware, and by the right factor. ── */
+  for (const id of ['ak', 'hi', 'pr']) {
+    const spec = SCALE.regions[id];
+    const s = await open({ query: SCALE.cameras[id] });
+    const r = await readScale(s.page);
+    check(`over the ${spec.label} the bar shows and NAMES it — a reader who has `
+      + 'zoomed into an inset has to be told which scale is now being spoken',
+    r.hidden === false && r.region === id && r.title.includes(spec.label)
+      && r.label.includes(spec.label),
+    JSON.stringify({ hidden: r.hidden, region: r.region, title: r.title.slice(0, 48) }));
+    if (r.hidden === false) {
+      /* GROUND TRUTH ON AN INSET, which the reference table cannot give
+         directly — its only Alaska point is annotated "unshifted", i.e. not
+         where the composite draws Alaska, so there is no published metre pair
+         inside any inset. What IS available everywhere is the DRAWN scale: the
+         pre-sheared plane makes metres-per-pixel one number for the whole map,
+         so the two CONUS reference points measure the drawn scale even while
+         the camera is over Anchorage. Multiply the bar's claim by the region's
+         factor and it must come back to that number.
+
+         This is the check that catches the factor being wrong AND the factor
+         being applied the wrong way round — real = drawn ÷ factor, so Alaska,
+         drawn at 0.5×, has to say TWICE what CONUS says at the same zoom, and a
+         multiply instead of a divide would land at a quarter of it. */
+      const got = claimed(r.metric);
+      const t = truth(r);
+      const err = pct(got * spec.factor, t.mPerPx);
+      check(`…and it is telling the truth about it: ${fmt(got, 2)} m/px claimed `
+        + `× the ${spec.factor}× this region is DRAWN at = ${fmt(got * spec.factor, 2)}, `
+        + `against the ${fmt(t.mPerPx, 2)} m/px the reference points measure for `
+        + `the drawn plane — ${fmt(err, 4)}% apart`,
+      err < SCALE.truthPct,
+      JSON.stringify({ claimed: fmt(got, 4), factor: spec.factor,
+        drawn: fmt(got * spec.factor, 4), truth: fmt(t.mPerPx, 4) }));
+      if (id === 'ak' && conusMPerPx !== null) {
+        /* The same fact said the way a reader would notice it, and at the same
+           zoom as the CONUS fixture so nothing else differs. */
+        check(`…and against the CONUS fixture at the SAME zoom the ratio is `
+          + `${fmt(got / conusMPerPx, 4)} — 1 ÷ ${spec.factor} — because Alaska `
+          + 'is drawn at half size and a pixel over it therefore covers twice '
+          + 'the ground',
+        pct(got, conusMPerPx / spec.factor) < 0.5,
+        JSON.stringify({ ak: fmt(got, 4), conus: fmt(conusMPerPx, 4),
+          ratio: fmt(got / conusMPerPx, 5), expected: fmt(1 / spec.factor, 5) }));
+      }
+    }
+    s.clean(`scale bar · ${id}`);
+    await s.ctx.close();
+  }
+
+  /* ── (d) Astride two regions: no bar, because no single answer. ────────── */
+  {
+    const s = await open({ query: SCALE.cameras.straddle });
+    const r = await readScale(s.page);
+    check('a viewport spanning the 110 km gap between Alaska\'s northern edge '
+      + 'and the southern edge of the conterminous states hides the bar — two '
+      + 'regions on screen, two scales, and no honest single number',
+    r.hidden === true && !r.region,
+    JSON.stringify({ hidden: r.hidden, region: r.region }));
+    s.clean('scale bar · straddle');
+    await s.ctx.close();
+  }
+
+  /* ── (e) The pinned region rectangles, against the live sidecar. ───────── */
+  {
+    const overlaps = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+    /* Coverage by the UNION, not by any single rectangle — Petersburg (02195)
+       and Prince of Wales-Hyder (02198) span the x = −1.80 cut between Alaska's
+       two rectangles, so "inside one of them" is the wrong question. Exact
+       rectangle subtraction: take the county box apart against each of the
+       region's rectangles and require nothing to be left over. */
+    const subtract = (box, r) => {
+      if (!overlaps(r, box)) return [box];
+      const [bx0, by0, bx1, by1] = box;
+      const x0 = Math.max(bx0, r[0]); const y0 = Math.max(by0, r[1]);
+      const x1 = Math.min(bx1, r[2]); const y1 = Math.min(by1, r[3]);
+      const out = [];
+      if (by0 < y0) out.push([bx0, by0, bx1, y0]);
+      if (y1 < by1) out.push([bx0, y1, bx1, by1]);
+      if (bx0 < x0) out.push([bx0, y0, x0, y1]);
+      if (x1 < bx1) out.push([x1, y0, bx1, y1]);
+      return out;
+    };
+    const covered = (box, rects) => rects
+      .reduce((rem, r) => rem.flatMap((b) => subtract(b, r)), [box]).length === 0;
+    let sidecar = null;
+    try {
+      const res = await fetch(SCALE.sidecar);
+      if (res.ok) sidecar = await res.json();
+    } catch (err) { sidecar = null; }
+
+    if (!sidecar || !Array.isArray(sidecar.counties)) {
+      skip('the pinned region rectangles still hold against the live sidecar',
+        'census-counties-2020-index.json could not be fetched');
+    } else {
+      const regionOf = (id) => {
+        const st = String(id).slice(0, 2);
+        return st === '02' ? 'ak' : st === '15' ? 'hi' : st === '72' ? 'pr' : 'conus';
+      };
+      const escaped = [];
+      const crossed = [];
+      const counts = { ak: 0, hi: 0, pr: 0, conus: 0 };
+      sidecar.counties.forEach((id, i) => {
+        const box = [sidecar.x0[i], sidecar.y0[i], sidecar.x1[i], sidecar.y1[i]];
+        const own = regionOf(id);
+        counts[own]++;
+        if (!covered(box, SCALE.rects[own])) escaped.push(id);
+        for (const [other, rects] of Object.entries(SCALE.rects)) {
+          // CONUS's rectangle is deliberately the whole country's bbox and
+          // therefore covers the insets; it is conusInView() that accounts for
+          // that, not the rectangle. The three INSET rectangles are the ones
+          // that must hold nobody else's ground.
+          if (other === own || other === 'conus') continue;
+          if (rects.some((r) => overlaps(r, box))) crossed.push(`${id}→${other}`);
+        }
+      });
+      check(`every one of the live census-2020 sidecar's ${sidecar.counties.length} `
+        + 'county boxes is covered by its own region\'s pinned rectangles — the '
+        + 'constants in js/scale-bar.js § THE REGION RECTANGLES are still where '
+        + 'the published geometry is',
+      escaped.length === 0,
+      `${escaped.length} escaped: ` + escaped.slice(0, 8).join(', '));
+      check('…and no county sits inside another region\'s inset rectangle, which '
+        + 'is what makes "exactly one region in view" answerable at all — the '
+        + 'four raw bounding boxes are NOT disjoint (AlbersUSA tucks the insets '
+        + 'into the CONUS box, and Alaska\'s panhandle interleaves with Kaua‘i), '
+        + 'so these rectangles are cut at the measured gaps',
+      crossed.length === 0,
+      `${crossed.length} crossings: ` + crossed.slice(0, 8).join(', '));
+      check('the sidecar still carries all four regions, so the check above was '
+        + 'not vacuous',
+      counts.ak > 0 && counts.hi > 0 && counts.pr > 0 && counts.conus > 3000,
+      JSON.stringify(counts));
+    }
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

@@ -226,7 +226,20 @@ const EXTENT_M = Object.freeze({
 const DUMMY_WIDTH_DEG = 10;
 const CENTER_X_M = (EXTENT_M.x0 + EXTENT_M.x1) / 2;   // −426775.2855
 const CENTER_Y_M = (EXTENT_M.y0 + EXTENT_M.y1) / 2;   //  1541329.8055
-const M_TO_DEG = DUMMY_WIDTH_DEG / (EXTENT_M.x1 - EXTENT_M.x0);   // 1.8622158670e-6
+
+/**
+ * THE SCALE OF THE DUMMY SPACE: dummy degrees per Albers metre, 1.8622158670e-6.
+ *
+ * EXPORTED because it is the only honest way to turn a distance ON THIS MAP back
+ * into a distance on the ground, and one thing now needs to — js/scale-bar.js.
+ * Its reciprocal is 536,994.6727 metres per dummy degree, against the ~111,320 a
+ * consumer that mistook these for real degrees would assume, so a scale bar
+ * built on the wrong one is not slightly off: it is short by a factor of 4.8.
+ *
+ * Read it, never restate it. It is derived from EXTENT_M above, which is the
+ * measured composite, and the two must move together.
+ */
+export const M_TO_DEG = DUMMY_WIDTH_DEG / (EXTENT_M.x1 - EXTENT_M.x0);
 
 /**
  * THE SHEAR CORRECTION. MapLibre runs Web Mercator over these fake degrees, and

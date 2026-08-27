@@ -1474,6 +1474,128 @@ export const CROSSWALK = Object.freeze({
 });
 
 /* ══════════════════════════════════════════════════════════════════════════
+   THE SCALE BAR
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Everything the gate knows about the distance scale (js/scale-bar.js).
+ *
+ * WHY THIS BLOCK IS BIGGER THAN A SELECTOR LIST. The bar cannot be checked by
+ * looking at it: a wrong one draws just as convincingly as a right one, and the
+ * specific wrong one this app is at risk of — `maplibregl.ScaleControl`, which
+ * reads the dummy degrees as WGS84 — is short by a factor of about 4.8 and
+ * looks entirely plausible. So the gate does arithmetic, and the arithmetic
+ * needs ground truth that does not come from the app: `reference` below is
+ * lifted from js/projection.js's own header table, which is the cross-repo
+ * SPECIFICATION every producer of this plane is checked against.
+ *
+ * Fields:
+ *   ctrl        the control container, inside MapLibre's bottom-left corner.
+ *   bars        the two readings, keyed by the SYSTEM rather than the unit —
+ *               the unit switches (mi→ft, km→m) as the map zooms in and a
+ *               selector written against it would go stale at z14.
+ *   labelRe     what a reading must look like: a 1/2/5 × 10ⁿ whole number and
+ *               one of four units. Both bars share the convention.
+ *   regionAttr  the dataset key the control stamps with the region it is
+ *               currently speaking for ('conus' | 'ak' | 'hi' | 'pr').
+ *   regions     the four regions, their DRAWN linear factors, and the words the
+ *               control owes a reader. Factors verified against data-tiles
+ *               R/dummy-space.R § AUSA (ak/hi/pr `scale` = 0.5 / 1.5 / 2.5) and
+ *               cross-checked against usdm.R § AREA_RATIO (0.25 / 2.25 / 6.25,
+ *               those squared). REAL metres = DRAWN metres ÷ factor, which is
+ *               the direction that is easy to get backwards: Alaska is drawn at
+ *               half size, so a pixel over Alaska is worth TWICE what the same
+ *               pixel over Kansas is.
+ *   rects       the pinned region rectangles, [x0, y0, x1, y1] in dummy
+ *               degrees, copied from js/scale-bar.js § THE REGION RECTANGLES.
+ *               The gate re-measures every county of the live census-2020
+ *               sidecar against them.
+ *   sidecar     that sidecar. census-2020 because it is the vintage whose id
+ *               set is identical to the FOIA LFP set (3,221 counties, zero
+ *               symmetric difference) and therefore the widest single authority
+ *               the app draws — 30 Alaska boroughs, 5 Hawaii counties and 78
+ *               Puerto Rico municipios, against dd22's 4, 5 and 9.
+ *   cameras     the four camera fixtures the gate drives, as query strings.
+ *               `?lng&lat&zoom` are DUMMY-SPACE positions (CLAUDE.md § the
+ *               projection), so these are county centres read off the sidecar,
+ *               not longitudes.
+ *   reference   two points from js/projection.js's twelve, each with the
+ *               EPSG:5070 metres PROJ answers for it. Both are CONUS on
+ *               purpose: the table's only Alaska point is annotated "unshifted"
+ *               and is therefore NOT where the composite draws Alaska, so there
+ *               is no published ground truth for an inset and the gate checks
+ *               the insets by their RATIO to CONUS instead.
+ *   truthPct    how far the bar's implied metres-per-pixel may sit from that
+ *               ground truth. The bar's own arithmetic is exact; the slack is
+ *               the pixel geometry of the check itself.
+ *   teethRatio  how many times the naive geographic reading the built-in
+ *               control would produce must differ from the truth before the
+ *               gate is satisfied that the built-in is NOT what is installed.
+ */
+export const SCALE = Object.freeze({
+  ctrl: '.maplibregl-ctrl-bottom-left .ngp-scale',
+  bars: Object.freeze({
+    imperial: '[data-ngp-scale="imperial"]',
+    metric: '[data-ngp-scale="metric"]',
+  }),
+  labelRe: /^(1|2|5)(0*) (mi|ft|km|m)$/,
+  regionAttr: 'ngpScaleRegion',
+  regions: Object.freeze({
+    conus: Object.freeze({ factor: 1, label: null }),
+    ak: Object.freeze({ factor: 0.5, label: 'Alaska inset' }),
+    hi: Object.freeze({ factor: 1.5, label: 'Hawaii inset' }),
+    pr: Object.freeze({ factor: 2.5, label: 'Puerto Rico inset' }),
+  }),
+  rects: Object.freeze({
+    ak: Object.freeze([
+      Object.freeze([-5.10, -3.10, -1.80, -1.10665]),
+      Object.freeze([-1.80, -3.10, -1.55, -1.95080]),
+    ]),
+    hi: Object.freeze([
+      Object.freeze([-1.74, -1.95080, -1.40, -1.67959]),
+      Object.freeze([-1.20, -2.83, -0.09, -1.67959]),
+    ]),
+    pr: Object.freeze([Object.freeze([1.20, -2.60, 2.65, -1.91809])]),
+    conus: Object.freeze([Object.freeze([-3.65, -2.40, 5.05, 3.10])]),
+  }),
+  sidecar: 'https://data.sustainable-fsa.com/data-tiles/tiles/'
+    + 'census-counties-2020-index.json',
+  cameras: Object.freeze({
+    /** Nothing at all: the default fit frames the whole composite, so all four
+        regions are on screen and the bar must NOT be drawn. */
+    national: '',
+    /** Missoula County, MT — the app's standard county, and a deliberately
+        awkward one for this check: its dummy x sits inside the x band of
+        Alaska's panhandle rectangle, and only the y cut keeps it CONUS. */
+    conus: '?lng=-1.7515&lat=2.3596&zoom=10',
+    /** Anchorage. The whole viewport lands inside Alaska's mainland rectangle,
+        which is what excludes CONUS (js/scale-bar.js § conusInView). */
+    ak: '?lng=-2.7493&lat=-2.2642&zoom=10',
+    /** Kaua‘i — inside Alaska's RAW bounding box, and the reason the pinned
+        rectangles are cut rather than taken whole.
+
+        ONE ZOOM CLOSER THAN THE OTHERS, and that is the behaviour rather than
+        a fudge: Kaua‘i's rectangle is only 0.34 × 0.27 dummy degrees, hemmed by
+        the 84.5 km gap up to the conterminous states and the 59.8 km gap down
+        to Alaska's panhandle, so a viewport wider than ~130 km over Kaua‘i
+        really does reach toward a second region and the bar really should step
+        aside. z11 measured 0.40 × 0.28 and hid it. */
+    hi: '?lng=-1.5832&lat=-1.8269&zoom=12',
+    /** San Juan. */
+    pr: '?lng=2.1885&lat=-2.2855&zoom=11',
+    /** Astride the 110 km gap between Alaska's northern edge and the southern
+        edge of the conterminous states: two regions in view, so no bar. */
+    straddle: '?lng=-2.8000&lat=-1.1067&zoom=9',
+  }),
+  reference: Object.freeze([
+    Object.freeze({ lng: -100, lat: 40, x: -338390.587551, y: 1894100.140043 }),
+    Object.freeze({ lng: -80, lat: 30, x: 1534849.038775, y: 898886.088378 }),
+  ]),
+  truthPct: 2,
+  teethRatio: 3,
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
    THE SERVER
    ══════════════════════════════════════════════════════════════════════════ */
 
