@@ -3639,6 +3639,9 @@ const settleOpacity = async (page) => {
      polygonWeek  the `date` property of the overlay feature under that same
                   point. Flips when the worker's re-tiled data lands in the
                   source cache.
+     marker       `data-ngp-overlay`, the module's own settle signal. Flips two
+                  animation frames after the app applies, and it is the third
+                  witness because it is the one that shares the counties' clock.
 
    ── AND THEY ARE NOT THE SAME CLOCK, WHICH IS MEASURED, NOT ASSUMED ───────
    `queryRenderedFeatures` does not read the framebuffer. It reads the source
@@ -3658,7 +3661,7 @@ const settleOpacity = async (page) => {
    Before this feature that window was the whole fetch: 300–700 ms of the new
    week's counties over NO polygons at all.
 
-   So the three bounds below are:
+   So the three assertions below are:
      · counties ahead of the polygons        — 0, and structurally so: the tail
        is released only after `isSourceLoaded`, by which point the point query
        already answers with the new week. This is the assertion with teeth; the
@@ -3666,10 +3669,26 @@ const settleOpacity = async (page) => {
      · the overlay blank, or showing neither
        week, at any tick                     — 0. This is the check for the
        removal of clear-before-fetch: the old polygons must still be there.
-     · polygons ahead of the counties        — a SAMPLING RAIL, not a design
-       constant. It bounds the two clocks above plus however much of the source
-       was re-tiled before it reported loaded, and it is stated as a tick count
-       because the tick cadence itself is what varies on a loaded runner. */
+     · the marker ahead of the counties      — 0, and this one is an ORDERING,
+       not a budget. Both of its witnesses move off the SAME event: the tail is
+       released in the task that hears the drawable `sourcedata`, the kit's
+       coalesced flush lands the colours on the next frame, and the marker
+       stamps a frame after that (js/usdm-overlay.js § stampWhenDrawn, whose
+       last three lines are in that order for exactly this reason). So a
+       correct app flips the counties BEFORE or WITH the marker at any frame
+       rate, while a tail released on a timer or on idle flips them frames
+       after it — which is the regression this is here to catch.
+
+   ── WHAT USED TO BE HERE, AND WHY IT IS NOT ───────────────────────────────
+   The third assertion was a tick BUDGET on the fourth quantity — how many
+   sampled frames the polygons led the counties by (`FUSE.leadTicks`, 5). It
+   failed CI on 2026-08-27 at `behind=7 of 5` on a runner drawing ~33 fps, and
+   it deserved to: it counts frames across the two clocks named above, whose
+   real-time gap is dominated by re-tiling and therefore stretches on a slow
+   machine exactly while the cadence measuring it slows down. Every tunable
+   number would have been a guess about the runner, not about the app. The
+   quantity is still MEASURED and still printed in the detail of the ordering
+   check — it is good evidence, it is just not a verdict. */
 const FUSE = OVERLAY.fuse;
 
 /**
@@ -3684,9 +3703,10 @@ const FUSE = OVERLAY.fuse;
  * pass is the same cutover travelled backwards: `toColor` names the week being
  * scrubbed TO, whichever of the fixture's two that is.
  *
- * @returns {Promise<{ticks: object[], ahead: number, behind: number,
+ * @returns {Promise<{ticks: object[], ahead: number, markerEarly: number,
+ *          markerEarlyAt: string|null, atMarker: string|null, behind: number,
  *          blank: number, holdMs: number|null, markerMs: number|null,
- *          point: number[]|null, covered: string[]|null}>}
+ *          point: number[]|null, covered: string[]|null, trace: string}>}
  */
 async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
   const ready = await page.evaluate(async ([f, sels, kitUrl]) => {
@@ -3767,8 +3787,25 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
   const isNew = (x) => x.color === toColor;
   const hasNew = (x) => (x.dates || '').includes(toIso);
   const hasOld = (x) => (x.dates || '').includes(fromIso);
+  /** One tick the way the trace writes it: which week the counties under the
+      point say, then which week the polygons under it say. */
+  const keyOf = (x) => `${isNew(x) ? 'NEW' : x.color === fromColor ? 'OLD' : x.color}`
+    + `/${x.dates === toIso ? 'NEW' : x.dates === fromIso ? 'OLD' : x.dates}`;
+  const at = (x) => `+${Math.round(x.t - t0)}ms ${keyOf(x)}`;
   const flip = seen.find(isNew);
   const mark = seen.find((x) => x.marker === toIso);
+  /* THE ORDERING INVARIANT: a tick that has been TOLD the new week is up while
+     the county under the point is NOT yet wearing the new week's colour. Zero
+     of these is what "one cutover" means on the clock the app itself controls.
+
+     NOT `x.color === fromColor`, which is the narrower reading of the same
+     sentence and lets the regression through. Measured against an injected
+     fault (feature-state writes deferred 300 ms, which is what "released on a
+     timer" looks like): the offending ticks read `null/NEW`, not `OLD/NEW`,
+     because the flush that was supposed to land the new colours is what is
+     late. Anything that is not the new week under a marker that says it is the
+     new week is the defect. */
+  const early = seen.filter((x) => x.marker === toIso && !isNew(x));
   return {
     landed,
     point: ready.pt,
@@ -3777,7 +3814,18 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
     // The counties cut over while the polygons under that same point are still
     // not this week's. The defect.
     ahead: seen.filter((x) => isNew(x) && !hasNew(x)).length,
+    // The marker says the new week is up while the counties still say the old
+    // one. The ordering invariant — asserted, and the one with no number in it.
+    markerEarly: early.length,
+    // The first few offenders, so a failure names WHEN rather than only how many.
+    markerEarlyAt: early.length
+      ? early.slice(0, 5).map(at).join(', ') + (early.length > 5 ? ', …' : '')
+      : null,
+    // What both witnesses said on the tick the marker first read the new week.
+    atMarker: mark ? at(mark) : null,
     // The polygons are this week's and the counties under them are not yet.
+    // INFORMATIONAL: two clocks, so this is a property of the runner as much as
+    // of the app (see the § header). Printed, never asserted.
     behind: seen.filter((x) => !isNew(x) && hasNew(x)).length,
     // Nothing at all, or some third week — the clear-before-fetch check.
     blank: seen.filter((x) => !x.dates || !(hasNew(x) || hasOld(x))).length,
@@ -3787,8 +3835,7 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
     trace: (() => {
       const rows = [];
       for (const x of seen) {
-        const k = `${isNew(x) ? 'NEW' : x.color === fromColor ? 'OLD' : x.color}`
-          + `/${x.dates === toIso ? 'NEW' : x.dates === fromIso ? 'OLD' : x.dates}`;
+        const k = keyOf(x);
         if (!rows.length || rows[rows.length - 1].k !== k) rows.push({ k, n: 1, t: Math.round(x.t - t0) });
         else rows[rows.length - 1].n++;
       }
@@ -4663,17 +4710,23 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
           probe.blank === 0,
           `blank=${probe.blank} tick(s) of ${probe.ticks.length} · ${probe.trace}`);
 
-          check(`${kind} scrub to ${args.toIso}: the polygons lead the counties `
-            + `by at most ${FUSE.leadTicks} sampled tick(s) — the two witnesses `
-            + 'do not share a clock, and this bounds the gap. '
-            + 'queryRenderedFeatures answers from the SOURCE CACHE the moment '
-            + 'the point\'s tile is re-tiled, while the kit coalesces feature '
-            + 'state to its own animation frame, so a correct app is observed '
-            + 'polygons-first; what this catches is a tail released on a timer '
-            + 'or on idle rather than on the drawable event',
-          probe.behind <= FUSE.leadTicks,
-          `behind=${probe.behind} tick(s) of ${probe.ticks.length}, `
-            + `bound ${FUSE.leadTicks} · ${probe.trace}`);
+          check(`${kind} scrub to ${args.toIso}: no tick is ever TOLD the new `
+            + 'week is up while the counties are still the old one — 0 ticks '
+            + 'with the settle marker at the new ISO over the old choropleth. '
+            + 'This is an ordering and not a budget, and both of its witnesses '
+            + 'move off one event: the tail is released in the task that hears '
+            + 'the drawable sourcedata, the kit\'s coalesced flush lands the '
+            + 'colours on the next frame, and the marker stamps a frame after '
+            + 'that (js/usdm-overlay.js § stampWhenDrawn). So the counties flip '
+            + 'before or with the marker at ANY frame rate, and a tail released '
+            + 'on a timer or on idle flips them frames after it',
+          probe.markerEarly === 0,
+          `marker-ahead=${probe.markerEarly} tick(s) of ${probe.ticks.length}`
+            + `${probe.markerEarlyAt ? ` at ${probe.markerEarlyAt}` : ''} · at `
+            + `the marker's own tick: ${probe.atMarker} · informational, not `
+            + `asserted: the polygons led the counties by ${probe.behind} `
+            + 'tick(s) (two clocks — a slower runner stretches that gap; it was '
+            + `a bound until it failed CI at 7 of 5) · ${probe.trace}`);
 
           check(`${kind} scrub to ${args.toIso}: it lands — the marker is the `
             + 'new week, the counties are the new week, and data-ngp-view-seq '
@@ -4682,6 +4735,16 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
           probe.markerMs !== null && probe.holdMs !== null && !probe.seqMoved,
           `counties at +${probe.holdMs} ms, marker at +${probe.markerMs} ms, `
             + `seq moved=${probe.seqMoved}`);
+
+          /* PRINTED, NOT JUDGED — and printed unconditionally, because a detail
+             string is only shown when its check fails and this is evidence a
+             PASSING run should carry. It is what the retired tick bound used to
+             assert on; the § header says why a frame count across two clocks
+             describes the machine as much as the app. Worth having in the log
+             the day one of the three zeros above goes red. */
+          console.log(`    ${kind} cutover: counties +${probe.holdMs} ms, `
+            + `marker +${probe.markerMs} ms, polygons led by ${probe.behind} `
+            + `tick(s) of ${probe.ticks.length} · ${probe.trace}`);
           fuseSession.clean(`usdm fused cutover · ${kind.toLowerCase()}`);
         }
       }
