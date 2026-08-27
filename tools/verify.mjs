@@ -3085,6 +3085,10 @@ const OVERLAY_SELS = {
   param: OVERLAY.param, lsKey: OVERLAY.lsKey,
   sourceId: OVERLAY.sourceId, fillLayerId: OVERLAY.fillLayerId,
   outSel: WEEK.outSel, weekParam: WEEK.param,
+  opacityWrapSel: OVERLAY.opacityWrapSel, opacityRangeSel: OVERLAY.opacityRangeSel,
+  opacityOutSel: OVERLAY.opacityOutSel, opacityParam: OVERLAY.opacityParam,
+  opacityLsKey: OVERLAY.opacityLsKey,
+  opacityRangeId: OVERLAY.opacityRangeSel.replace('#', ''),
 };
 
 /**
@@ -3106,6 +3110,11 @@ const OVERLAY_SELS = {
  * LINE layer, whose id belongs to the kit's front stack and moves with it. So
  * the indices are resolved in-page from `handle.layers` and `map.getStyle()`
  * together, never from anything this file remembered.
+ *
+ * `fillOpacity` is read off the LAYER rather than off the slider, and that is
+ * the point of it: the <output>, the URL and localStorage can all agree on a
+ * number the map is not actually painted at. It is the paint property that a
+ * reader sees.
  */
 const overlayProbe = (page) => page.evaluate(async (s) => {
   const url = new URL(location.href);
@@ -3113,6 +3122,9 @@ const overlayProbe = (page) => page.evaluate(async (s) => {
   const pressed = (sel) => (q(sel) ? q(sel).getAttribute('aria-pressed') : null);
   const out = q(s.outSel);
   const sec = q(s.sectionSel);
+  const wrap = q(s.opacityWrapSel);
+  const range = q(s.opacityRangeSel);
+  const opacityOut = q(s.opacityOutSel);
   const base = {
     hasSection: !!sec,
     sectionHidden: sec ? sec.hidden : null,
@@ -3120,6 +3132,25 @@ const overlayProbe = (page) => page.evaluate(async (s) => {
     hasOff: !!q(s.offSel),
     on: pressed(s.onSel),
     off: pressed(s.offSel),
+    /* The strength slider, which is narrower than the section it sits in: the
+       wrap's `hidden` is the app saying whether there is anything to make
+       stronger. `opacityNamed` asks the same WCAG 1.3.1/4.1.2 question the week
+       scrubber's `named` does — a bare range is an unnamed control — and
+       accepts either form, an sr-only <label for> or an aria-label. */
+    hasOpacity: !!range,
+    opacityWrapHidden: wrap ? wrap.hidden : null,
+    opacityValue: range ? range.value : null,
+    opacityStep: range ? range.step : null,
+    opacityNamed: range ? !!(range.getAttribute('aria-label')
+      || document.querySelector(`label[for="${s.opacityRangeId}"]`)) : null,
+    opacityOut: opacityOut ? (opacityOut.textContent || '').trim() : null,
+    opacityOutFor: opacityOut ? opacityOut.getAttribute('for') : null,
+    opacityParam: url.searchParams.get(s.opacityParam),
+    storedOpacity: (() => {
+      try { return localStorage.getItem(s.opacityLsKey); }
+      catch (e) { return 'unavailable'; }
+    })(),
+    fillOpacity: null,
     /** `dataset.ngpOverlay` is UNDEFINED when the attribute is absent, which is
         the grammar's "not drawn" (tools/config.mjs § MARKERS). Normalised to
         null so an assertion can say `=== null` and mean it. */
@@ -3150,6 +3181,9 @@ const overlayProbe = (page) => page.evaluate(async (s) => {
       try {
         base.painted = map.queryRenderedFeatures({ layers: [s.fillLayerId] }).length;
       } catch (e) { base.painted = 0; }
+      try {
+        base.fillOpacity = map.getPaintProperty(s.fillLayerId, 'fill-opacity');
+      } catch (e) { base.fillOpacity = 'unreadable'; }
     }
     const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
     const L = handle && handle.layers ? handle.layers : null;
@@ -3211,6 +3245,36 @@ const settleOverlay = async (page, ms = CONFIG.switchMs) => {
   }, null, { timeout: ms }).then(() => true).catch(() => false);
   await settleFrames(page);
   return landed;
+};
+
+/**
+ * Move the strength slider the way a pointer does.
+ *
+ * Driven exactly as scrubWeek() drives the week — the value set and an `input`
+ * event fired — because that is the event the app throttles to a frame, and a
+ * `change` alone would test a path a dragging thumb never takes.
+ *
+ * Returns false if there is no slider to move, rather than throwing: the
+ * control does not exist until the polygons are on, and a missing one is a
+ * named failure of its own check.
+ */
+const dragOpacity = (page, pct) => page.evaluate(([s, v]) => {
+  const r = document.querySelector(s.opacityRangeSel);
+  if (!r) return false;
+  r.value = String(v);
+  r.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}, [OVERLAY_SELS, pct]);
+
+/** One strength change, waited out. There is NOTHING to settle on but frames:
+    the app throttles the slider to one rAF like the year and the week, and what
+    a landed change does is a single setPaintProperty — no fetch, so no marker
+    moves and no counter bumps. The 120 ms is the same "let the frame throttle
+    have its frame" allowance settleWeek() makes, without its announcement
+    debounce, because this control deliberately says nothing. */
+const settleOpacity = async (page) => {
+  await page.waitForTimeout(120);
+  await settleFrames(page);
 };
 
 /** …and the other direction: the attribute gone entirely, which is the
@@ -3596,6 +3660,11 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
          sequences fetch-involving VIEW transitions; a week is not one, and an
          overlay that bumped it would make every seq-based wait in this file
          return early on a scrub.
+       · MOVING THE READOUT AND NOT THE MAP. The strength slider's whole job is
+         one `setPaintProperty`, and every other thing it touches — the
+         <output>, the URL, localStorage — can agree on a number the layer is
+         not painted at. So the strength is asserted off `getPaintProperty`,
+         never off the control.
        · PROMISING ON SCREEN AND NOT IN THE POSTER. A printed map that quietly
          dropped the overlay is a lie the reader cannot check.
        · LEAVING SOMETHING BEHIND. The layer stays resident when it is turned
@@ -3609,9 +3678,10 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
      the deep-link section already lands on (tools/config.mjs § overlay).
 
      AND IT PUTS THE APP BACK. The overlay ends OFF, its param elided, its
-     marker gone and its dataset returned to the default, so the section
-     template's remaining steps — card, table, poster, state round trip — see
-     the state 8d left them, whatever order these subsections are ever read in. */
+     marker gone, its strength back at the shipped default and its dataset
+     returned to the default, so the section template's remaining steps — card,
+     table, poster, state round trip — see the state 8d left them, whatever
+     order these subsections are ever read in. */
   section('▸ Drought monitor — the USDM\'s own weekly polygons, over the map');
   {
     const O = iface.overlay;
@@ -3668,6 +3738,65 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       JSON.stringify(p1.order));
       clean('usdm overlay on');
       await shot('19e-usdm-overlay');
+
+      /* ── How strongly it is drawn. ───────────────────────────────────────
+         A translucent layer has a second question after "is it on": how far
+         through it can the reader see. There is no right answer — the drought's
+         own shape and the county colour under it want different numbers — so
+         the app hands it over, and what is gated here is that the number the
+         reader sets is the number GL is painted at, not merely the number the
+         readout prints. The slider is asserted to arrive WITH the polygons, on
+         the `#elig-source-wrap` pattern: a strength control for a layer that is
+         not drawn is a slider with nothing on the other end of it. */
+      check('the strength slider appears WITH the polygons and not before them — '
+        + 'it is hidden while they are off, visible the moment they are on, '
+        + 'named for a screen reader rather than left as a bare range, and it '
+        + `opens at the shipped ${O.opacityDefault}% with the paint property to `
+        + 'match',
+      p0.opacityWrapHidden === true && p1.opacityWrapHidden === false
+        && p1.opacityNamed === true
+        && p1.opacityOutFor === OVERLAY_SELS.opacityRangeId
+        && p1.opacityValue === String(O.opacityDefault)
+        && p1.opacityOut === `${O.opacityDefault}%`
+        && p1.fillOpacity === O.opacityDefault / 100
+        && p1.opacityParam === null,
+      JSON.stringify({ hiddenWhileOff: p0.opacityWrapHidden,
+        hiddenWhenOn: p1.opacityWrapHidden, named: p1.opacityNamed,
+        outFor: p1.opacityOutFor, value: p1.opacityValue, out: p1.opacityOut,
+        paint: p1.fillOpacity, param: p1.opacityParam, url: page.url() }));
+
+      const dragged = await dragOpacity(page, 70);
+      await settleOpacity(page);
+      const up = await overlayProbe(page);
+      check('dragging it to 70% reaches the LAYER: fill-opacity is 0.70 on the '
+        + 'map itself, the readout says so, the URL carries ?opacity=70 and the '
+        + 'preference is stored — a slider that moved only the number under the '
+        + 'thumb would pass every check but the first one here',
+      dragged && up.fillOpacity === 0.7 && up.opacityOut === '70%'
+        && up.opacityValue === '70' && up.opacityParam === '70'
+        && up.storedOpacity === '70' && up.painted > 0,
+      JSON.stringify({ paint: up.fillOpacity, out: up.opacityOut,
+        value: up.opacityValue, param: up.opacityParam,
+        stored: up.storedOpacity, painted: up.painted, url: page.url() }));
+      check('and it does not repaint the choropleth or move any marker: a '
+        + 'translucency is not a fetch, not a view transition and not a new '
+        + 'week, so data-ngp-view-seq stands still and the overlay stays '
+        + 'stamped with the week it was already showing',
+      up.seq === seqOff && up.marker === p1.marker,
+      JSON.stringify({ seq: [seqOff, up.seq], marker: [p1.marker, up.marker] }));
+
+      await dragOpacity(page, O.opacityDefault);
+      await settleOpacity(page);
+      const home = await overlayProbe(page);
+      check(`dragging it back to ${O.opacityDefault}% DROPS ?opacity — a param `
+        + 'sitting at its default is a permanent smudge on every link shared '
+        + 'afterwards, and this one is elided exactly the way ?week and '
+        + '?polygons are',
+      home.opacityParam === null && home.fillOpacity === O.opacityDefault / 100
+        && home.opacityOut === `${O.opacityDefault}%`,
+      JSON.stringify({ param: home.opacityParam, paint: home.fillOpacity,
+        out: home.opacityOut, url: page.url() }));
+      clean('usdm overlay strength');
 
       /* ── It follows the week. ────────────────────────────────────────────── */
       await scrubWeek(page, 30);
@@ -3764,7 +3893,12 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       p5.stored === 'on', 'stored ' + JSON.stringify(p5.stored));
       clean('usdm overlay across a boundary swap');
 
-      /* ── It belongs to THIS view. ────────────────────────────────────────── */
+      /* ── It belongs to THIS view. ──────────────────────────────────────────
+         The strength is taken OFF its default first, so that the round trip has
+         something to lose: at 45 the param is elided, and "the param came back"
+         would be indistinguishable from "the param was never there". */
+      await dragOpacity(page, 70);
+      await settleOpacity(page);
       const seqAway = await viewSeq(page);
       await clickControl(page, dflt.switchSel);
       await awaitViewSeq(page, seqAway);
@@ -3777,6 +3911,13 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       gone && away.param === null && away.marker === null && away.painted === 0,
       JSON.stringify({ param: away.param, marker: away.marker,
         painted: away.painted, layer: away.hasLayer, url: page.url() }));
+      check('…and it takes the STRENGTH with it: ?opacity describes a slider '
+        + 'that is not on screen — twice over, since the control it belongs to '
+        + 'is gone too — so the param is dropped and the slider goes back into '
+        + 'its wrap with the rest of the drought monitor\'s controls',
+      away.opacityParam === null && away.opacityWrapHidden === true,
+      JSON.stringify({ param: away.opacityParam,
+        wrapHidden: away.opacityWrapHidden, url: page.url() }));
 
       const seqHome = await viewSeq(page);
       await clickControl(page, iface.switchSel);
@@ -3791,6 +3932,16 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         && back.marker === isoBack && back.param === 'on' && back.painted > 0,
       JSON.stringify({ marker: back.marker, fromOutput: isoBack,
         param: back.param, painted: back.painted }));
+      check('…at the strength it was left at, on the PAINT and not merely in the '
+        + 'readout: 70% is a way of READING this map rather than a place in it, '
+        + 'so it is remembered per view exactly like the toggle above it and '
+        + 'comes back in the URL with it',
+      back.fillOpacity === 0.7 && back.opacityParam === '70'
+        && back.opacityValue === '70' && back.opacityOut === '70%'
+        && back.opacityWrapHidden === false,
+      JSON.stringify({ paint: back.fillOpacity, param: back.opacityParam,
+        value: back.opacityValue, out: back.opacityOut,
+        wrapHidden: back.opacityWrapHidden, url: page.url() }));
 
       const said = await settledLiveText(page, (t) => O.liveClause.test(t));
       const vc = await viewControls(page);
@@ -3803,6 +3954,12 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         + `${JSON.stringify((vc.legend.key || '').slice(0, 260))} — they must `
         + `match ${O.liveClause} and ${O.legendClause}`);
       clean('usdm overlay across a view switch');
+
+      /* Back to the shipped strength before the poster below, so what is
+         exported — and everything after this subsection — is the picture the
+         app comes up on rather than the one the round trip above borrowed. */
+      await dragOpacity(page, O.opacityDefault);
+      await settleOpacity(page);
 
       /* ── The poster. ─────────────────────────────────────────────────────── */
       let withOverlay = null;
@@ -3837,6 +3994,13 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       JSON.stringify({ marker: off.marker, param: off.param, off: off.off,
         on: off.on, painted: off.painted, layer: off.hasLayer,
         url: page.url() }));
+      check('…including the strength slider, which goes back into its wrap with '
+        + `it — and ?opacity stays out of the URL, at ${O.opacityDefault}% and `
+        + 'with nothing left to be strong',
+      off.opacityWrapHidden === true && off.opacityParam === null
+        && off.opacityValue === String(O.opacityDefault),
+      JSON.stringify({ wrapHidden: off.opacityWrapHidden,
+        param: off.opacityParam, value: off.opacityValue, url: page.url() }));
 
       if (withOverlay) {
         const without = await poster(page);
@@ -3878,14 +4042,16 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       await deepSession.shot('19f-usdm-overlay-deep-link');
       await deepSession.ctx.close();
 
-      /* A stored value the app does not offer. The clean() is half the
-         assertion: an unusable PREFERENCE is a warning, not a tripwire — the
-         app cannot stop a visitor's storage from holding anything at all — and
-         a console.error here would gate CI on a condition no code change can
-         prevent. */
+      /* Stored values the app does not offer — BOTH of the overlay's keys, the
+         enumeration and the number, because they are validated by different
+         code and a fallback that only half works is a page that boots with a
+         NaN in a paint property. The clean() is half the assertion: an unusable
+         PREFERENCE is a warning, not a tripwire — the app cannot stop a
+         visitor's storage from holding anything at all — and a console.error
+         here would gate CI on a condition no code change can prevent. */
       const junkSession = await open({
         query: `?view=${iface.slug}`,
-        storage: { [O.lsKey]: 'banana' },
+        storage: { [O.lsKey]: 'banana', [O.opacityLsKey]: 'banana' },
       });
       const junk = await overlayProbe(junkSession.page);
       check(`a stored ${O.lsKey} of "banana" falls back to off rather than to on `
@@ -3896,7 +4062,19 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       JSON.stringify({ off: junk.off, on: junk.on, marker: junk.marker,
         param: junk.param, painted: junk.painted, stored: junk.stored,
         url: junkSession.page.url() }));
-      junkSession.clean('usdm overlay · an unusable stored value');
+      check(`and a stored ${O.opacityLsKey} of "banana" falls back to `
+        + `${O.opacityDefault}% rather than to a NaN — which is the failure `
+        + 'worth naming here, because MapLibre takes a NaN opacity without '
+        + 'complaint and the overlay simply stops being visible, with nothing '
+        + 'in the console to say why. The slider reads the default and no '
+        + '?opacity is minted from an unusable preference',
+      junk.opacityValue === String(O.opacityDefault)
+        && junk.opacityOut === `${O.opacityDefault}%`
+        && junk.opacityParam === null,
+      JSON.stringify({ value: junk.opacityValue, out: junk.opacityOut,
+        param: junk.opacityParam, stored: junk.storedOpacity,
+        url: junkSession.page.url() }));
+      junkSession.clean('usdm overlay · unusable stored values');
       await junkSession.ctx.close();
     }
   }

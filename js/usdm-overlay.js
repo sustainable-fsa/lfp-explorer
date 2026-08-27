@@ -108,11 +108,11 @@
    otherwise leave this layer stranded above the new counties.
 
    ── What this module does NOT do ───────────────────────────────────────────
-   It has no opinion about whether the overlay should be on. That is a reader's
-   choice, carried by the drought monitor descriptor's `polygons` choice
-   through the app's generic choice machinery, and this module is told the
-   answer on every reconcile. It holds no week of its own either: the week is
-   the app's selection, and `sync()` is a reconciler, not a controller.
+   It has no opinion about whether the overlay should be on, or about how
+   strongly it should be drawn. Both are the reader's — the `polygons` choice
+   and the opacity slider beneath it — and this module is told both answers on
+   every reconcile. It holds no week of its own either: the week is the app's
+   selection, and `sync()` is a reconciler, not a controller.
 
    It also assumes ONE live map, because this app has one. The poster's
    throwaway offscreen map goes through `addOverlayLayers()`, which touches no
@@ -172,6 +172,33 @@ const WEEK_CACHE_MAX = 8;
 const EMPTY_FC = Object.freeze({ type: 'FeatureCollection', features: [] });
 
 /**
+ * How strongly the polygons are painted when nobody has said otherwise, as a
+ * GL opacity rather than the app's percentage.
+ *
+ * 0.45 is the shipped look and the whole of the original design: opaque enough
+ * that a D4 blob reads as a shape, sheer enough that the county colour and the
+ * county lines survive under it. It is now a DEFAULT rather than a constant —
+ * the reader has a slider — but it is still what an overlay comes up at, what
+ * a poster is printed at when nothing else is asked for, and what any value
+ * this module cannot use falls back to.
+ */
+const DEFAULT_OPACITY = 0.45;
+
+/**
+ * A caller's opacity, or the default — validated here rather than trusted,
+ * because a paint property is the one place a `NaN` or a string would not
+ * announce itself: MapLibre would take it, and the layer would simply stop
+ * being visible with nothing in the console to say why.
+ *
+ * @param {number} raw a GL opacity, 0–1
+ * @returns {number}
+ */
+function normalizeOpacity(raw) {
+  return (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1)
+    ? raw : DEFAULT_OPACITY;
+}
+
+/**
  * What the live region says when a week the index promised could not be
  * fetched. VERBATIM — the a11y gate matches this sentence.
  */
@@ -191,18 +218,26 @@ const SENTENCE_FETCH_FAIL = 'The USDM drought polygons for this week could not '
    reason — a class this app does not know must draw as nothing, never as a
    default colour that would read as a real drought class.
 
-   0.45 is the whole of the design: opaque enough that a D4 blob reads as a
-   shape, sheer enough that the county colour and the county lines survive
-   under it. There is no line layer — an outline on five nested national
-   polygons is a cage of hairlines at any zoom a reader actually uses, and the
-   county boundaries above it are the linework this map needs.
+   0.45 is where it starts, and for a long time it was the whole of the design:
+   opaque enough that a D4 blob reads as a shape, sheer enough that the county
+   colour and the county lines survive under it. It is a default now, because
+   the two things a reader wants from this layer pull in opposite directions —
+   read the drought's shape, or read the county underneath it — and no single
+   number serves both. The slider is the app's (§ The USDM polygon overlay in
+   js/app.js); what this module owns is that the number reaching GL is one it
+   validated.
+
+   There is no line layer — an outline on five nested national polygons is a
+   cage of hairlines at any zoom a reader actually uses, and the county
+   boundaries above it are the linework this map needs.
 
    NEVER FLIP OR TRANSITION A DATA-DRIVEN PAINT PROPERTY (CLAUDE.md, kit
    v0.4.1). `fill-color` here IS data-driven, so it is written once at layer
    creation and never touched again; the overlay is hidden with `visibility`, a
    LAYOUT property, which is exactly why the retired-stack trick that broke the
-   kit's hover layer cannot happen here. */
-function fillLayerDef() {
+   kit's hover layer cannot happen here — and it is why `fill-opacity` is the
+   property the slider drives (§ applyOpacity). */
+function fillLayerDef(opacity) {
   return {
     id: OVERLAY_FILL_ID,
     type: 'fill',
@@ -212,7 +247,7 @@ function fillLayerDef() {
         'D0', CLASS_HEX.D0, 'D1', CLASS_HEX.D1, 'D2', CLASS_HEX.D2,
         'D3', CLASS_HEX.D3, 'D4', CLASS_HEX.D4,
         'rgba(0,0,0,0)'],
-      'fill-opacity': 0.45,
+      'fill-opacity': normalizeOpacity(opacity),
     },
   };
 }
@@ -246,6 +281,17 @@ let attached = null;
 
 /** The sidecar, once. Cleared on failure so a later sync retries it. */
 let indexPromise = null;
+
+/** The strength the app last asked for, 0–1. Held rather than read at layer
+    creation, because the reader can move the slider while the layer does not
+    exist yet — before the overlay has ever been turned on, and while it is
+    off — and the value they left it at is what it must come up at. */
+let wantOpacity = DEFAULT_OPACITY;
+
+/** The strength actually written to the layer, or null while there is no layer.
+    The difference between this and `wantOpacity` is the whole of the "only when
+    it changed" test in applyOpacity(). */
+let paintedOpacity = null;
 
 /**
  * iso → `{promise, value}`, insertion-ordered, capped at WEEK_CACHE_MAX.
@@ -504,8 +550,35 @@ function ensureLayer(map, handle) {
   if (!map.getSource(OVERLAY_SOURCE_ID)) {
     map.addSource(OVERLAY_SOURCE_ID, { type: 'geojson', data: EMPTY_FC });
   }
-  map.addLayer(fillLayerDef(), beforeId);
+  map.addLayer(fillLayerDef(wantOpacity), beforeId);
+  paintedOpacity = normalizeOpacity(wantOpacity);
   return true;
+}
+
+/**
+ * Set the overlay's strength, and only when it has really changed.
+ *
+ * SAFE, and it is worth saying why in the file that says the opposite two
+ * screens up. The rule from kit v0.4.1 is about a DATA-DRIVEN paint property
+ * with a transition declared on it: flipping one leaves MapLibre's paint binder
+ * holding a value whose expression has no `evaluate`, and the next
+ * feature-state change throws inside a render. `fill-opacity` here is neither
+ * half of that — it is a plain constant, no `['case', …]` and no `['get', …]`
+ * anywhere in it, and this layer declares no transitions at all — so
+ * `setPaintProperty` on it is an ordinary paint update.
+ *
+ * The "only when changed" guard is not about safety, it is about noise:
+ * sync() runs from recolor(), which runs on every week scrub, every theme flip
+ * and every county click, and a repeated setPaintProperty would re-upload the
+ * paint on all of them.
+ */
+function applyOpacity(map, raw) {
+  const next = normalizeOpacity(raw);
+  wantOpacity = next;
+  if (!map.getLayer(OVERLAY_FILL_ID)) return;   // ensureLayer() will use it
+  if (paintedOpacity === next) return;
+  map.setPaintProperty(OVERLAY_FILL_ID, 'fill-opacity', next);
+  paintedOpacity = next;
 }
 
 /** Hand the source a FeatureCollection. A no-op before the source exists,
@@ -631,11 +704,27 @@ function stampWhenDrawn(map, iso, fc, mine) {
  * @param {string|null} args.dateIso the selected week's Tuesday, ISO. Null
  *        while `on` is a week the app cannot name yet, and is treated exactly
  *        like a week the USDM never published.
+ * @param {number} [args.opacity] how strongly to paint the polygons, 0–1.
+ *        Anything else is the default (§ DEFAULT_OPACITY).
  * @param {(text: string) => void} [args.announce] the live region writer
  * @returns {void}
  */
-export function sync({ map, handle, on, dateIso, announce } = {}) {
+export function sync({ map, handle, on, dateIso, announce, opacity } = {}) {
   if (!map || typeof map.getLayer !== 'function') return;
+
+  /* BEFORE the idempotence guard below, and that ordering is the whole of it:
+     a change of strength is not a change of TARGET — the same week stays
+     attached to the same source — so an opacity-only reconcile has the same key
+     as the one before it and would return at the next line without ever
+     reaching the paint.
+
+     Only while the overlay is ON, though. `off` is also what the app says while
+     ANOTHER family is on screen, and another family has no overlay and
+     therefore no opinion about how strongly to draw one — it would be saying
+     the default, which would quietly retune a hidden layer the reader is coming
+     back to. A retired overlay keeps its strength for the same reason it keeps
+     its week. */
+  if (on) applyOpacity(map, opacity);
 
   const key = on ? 'on:' + (dateIso || '') : 'off';
   if (key === targetKey) return;
@@ -859,15 +948,23 @@ export function drawn() {
  *
  * Same ids, which is safe because layer ids are per-map, and same paint, which
  * is the point: the poster has to be the picture the reader was looking at.
+ * That now includes the STRENGTH they set it to — a printed map at an opacity
+ * nobody chose is a different picture — and the caller passes it rather than
+ * this module reading `wantOpacity`, because the poster's whole discipline is
+ * that every value on it is frozen off one `sel` before the capture starts.
+ * Omitted, it is the default, which is what every caller written before the
+ * slider existed meant.
+ *
  * Touches NO module state and writes NO marker; the settle machinery above is
  * about the live map, and this map is captured and disposed inside one call.
  *
  * @param {object} targetMap the offscreen map
  * @param {object} fc an ensureWeek() FeatureCollection
  * @param {string} beforeId the offscreen handle's county line layer
+ * @param {{opacity?: number}} [opts] the reader's strength, 0–1
  * @returns {void}
  */
-export function addOverlayLayers(targetMap, fc, beforeId) {
+export function addOverlayLayers(targetMap, fc, beforeId, { opacity } = {}) {
   if (!targetMap || typeof targetMap.getLayer !== 'function' || !fc) return;
 
   const src = targetMap.getSource(OVERLAY_SOURCE_ID);
@@ -876,7 +973,7 @@ export function addOverlayLayers(targetMap, fc, beforeId) {
 
   if (targetMap.getLayer(OVERLAY_FILL_ID)) return;
   const anchor = (beforeId && targetMap.getLayer(beforeId)) ? beforeId : undefined;
-  targetMap.addLayer(fillLayerDef(), anchor);
+  targetMap.addLayer(fillLayerDef(opacity), anchor);
 }
 
 /**

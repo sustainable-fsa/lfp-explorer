@@ -481,9 +481,11 @@
              product to look tidier than it is. Off by default, remembered per
              this view, and it follows the week scrubbed above.
 
-             No bespoke JS: app.js picks both buttons up generically from
-             `[data-choice]` (§ Enumerated choices), which is the machinery this
-             is the first shipped user of. -->
+             No bespoke JS for the TOGGLE: app.js picks both buttons up
+             generically from `[data-choice]` (§ Enumerated choices), which is
+             the machinery this is the first shipped user of. The strength
+             slider below them is wired by hand, because a choice is an
+             enumeration and this is a number. -->
         <section class="sfsa-drawer-section" id="usdm-polygons-seg" data-view="usdm" hidden>
           <h2 class="sfsa-drawer-title" id="usdm-polygons-title">USDM polygons</h2>
           <div class="seg-btns" role="group" aria-labelledby="usdm-polygons-title">
@@ -491,6 +493,27 @@
                     data-choice="polygons" data-value="off" aria-pressed="true">Off</button>
             <button type="button" class="nav-btn seg-btn" id="btn-polygons-on"
                     data-choice="polygons" data-value="on" aria-pressed="false">On</button>
+          </div>
+          <!-- Unhidden by app.js only while the polygons are ON: a strength
+               control for a layer that is not drawn is a slider with nothing on
+               the other end of it. The same narrower-than-its-section
+               arrangement #elig-source-wrap uses, and for the same reason.
+
+               There is no single right opacity — reading the drought's own
+               shape and reading the county underneath it pull in opposite
+               directions — so the reader gets the number. 45% is where it
+               starts, which is the look this overlay shipped with.
+
+               The kit's `.sfsa-range` row, exactly like the year slider above:
+               a CLIPPED <label> (the accessible name has to survive a closed
+               drawer, so it is sr-only rather than absent) and an <output>
+               bound to the input by `for`. -->
+          <div id="usdm-opacity-wrap" hidden>
+            <div class="sfsa-range">
+              <label class="control-label sr-only" for="opacity-range">Overlay opacity</label>
+              <input type="range" id="opacity-range" min="0" max="100" step="5" value="45">
+              <output id="opacity-out" for="opacity-range">45%</output>
+            </div>
           </div>
           <p class="control-note">
             The Drought Monitor's own weekly map, drawn as published (~1:2M), so

@@ -233,8 +233,9 @@ export const MARKERS = Object.freeze({
  *               drawer section and two seg buttons, the param and preference key
  *               the generic choice machinery gives it, the APP-OWNED source and
  *               layer ids, the shape of its settle marker, the frozen week its
- *               deep link must land on, and the two copy clauses the live region
- *               and the legend key owe a reader while it is on.
+ *               deep link must land on, the two copy clauses the live region
+ *               and the legend key owe a reader while it is on, and the strength
+ *               slider that appears with it (the `opacity*` entries).
  *   unmatchedOracle async (page) → how many source areas this view's join
  *               cannot reach, for the count the live region must say out loud.
  *   lazyAssets  committed repo assets this view loads WITH the view rather than
@@ -487,7 +488,18 @@ export const INTERFACES = Object.freeze({
         `liveClause` and `legendClause` are COPY CONTRACTS, in the pattern of
         `yearDomain.clampSays`: what a reader who cannot see the map must be told
         while a second geometry is drawn over the first. The wording is the
-        app's; these patterns only insist that it is said. */
+        app's; these patterns only insist that it is said.
+
+        THE `opacity*` ENTRIES ARE THE STRENGTH SLIDER, which appears with the
+        polygons and not before them — `opacityWrapSel` is the wrap whose
+        `hidden` says so, and it is narrower than `sectionSel` on purpose, the
+        way `#elig-source-wrap` is narrower than the eligibility section. The
+        param is emitted only while the overlay is actually drawn and elided at
+        `opacityDefault`, so a drought-monitor URL at rest still carries neither.
+        `opacityDefault` is a PERCENTAGE, which is the reader's unit and the
+        <output>'s; the paint property it drives is the same number over 100,
+        which is what an assertion reading `getPaintProperty` has to compare
+        against. */
     overlay: Object.freeze({
       sectionSel: '#usdm-polygons-seg',
       offSel: '#btn-polygons-off',
@@ -496,6 +508,12 @@ export const INTERFACES = Object.freeze({
       lsKey: 'sfsa-ngp-polygons-usdm',
       sourceId: 'ngp-usdm-overlay',
       fillLayerId: 'ngp-usdm-overlay-fill',
+      opacityWrapSel: '#usdm-opacity-wrap',
+      opacityRangeSel: '#opacity-range',
+      opacityOutSel: '#opacity-out',
+      opacityParam: 'opacity',
+      opacityLsKey: 'sfsa-ngp-opacity-usdm',
+      opacityDefault: 45,
       markerIso: /^\d{4}-\d{2}-\d{2}$/,
       deepLinkIso: '2012-07-24',
       indexUrl: 'https://data.sustainable-fsa.com/data-tiles/usdm/usdm-index.json',
