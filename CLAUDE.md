@@ -110,9 +110,10 @@ Specifics that bite in this repo:
 
 - **A tripwire has to be `console.error`, not `console.warn`.** Both harnesses
   collect `m.type() === 'error'` only (`tools/verify.mjs`,
-  `tools/a11y-audit.mjs`), so a `warn` gates nothing — which is the state the
-  year-domain `years.max` warn is still in, and it should be fixed. The Census
-  vintage tripwire in `js/boundaries.js` uses `console.error` for this reason.
+  `tools/a11y-audit.mjs`), so a `warn` gates nothing. Both known tripwires now
+  comply: the Census vintage tripwire in `js/boundaries.js` and the
+  year-domain `years.max` tripwire in `applyYearDomain` (`js/app.js`), fixed
+  2026-08-26 after two releases of gating nothing.
 
 ## Where we left off (2026-08-23, later the same day)
 
@@ -404,12 +405,7 @@ script. Start there, not here.
 
 App-side, in rough priority order:
 
-1. **The `years.max` tripwire does not gate.** Both harnesses collect
-   `m.type() === 'error'` only, so `applyYearDomain`'s `console.warn` is
-   invisible to CI — the safety net described in this file for two releases has
-   never been connected. One line: make it `console.error`. `js/boundaries.js`'s
-   Census-vintage tripwire already does.
-2. **Manual AUDIT-CHECKLIST walk** — the three passes automation cannot do
+1. **Manual AUDIT-CHECKLIST walk** — the three passes automation cannot do
    (keyboard-only, 375 px on a real phone, the figures pass), now with two items
    the tiled path adds: at maximum zoom on one county the boundary must be
    smooth, and flipping *Census counties* ⇄ *FSA LFP boundaries* at z14–15 on
@@ -418,7 +414,7 @@ App-side, in rough priority order:
    the pass is a real A/B comparison rather than a wait — and the keyboard-only
    walk should confirm that focusing a dataset button warms it, since `focus` is
    the keyboard's half of warm-on-intent and touch has no hover at all.
-3. **A cancelled tile request used to be reported as an error.** MapLibre
+2. **A cancelled tile request used to be reported as an error.** MapLibre
    decides whether a rejection was a cancellation with exactly one test —
    `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
    with that name; at the network layer Chrome gives
@@ -446,28 +442,28 @@ App-side, in rough priority order:
    why this took two harness changes to place: the source LOCATION in the
    console capture (now permanent, and what put it in the bundle rather than in
    app code), then a `requestfailed` listener to name `net::ERR_ABORTED`.
-4. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
+3. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
    fires on any `.sfsa-card-body` whose content has no focusable element at
    compact widths — the other views escape only because their card bodies
    contain a `<details><summary>`. The durable fix belongs in the kit's
    card component; this app carries a per-view `tabindex="0"` meanwhile.
-5. **Fire events for eligibility** remain out of scope until the archive
+4. **Fire events for eligibility** remain out of scope until the archive
    adds them to an events payload.
-6. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
+5. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
    for now; moving it behind an archive-published Pages URL is a one-line
    URL change in `js/decoders/crosswalk.js`. It now serves TWO datasets rather
    than five — the nClimGrid grazing periods and the disaster designations —
    because everything else draws its own polygons.
-7. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
+6. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
    honest: the archive keys nine planning regions and the FSA LFP determination
    boundaries answer eight traditional counties. Drawing it would need a
    planning-region tileset, which nobody publishes. The *Census counties*
    dataset already shows Connecticut correctly from program year 2023.
-8. **Compact reveal is best-effort only**: the bottom sheet gets a
+7. **Compact reveal is best-effort only**: the bottom sheet gets a
    mesonet-style pan, which the bounds cage clamps at the fit floor. A
    vertical push (`#map { bottom: var(--sheet-h) }` + resize, mirroring the
    desktop push) is the symmetric fix if it ever matters on phones.
-9. **The card's "Combined from" rows are gone from the drought view**, and that
+8. **The card's "Combined from" rows are gone from the drought view**, and that
    was a real loss to the reduction story, not an oversight — an identity
    authority has no constituents. It survives on the two views that still
    crosswalk.

@@ -84,7 +84,7 @@
    ========================================================================== */
 
 /* ── Kit imports ─────────────────────────────────────────────────────────────
-   Pinned at v0.2.1, like every kit reference in index.html and js/. Any bump
+   Pinned at v0.4.1, like every kit reference in index.html and js/. Any bump
    or dev-state sweep is ALL-OR-NOTHING across all of them: two different
    core.js URLs are two module instances, and therefore two independent
    `viewport` pub-subs — the drawer would then be listening to a different
@@ -1358,7 +1358,16 @@ function applyYearDomain(instance) {
   const first = list[0];
   const last = list[list.length - 1];
   if (first < YEAR_MIN || last > YEAR_MAX) {
-    console.warn('[ngp] the ' + activeDataset().id + ' payload carries ' + first
+    // console.ERROR, not warn. Both audit harnesses collect m.type() === 'error'
+    // ONLY (tools/verify.mjs, tools/a11y-audit.mjs), so a warn here would be a
+    // tripwire that never trips — and this is the one place the app can notice
+    // that an archive has grown past the domain its descriptor declares. The
+    // slider re-authors itself from the payload either way, so the map stays
+    // honest; what quietly stops working is `?year=`, which readInitialState
+    // validates against the DECLARED range before any payload exists. The
+    // console-clean gate goes red until the interface's `years` catches up
+    // with its data.
+    console.error('[ngp] the ' + activeDataset().id + ' payload carries ' + first
       + '–' + last + ', outside this app\'s ' + YEAR_MIN + '–' + YEAR_MAX
       + ' whitelist; ?year= outside that range will not be honoured.');
   }

@@ -221,8 +221,8 @@ export function censusVintageFor(year) {
   if (y - 1 > NEWEST_CENSUS) {
     // console.ERROR, not warn. Both audit harnesses collect m.type() === 'error'
     // ONLY (tools/verify.mjs, tools/a11y-audit.mjs), so a warn here would be a
-    // tripwire that never trips — which is the state the year-domain warn is
-    // already in. The map still draws, capped at the newest vintage, and the
+    // tripwire that never trips — the year-domain tripwire in js/app.js sat in
+    // that state for two releases. The map still draws, capped at the newest vintage, and the
     // console-clean gate goes red until CENSUS_VINTAGES gains the new year.
     console.error('[ngp/boundaries] program year ' + y + ' wants Census boundary '
       + 'vintage ' + (y - 1) + ', and the newest tileset this app knows is '
