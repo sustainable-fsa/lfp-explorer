@@ -119,11 +119,17 @@ Specifics that bite in this repo:
 
 **The Drought monitor now draws the drought itself.** The *USDM polygons*
 toggle lays the selected week's actual Drought Monitor map over the county
-choropleth — translucent (`fill-opacity` 0.45, the same NDMC class hexes,
-`CLASS_HEX` in js/interfaces/usdm.js), between the front county fill and the
-county lines, so every thin line, the state mesh and the selection ring stay
-on top. OFF by default; `?polygons=on`, elided at off; LS
-`sfsa-ngp-polygons-usdm`. It is the FIRST USER of the dormant
+choropleth — translucent (`fill-opacity` 0.45 by default, the same NDMC class
+hexes, `CLASS_HEX` in js/interfaces/usdm.js), between the front county fill
+and the county lines, so every thin line, the state mesh and the selection
+ring stay on top. OFF by default; `?polygons=on`, elided at off; LS
+`sfsa-ngp-polygons-usdm`. An owner-requested **opacity slider** (same day)
+sits under the toggle while it is On: 0–100 step 5, default 45, `?opacity=NN`
+elided at the default, LS `sfsa-ngp-opacity-usdm`, honored by the poster —
+NOT a `choices` value (it is a number, not an enumeration), so it carries its
+own validating accessor, and `fill-opacity` is safe to retune live because it
+is a constant on a transition-free layer (neither half of the v0.4.1
+failure). It is the FIRST USER of the dormant
 `descriptor.choices` mechanism, which supplied the URL param, the LS key, the
 boot re-validation and the aria-pressed sync with zero new plumbing. The
 owner's call, twice: translucent over the live choropleth (not a paint swap),
@@ -162,7 +168,8 @@ Three facts measured on the way in, worth not rediscovering:
   console the harnesses collect. Same lesson as the missing-`sourceLayer` one
   from the tiled cutover; the harness probe gates the query on `getLayer()`.
 
-Gates after: verify prints 561 (was 535 — new `8e` in `usdmExtraChecks`, plus
+Gates after: verify prints 570 (was 535 — new `8e` in `usdmExtraChecks`,
+including the slider's eight, plus
 `data-ngp-overlay` in the MARKERS table and the `overlay` fixture block in
 tools/config.mjs, all driven at the frozen 2012-07-24 week, never the moving
 newest); the a11y `usdm-view` state now audits with the overlay ON;

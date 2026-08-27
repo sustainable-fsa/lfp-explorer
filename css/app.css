@@ -179,6 +179,14 @@ main {
   margin-bottom: 0.25rem;
 }
 
+/* The overlay's opacity slider sits inside the USDM polygons section, under
+   its Off/On buttons — same narrower-than-its-section shape as the wrap
+   above, but no rule line: the slider belongs TO the toggle (it appears only
+   while On is pressed), so it wants breathing room, not a boundary. */
+#usdm-opacity-wrap {
+  margin-top: 0.4rem;
+}
+
 /* A caption under a control: what the switcher does not offer yet, and why the
    year slider is disabled on a climatology. Same muted small type as
    #legend-key (§4) — a note about a control, not a second label for it, so it

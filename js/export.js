@@ -467,7 +467,18 @@ export async function runExport(ctx = appCtx) {
       // Nothing here writes `data-ngp-overlay`: that marker says what the READER
       // is looking at, and nobody ever looks at this map.
       if (overlayOn) {
-        usdmOverlay.addOverlayLayers(offscreen, overlayFc, offHandle.layers.line);
+        /* AT THE STRENGTH THE READER SET IT TO. A poster printed at the
+           shipped 45% when the screen was at 15% is a different picture of the
+           same week — the polygons would swallow a choropleth the reader had
+           deliberately kept legible — so the number is frozen off the same
+           `sel` as the colours, the week and the filename.
+
+           Validated here rather than trusted, because this is a boundary: `sel`
+           is the app's own and app.js re-validates it on every read, but the
+           poster is the artifact that outlives the tab. Anything unusable falls
+           back to the same default js/usdm-overlay.js would have applied. */
+        usdmOverlay.addOverlayLayers(offscreen, overlayFc, offHandle.layers.line,
+          { opacity: (Number.isInteger(sel.opacity) ? sel.opacity : 45) / 100 });
       }
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
