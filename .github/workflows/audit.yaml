@@ -7,7 +7,7 @@
 # tools/payloads.txt — and must be cheap enough to run on every pull request.
 #
 # WHAT THE NETWORK IS FOR. The app loads the house style kit by full pinned URL
-# (https://sustainable-fsa.com/style/v0.3.1/…), fetches its county geometry at
+# (https://sustainable-fsa.com/style/v0.4.1/…), fetches its county geometry at
 # runtime as PMTiles vector tiles from https://data.sustainable-fsa.com — a
 # second origin, because it serves the HTTP range requests GitHub Pages does not
 # — and fetches each data payload by RELATIVE path
@@ -31,6 +31,37 @@
 # swiftshader flags exist so MapLibre can get a WebGL context at all on a
 # GPU-less runner; without them the app degrades to its error note and the
 # behavioural half of this workflow tests nothing.
+#
+# ── WHY FOUR JOBS AND NOT ONE ───────────────────────────────────────────────
+# This was one serial `audit` job until 2026-08-27, and it took about 25
+# minutes. Nothing in it was slow by accident; there was simply no reason for
+# any of it to wait on the rest. Measured, per step, on the last green main run
+# of the serial shape (33077870450):
+#
+#   checkout + setup-node + npm ci + playwright chromium   ~37 s
+#   html-validate                                            1 s
+#   stage payloads                                           3 s
+#   check-boundaries                                         1 s
+#   a11y audit (2 themes × 2 viewports × 11 states)        780 s
+#   verify.mjs                                             617 s
+#   LHCI                                                    59 s
+#
+# Two steps are 93% of the run and they share nothing: one drives axe over
+# static pictures of the app, the other drives the app. So they are separate
+# jobs now, the axe pass is fanned out over its own matrix — each leg one
+# theme × one viewport, all eleven states — and the two cheap gates that need
+# no browser at all stop queueing behind either. COVERAGE IS IDENTICAL: the
+# same harnesses, the same assertions, the same themes, viewports and states.
+# Only where they run changed. The new wall is verify.mjs's own ~10.3 minutes,
+# and shortening THAT is a different piece of work from this one.
+#
+# THE SETUP IS REPEATED IN EVERY JOB, ON PURPOSE. npm ci is 6 s and the
+# chromium download is 24 s, measured; a cross-job cache to save 30 s would
+# add a cache key to keep honest, a restore-miss path to reason about, and a
+# way for two jobs to disagree about what they installed. The payload staging
+# is likewise repeated in all four — it is a loop over ONE manifest
+# (tools/payloads.txt), which is the thing that must never fork, and every job
+# below either serves the app or reads the payloads.
 name: audit
 run-name: Audit the lfp-explorer web map
 
@@ -54,31 +85,24 @@ on:
 permissions:
   contents: read
 
+# Workflow-level, so a push that supersedes an in-flight run cancels ALL of its
+# jobs — the four below are one gate with one verdict, and half a cancelled run
+# is not a cheaper answer, it is a misleading one. Group per ref, as before.
 concurrency:
   group: audit-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  audit:
+  # ── 1 · The gates that need no browser ────────────────────────────────────
+  # Markup validity and the county-authority contract. ~20 s all in, which is
+  # why these two used to be invisible at the head of a 25-minute job and are
+  # now the first thing a pull request hears back about.
+  checks:
+    name: markup + county authority
     runs-on: ubuntu-latest
-    # 45, not 30: the app is four interfaces now, which is all of them. The axe
-    # pass has grown a state per interface (a view switch, its payload and — for
-    # a FIPS-keyed one — the crosswalk, per theme × viewport; eleven states
-    # across two themes and two viewports is 44 passes), and the behavioural run
-    # drives every non-default view end to end: switches, six dataset toggles, a
-    # week scrubber, an aggregation select, two variable toggles, two seg pairs,
-    # four deep links and a four-stop state-memory round trip, most of them a
-    # real payload fetch (~4.5 MB for a weekly USDM set, 11 MB for the derived
-    # eligibility archive, 4 MB for the designations) on a GPU-less runner.
-    #
-    # The number is a backstop against a hang, not a budget, and it is still the
-    # right one. Measured on this workflow's own history the whole job ran 7.2
-    # minutes with one interface and 9.8 with two; measured locally at the fourth
-    # (Apple silicon, warm network) the two harnesses are 7.2 minutes of axe and
-    # 2.7 of behavioural verification for 518 checks, so even several times over
-    # on a runner the backstop has room to spare. It moves when a PR measures
-    # that it has to — not when the app grows.
-    timeout-minutes: 45
+    # A backstop against a hang, not a budget. The work is ~5 s of it; the rest
+    # is network (npm, and check-boundaries' 21 live sidecar fetches).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -92,9 +116,6 @@ jobs:
       # one is gitignored, per the kit's zero-dependency rule for consumers.
       - name: Install audit tooling
         run: npm ci --prefix tools
-
-      - name: Install Chromium
-        run: npx --prefix tools playwright install --with-deps chromium
 
       # --prefix tools, NOT --yes: a bare `npx --yes html-validate` resolves
       # from the working directory's node_modules, which does not exist at the
@@ -118,6 +139,9 @@ jobs:
       # on any missing artifact, which is the correct signal: those origins are
       # part of the app's contract. The crosswalk is deliberately not here; it
       # is a committed repo asset, served by the checkout itself.
+      #
+      # THIS BLOCK IS REPEATED IN EVERY JOB BELOW. It is a mechanical loop over
+      # the manifest; the manifest is the part that has to stay single.
       - name: Stage the data payloads at their sibling paths
         run: |
           root="$(dirname "$GITHUB_WORKSPACE")"
@@ -150,16 +174,51 @@ jobs:
       - name: County authority contract
         run: node tools/check-boundaries.mjs
 
-      # The harnesses serve the WORKSPACE root — the parent of this checkout —
-      # so the app sits at /lfp-explorer/ exactly as it deploys.
-      # On a runner the checkout is at $GITHUB_WORKSPACE, whose basename is the
-      # repository name, so the default (two levels up from tools/) is already
-      # right and no argument is needed.
-      # The state list grows with the app; the step name deliberately does not
-      # name a count, so a new interaction state never has to touch this file.
-      - name: Accessibility audit (axe · 2 themes × 2 viewports · all interaction states)
-        run: node tools/a11y-audit.mjs
+  # ── 2 · Behavioural verification ──────────────────────────────────────────
+  # tools/verify.mjs, whole and unsharded. ~10.3 minutes, which makes this job
+  # the workflow's wall; see the header for why that is the next thing to look
+  # at rather than something this restructure tried to fix.
+  verify:
+    name: behavioural verification
+    runs-on: ubuntu-latest
+    # 30, not 45: the serial job's 45 covered axe AND verify AND Lighthouse.
+    # This job is verify alone — 10.3 minutes measured on a runner, ~2.7 locally
+    # — so 30 is the same generous multiple the old number was, against the same
+    # failure it guards: a hang, not a slow run. It moves when a PR measures
+    # that it has to, not when the app grows.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install audit tooling
+        run: npm ci --prefix tools
+
+      - name: Install Chromium
+        run: npx --prefix tools playwright install --with-deps chromium
+
+      # See `checks` above for why this is a curl loop over tools/payloads.txt.
+      - name: Stage the data payloads at their sibling paths
+        run: |
+          root="$(dirname "$GITHUB_WORKSPACE")"
+          while IFS= read -r path || [ -n "$path" ]; do
+            case "$path" in ''|\#*) continue ;; esac
+            echo "staging $path"
+            mkdir -p "$root/$(dirname "$path")"
+            curl -fsSL --retry 3 \
+              "https://sustainable-fsa.com/$path" -o "$root/$path"
+          done < tools/payloads.txt
+
+      # The harness serves the WORKSPACE root — the parent of this checkout —
+      # so the app sits at /lfp-explorer/ exactly as it deploys. On a runner the
+      # checkout is at $GITHUB_WORKSPACE, whose basename is the repository name,
+      # so the default (two levels up from tools/) is already right and no
+      # argument is needed.
       - name: Behavioural verification
         run: node tools/verify.mjs
 
@@ -173,6 +232,114 @@ jobs:
           path: verify-out/
           if-no-files-found: warn
           retention-days: 14
+
+  # ── 3 · Accessibility, one theme × viewport per leg ───────────────────────
+  # The axe pass is 780 s of four independent combos that never touch each
+  # other's page, so it fans out to ~195 s a leg. Each leg still walks the
+  # WHOLE state list; the split is across the matrix, never across the states.
+  a11y:
+    name: a11y · ${{ matrix.theme }} · ${{ matrix.viewport }}
+    runs-on: ubuntu-latest
+    # One leg of what used to be a 780 s step, plus setup. 20 is a hang
+    # backstop with room for a cold CDN on the 11 MB derived archive.
+    timeout-minutes: 20
+    strategy:
+      # All four legs report. A contrast failure that only fires in
+      # high-contrast · narrow and a name failure that only fires in
+      # light · wide are two findings, and cancelling the siblings on the first
+      # one would hide the second behind a re-run.
+      fail-fast: false
+      matrix:
+        # THESE VALUES MUST MATCH tools/config.mjs's THEMES and
+        # tools/a11y-audit.mjs's AUDIT_VIEWPORTS, and a mismatch FAILS LOUDLY
+        # by design: A11Y_THEME / A11Y_VIEWPORT select from those lists, and a
+        # value that selects nothing exits 1 naming the valid ones rather than
+        # auditing zero combos and reporting a pass. So a rename upstream
+        # breaks this file in the open — which is the only safe way for a
+        # hand-enumerated matrix to track a harness's own list.
+        include:
+          - theme: light
+            viewport: wide
+          - theme: light
+            viewport: narrow
+          - theme: high-contrast
+            viewport: wide
+          - theme: high-contrast
+            viewport: narrow
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install audit tooling
+        run: npm ci --prefix tools
+
+      - name: Install Chromium
+        run: npx --prefix tools playwright install --with-deps chromium
+
+      # See `checks` above for why this is a curl loop over tools/payloads.txt.
+      - name: Stage the data payloads at their sibling paths
+        run: |
+          root="$(dirname "$GITHUB_WORKSPACE")"
+          while IFS= read -r path || [ -n "$path" ]; do
+            case "$path" in ''|\#*) continue ;; esac
+            echo "staging $path"
+            mkdir -p "$root/$(dirname "$path")"
+            curl -fsSL --retry 3 \
+              "https://sustainable-fsa.com/$path" -o "$root/$path"
+          done < tools/payloads.txt
+
+      # The harness serves the WORKSPACE root, as verify does, for the same
+      # reason. The step name deliberately names the combo but not a state
+      # count: the state list grows with the app, and a new interaction state
+      # should never have to touch this file.
+      - name: Accessibility audit (axe · all interaction states)
+        env:
+          A11Y_THEME: ${{ matrix.theme }}
+          A11Y_VIEWPORT: ${{ matrix.viewport }}
+        run: node tools/a11y-audit.mjs
+
+  # ── 4 · Lighthouse ────────────────────────────────────────────────────────
+  lighthouse:
+    name: lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install audit tooling
+        run: npm ci --prefix tools
+
+      # NO `playwright install` HERE, and that is not an omission. LHCI launches
+      # through chrome-launcher, which resolves a browser from CHROME_PATH or
+      # from `google-chrome-stable` / `google-chrome` / `chromium-browser` on
+      # PATH (chrome-launcher 0.13.4, dist/chrome-finder.js) and never looks in
+      # playwright's ~/.cache/ms-playwright. The runner image's preinstalled
+      # Chrome is what the serial job was really using too; the playwright
+      # download it sat behind was 24 s of nothing. Its GL flags are in
+      # .lighthouserc.json, not here — same swiftshader set, same reason.
+      #
+      # See `checks` above for why this is a curl loop over tools/payloads.txt.
+      - name: Stage the data payloads at their sibling paths
+        run: |
+          root="$(dirname "$GITHUB_WORKSPACE")"
+          while IFS= read -r path || [ -n "$path" ]; do
+            case "$path" in ''|\#*) continue ;; esac
+            echo "staging $path"
+            mkdir -p "$root/$(dirname "$path")"
+            curl -fsSL --retry 3 \
+              "https://sustainable-fsa.com/$path" -o "$root/$path"
+          done < tools/payloads.txt
 
       # Lighthouse needs a server it does not own — see .lighthouserc.json for
       # why staticDistDir cannot serve a subpath app. The server and the run
