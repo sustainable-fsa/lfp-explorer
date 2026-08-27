@@ -1014,31 +1014,60 @@ function colorsNow() {
   }
 }
 
+/**
+ * …and the same, applied.
+ *
+ * THE TAIL IS PACKAGED RATHER THAN RUN, and that is the whole of the fused week
+ * cutover. What this closure carries — the choropleth, the county card, the
+ * sentence in the live region — is one week's answer, and the polygons drawn
+ * over it (js/usdm-overlay.js) are the same week's evidence. They used to change
+ * at different times: the feature state was synchronous and the polygons were a
+ * fetch away, so for a few hundred milliseconds the map paired this week's
+ * counties with last week's blobs, which is the one pairing a reader cannot
+ * detect and cannot correct for.
+ *
+ * So the overlay is handed the tail and decides when it runs. It runs it on the
+ * spot in every case but one — including for the three families that have no
+ * overlay at all, where `on` is false and nothing is ever held — and holds it,
+ * for as long as a week takes to arrive, when running it now would split the
+ * map in two. The county card and the week's own <output> do NOT wait: a
+ * control that does not answer reads as a broken control, and only the canvas
+ * has two halves to keep together.
+ *
+ * @returns {Promise<boolean>} resolved once the tail has run, false if a newer
+ *        selection superseded it. Ignored by the scrub and swap paths, which
+ *        are fire-and-forget by design; awaited by applyDataset(), whose
+ *        `data-ngp-view-seq` bump would otherwise claim a paint that had not
+ *        happened yet.
+ */
 function recolor() {
   const data = activeData;
-  if (!handle || !data) return;
+  if (!handle || !data) return Promise.resolve(false);
   const { colors, unmatchedFips, stats } = currentInterface()
     .colorsFor(data, crosswalk, selection());
 
-  // Ids with data but nothing to draw them on are REPORTED, not swallowed, and
-  // there are two kinds: an FSA id with no polygon in this vintage (the island
-  // territories are in neither boundary archive) and a FIPS id the crosswalk
-  // cannot land on any FSA county. A summary that hides either is a summary
-  // that lies.
-  const unmatched = handle.recolor(colors);
-  const missingFips = unmatchedFips ? unmatchedFips.length : 0;
-  announceRender(colors.size - unmatched.length, unmatched.length + missingFips, stats);
+  const apply = () => {
+    // Ids with data but nothing to draw them on are REPORTED, not swallowed, and
+    // there are two kinds: an FSA id with no polygon in this vintage (the island
+    // territories are in neither boundary archive) and a FIPS id the crosswalk
+    // cannot land on any FSA county. A summary that hides either is a summary
+    // that lies.
+    const unmatched = handle.recolor(colors);
+    const missingFips = unmatchedFips ? unmatchedFips.length : 0;
+    announceRender(colors.size - unmatched.length, unmatched.length + missingFips,
+      stats);
 
-  // The card is a readout of the same selection as the map.
-  if (state.countyId) fillCard(state.countyId);
+    // The card is a readout of the same selection as the map.
+    if (state.countyId) fillCard(state.countyId);
+  };
 
-  // And so is the overlay, when the drought monitor has it on: every year step,
-  // week scrub and dataset toggle reaches here, which makes this the one place
-  // that already knows the week changed. The early returns above are covered
-  // elsewhere — a view switch runs syncSections(), which reconciles too, and
-  // that is the path where the overlay has to come OFF (§ The USDM polygon
-  // overlay).
-  syncUsdmOverlay();
+  // The overlay is a readout of the same selection too, when the drought monitor
+  // has it on: every year step, week scrub and dataset toggle reaches here, which
+  // makes this the one place that already knows the week changed. The early
+  // returns above are covered elsewhere — a view switch runs syncSections(),
+  // which reconciles too, and that is the path where the overlay has to come OFF
+  // (§ The USDM polygon overlay).
+  return syncUsdmOverlay({ onSettle: apply });
 }
 
 /**
@@ -1877,6 +1906,21 @@ function syncWeekOut() {
 /**
  * Show another week of the selected year.
  *
+ * THE CONTROLS MOVE AT ONCE AND THE CANVAS MAY NOT. The <output> under the thumb,
+ * the URL and the card's readouts are feedback for a gesture the reader is still
+ * making, and a control that does not answer reads as a broken control. The map
+ * is the one thing here with two halves that have to agree — a choropleth and,
+ * when the reader has asked for them, the polygons it was reduced from — so
+ * recolor() hands its apply-tail to the overlay and the overlay decides when
+ * both change (§ recolor, and js/usdm-overlay.js § THE FUSED CUTOVER). Nothing
+ * here awaits that: a scrub is fire-and-forget, and the next scrub supersedes
+ * this one rather than queueing behind it.
+ *
+ * The live region is already held across the gesture by deferAnnounce(), which
+ * the scrubber's own `input` handler calls; the sentence that finally lands is
+ * whichever tail actually runs, and that is by construction the week the reader
+ * stopped on.
+ *
  * @param {number|string} next 1-based week within the year
  */
 function setWeek(next) {
@@ -1954,6 +1998,17 @@ function applyWeek(instance) {
    allowed to run far more often than the overlay actually changes, which is
    what lets recolor() and syncSections() carry it without either of them
    knowing what an overlay is.
+
+   AND THE CUTOVER IS FUSED. The choropleth and the polygons are one week's
+   answer and that week's evidence, and they used to arrive at different times:
+   feature state is synchronous, a 250 KB weekly file is not. So recolor() does
+   not paint any more — it packages the paint, the card and the announcement and
+   hands them to the reconciler, which runs them on the spot unless doing so
+   would pair this week's counties with last week's blobs, and otherwise holds
+   them until the incoming week is drawable and runs them in that same task. The
+   held picture is the OLD one, whole: old counties under old polygons, which is
+   a true map of a week the reader was just looking at. That is the same argument
+   the buffered authority swap makes (§ swapBoundary) on the other axis.
 
    The one piece of overlay STATE this file owns is its strength, because it is
    not a fact about the data at all — it is how hard the reader wants to look
@@ -2094,22 +2149,36 @@ function syncOpacityControl(on) {
 }
 
 /**
- * Tell the overlay module what is on screen.
+ * Tell the overlay module what is on screen — and, when the caller has one, hand
+ * it the work that has to land at the same instant the polygons do.
  *
  * The DOM half runs first and unguarded, because the slider is a control rather
  * than a layer: it has to be right in the frames before there is a map, which
  * is exactly when syncSections() first runs. The map half is guarded for the
  * mirror-image reason — the module's job starts with `map.addLayer`.
+ *
+ * `onSettle` is recolor()'s apply-tail (§ recolor). It is run by the module,
+ * synchronously in every case but a change of week with polygons already drawn,
+ * and it must not be lost when there is no map to reconcile — hence the explicit
+ * call in the guard below rather than a bare `return`.
+ *
+ * @param {{onSettle?: () => void}} [opts]
+ * @returns {Promise<boolean>} what usdmOverlay.sync() returns: resolved once the
+ *        tail has run, false if it was superseded. Never rejects.
  */
-function syncUsdmOverlay() {
+function syncUsdmOverlay({ onSettle } = {}) {
   const iface = currentInterface();
   const on = state.view === 'usdm' && choiceValue(iface, 'polygons') === 'on';
   syncOpacityControl(on);
-  if (!map || !handle) return;
-  usdmOverlay.sync({
+  if (!map || !handle) {
+    if (typeof onSettle === 'function') onSettle();
+    return Promise.resolve(true);
+  }
+  return usdmOverlay.sync({
     map,
     handle,
     on,
+    onSettle,
     dateIso: on ? usdmWeekIsoNow() : null,
     // Percent here, 0–1 at the paint property: the reader's units and GL's
     // units are not the same units, and this is the one place they meet.
@@ -2693,7 +2762,15 @@ async function applyDataset(ds) {
   persist();
   pushState();
 
-  if (!drawn) recolor();   // paints, refills the card, and announces
+  // AWAITED, because the marker below says the paint LANDED. recolor() hands its
+  // apply-tail to the overlay, which may hold it until the week's polygons are
+  // drawable (§ recolor), and a `data-ngp-view-seq` bumped over a held tail would
+  // be telling every harness in the repo that a repaint had flushed while the
+  // colours were still the previous selection's. It resolves on the spot in every
+  // case a dataset switch can actually reach — the arriving family's overlay has
+  // nothing drawn yet, because syncSections() reconciled it off on the way in —
+  // so this await costs nothing and is here for the case that would be silent.
+  if (!drawn) await recolor();   // paints, refills the card, and announces
   syncLegend();
   if (tableCtl) tableCtl.invalidate();
   clearNote();

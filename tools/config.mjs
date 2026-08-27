@@ -499,7 +499,29 @@ export const INTERFACES = Object.freeze({
         `opacityDefault` is a PERCENTAGE, which is the reader's unit and the
         <output>'s; the paint property it drives is the same number over 100,
         which is what an assertion reading `getPaintProperty` has to compare
-        against. */
+        against.
+
+        `fuse` IS THE FUSED WEEK CUTOVER'S WITNESS PAIR, and every value in it
+        was MEASURED rather than chosen (2026-08-27):
+
+          · the two weeks are adjacent Tuesdays on the sidecar's own gapless
+            grid — week 30 and week 31 of 2012, 2012-07-24 and 2012-07-31.
+            `fromIso` is deliberately the same frozen fixture `deepLinkIso` and
+            `deepLink` already land on;
+          · they are a usable pair: read straight out of
+            usdm-counties-fsa-lfp.json (week0 2000-01-04, indices 655 and 656),
+            415 of the archive's 3,221 counties change drought class between
+            them;
+          · `countyId` 20153 is Rawlins County, Kansas — D3 in the first week and
+            D4 in the second, which is `fromColor` #e60000 to `toColor` #730000
+            in js/interfaces/usdm.js's CLASS_COLORS. A big, rectangular plains
+            county, so the bbox centroid the kit computes lands inside it, and
+            the two weekly TopoJSONs (5 features each, D0–D4, 833 and 942 arcs,
+            738 KB and 785 KB raw / 249 KB and 264 KB over the wire) both cover
+            that centroid with exactly one polygon — which is what lets ONE
+            point on the map answer for both halves of the picture;
+          · `leadTicks` is a sampling rail, not a design constant, and § 8e's
+            check says exactly what it bounds. */
     overlay: Object.freeze({
       sectionSel: '#usdm-polygons-seg',
       offSel: '#btn-polygons-off',
@@ -519,6 +541,17 @@ export const INTERFACES = Object.freeze({
       indexUrl: 'https://data.sustainable-fsa.com/data-tiles/usdm/usdm-index.json',
       liveClause: /USDM drought polygons are drawn over the counties/,
       legendClause: /USDM's own weekly map, drawn as published/,
+      fuse: Object.freeze({
+        fromWeek: 30,
+        toWeek: 31,
+        fromIso: '2012-07-24',
+        toIso: '2012-07-31',
+        countyId: '20153',
+        countyName: 'Rawlins County, Kansas',
+        fromColor: '#e60000',
+        toColor: '#730000',
+        leadTicks: 5,
+      }),
     }),
 
     exportName: /^usdm_(fsa-lfp|reported|census)_\d{4}-\d{2}-\d{2}\.png$/,

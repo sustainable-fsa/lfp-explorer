@@ -72,8 +72,10 @@
 
      (absent)      not drawn — the toggle is off, or the view is not the
                    drought monitor
-     loading       on; the target week is being fetched or decoded, and the
-                   source has already been emptied
+     loading       on; the target week is being fetched or decoded. What is on
+                   screen underneath is the PREVIOUS week, whole — see § THE
+                   FUSED CUTOVER — or nothing at all when there was no previous
+                   week to hold
      YYYY-MM-DD    on; THAT week is attached and has been flushed to GL
      missing       on; the selected week is not one the USDM published
      error         on; the week's fetch or decode failed, or the sidecar is
@@ -82,14 +84,45 @@
    The ISO stamps only after MapLibre says the source is loaded and two frames
    have passed — see `stampWhenDrawn()`, which has the whole argument.
 
-   ── CLEAR BEFORE FETCH ─────────────────────────────────────────────────────
-   A week that has to be fetched empties the source FIRST and only then goes to
-   the network. The alternative — leave last week's polygons up while the new
-   ones load — draws July's D4 blob over August's choropleth, which is not a
-   slow map but a wrong one, and it is wrong in the direction a reader cannot
-   detect. Half a second of counties with no overlay is honest; a hundred
-   milliseconds of the wrong overlay is not. A week already in the cache skips
-   the clear entirely, because it has nothing to wait for.
+   ── THE FUSED CUTOVER, AND WHY NOTHING IS CLEARED ANY MORE ────────────────
+   This module used to empty the source before it went to the network, and the
+   argument for it was good: leaving July's D4 blob up over August's choropleth
+   is not a slow map but a wrong one, and it is wrong in the direction a reader
+   cannot detect.
+
+   The premise under that argument was that the COUNTIES changed instantly. They
+   did — a week scrub was one synchronous pass of feature state — so the two
+   halves of the picture cut over at different times whatever this module did,
+   and the only choice was which lie to tell in the gap.
+
+   They do not change instantly any more. `sync()` takes the caller's apply-tail
+   as `onSettle`, and whenever a change of week would otherwise split the map in
+   two it HOLDS that tail — the choropleth, the county card and the live
+   sentence all wait — and runs it in the same task as the moment the incoming
+   week's source first reports drawable, one tick before the frame that draws
+   it. Both halves move together. That is the buffered-authority-swap principle
+   (js/boundaries.js § swapBoundary, kit v0.4.0 § swapVintage) applied to the
+   week axis: the outgoing picture keeps drawing, whole and coherent, until the
+   incoming picture is really drawable, and then there is one flip.
+
+   So the clear is gone. What a reader looks at during the fetch is last week's
+   counties under last week's polygons — a true map of a week they were looking
+   at a moment ago — rather than this week's counties under nothing. A retired
+   picture that is internally consistent is worth more than a fresh one that is
+   half missing, which is the same argument the kit makes for keeping a retired
+   county stack resident rather than blank.
+
+   THE FUSE IS DECIDED PER CALL AND IT IS NARROW: the overlay is on, something
+   is already drawn, and the target is a DIFFERENT week. Everything else — the
+   toggle coming on from nothing, a same-week recolour, a theme flip, the three
+   families that have no overlay at all, the off state — runs the tail
+   synchronously inside sync(), exactly as it ran before any of this existed.
+
+   AND EVERY EXIT RUNS IT. A failed fetch, a week the USDM never published, a
+   county stack that is not on the map yet: the county repaint is true whether
+   or not the polygons arrive, and it is never the overlay's to lose. That is
+   also why the hold has a ceiling (§ HOLD_CEILING_MS) — a fetch that never
+   answers must cost the reader an unfused cutover, not a frozen map.
 
    ── THE KIT ANCHOR ────────────────────────────────────────────────────────
    The overlay sits directly beneath the county LINE layer, so the boundaries,
@@ -170,6 +203,22 @@ const WEEK_CACHE_MAX = 8;
 
 /** The source's resting state, and what "no overlay" looks like on the map. */
 const EMPTY_FC = Object.freeze({ type: 'FeatureCollection', features: [] });
+
+/**
+ * How long a fused cutover may hold the caller's apply-tail before it gives up
+ * and lets the county repaint go through unfused.
+ *
+ * THE HOLD IS A COURTESY; THE REPAINT IS NOT. Everything the tail carries — the
+ * choropleth, the county card, the sentence in the live region — is true about
+ * the week the reader selected whether or not the polygons for it ever arrive,
+ * so a hold that could last forever would be this module taking the rest of the
+ * app hostage over its own network. Six seconds is far longer than the ~250 KB
+ * a week costs over the wire (measured: 0.24–0.26 MB brotli for the 2012 weeks)
+ * and far shorter than a reader's patience with a map that has stopped
+ * answering. Tripping it costs exactly what the old behaviour cost on every
+ * scrub: the counties cut over first and the polygons follow.
+ */
+const HOLD_CEILING_MS = 6000;
 
 /**
  * How strongly the polygons are painted when nobody has said otherwise, as a
@@ -274,10 +323,29 @@ let inflight = null;
     new wait, so repeated syncs cannot leave listeners on the map. */
 let stampOff = null;
 
-/** `{dateIso, fc}` — the week attached AND stamped, or null. This is what
-    drawn() answers, and it is deliberately set in the settle callback rather
-    than at setData() time: "attached" means on screen, not requested. */
+/** `{dateIso, fc}` — the week the source really holds, or null.
+    Deliberately NOT set at setData() time: it is written in the settle handler,
+    at the instant MapLibre says the incoming week is drawable, because that is
+    the instant the fused cutover happens and this is the value the fuse
+    condition asks about (§ THE FUSED CUTOVER). "Attached" means on screen, not
+    requested. The MARKER waits two more frames on top of that — a settle signal
+    for a harness has to mean a frame was painted, which is a stricter claim than
+    this module needs for its own bookkeeping. */
 let attached = null;
+
+/** The apply-tails of every sync currently held for the fused cutover, each
+    with the resolver of the promise that sync() handed its caller.
+
+    An ARRAY rather than one slot because more than one caller can be waiting on
+    the same cutover: a scrub starts the hold, and a theme flip or a county click
+    landing inside it recolours against the same target week and joins it. They
+    are drained together, exactly once, and dropped together when a newer sync
+    supersedes them — the seq guard decides, and a superseded tail says nothing,
+    because being scrubbed past is not a failure. */
+let held = [];
+
+/** The ceiling timer for the hold above, or 0. */
+let holdTimer = 0;
 
 /** The sidecar, once. Cleared on failure so a later sync retries it. */
 let indexPromise = null;
@@ -299,14 +367,87 @@ let paintedOpacity = null;
  * PROMISES, not values, so two callers wanting the same week — a warm-on-intent
  * prefetch and the sync that follows it a beat later — share one fetch. `value`
  * is filled in on resolve and is what makes a cache hit INSTANT: a resolved
- * entry can be handed to setData() in the same task, with no clear-before-fetch
- * and no `loading` marker, which is what makes a scrub back to last week feel
- * like a scrub rather than a load.
+ * entry can be handed to setData() in the same task, with no `loading` marker
+ * and no network at all, so the cutover waits only for MapLibre to re-tile five
+ * MultiPolygons — which is what makes a scrub back to last week feel like a
+ * scrub rather than a load.
  *
  * A rejected entry evicts itself, so a CDN hiccup is retried rather than
  * cached as a failure.
  */
 const weeks = new Map();
+
+/* ── The held apply-tail ─────────────────────────────────────────────────────
+   Three functions and one rule: a tail runs EXACTLY ONCE or not at all, and the
+   seq guard is what decides which. Everything here is synchronous — a tail that
+   waited for a microtask would land in a different task from the sourcedata
+   event that released it, which is the one thing the fused cutover cannot
+   survive (see § THE FUSED CUTOVER). */
+
+/**
+ * Park a tail on the cutover now in flight, and hand back the promise sync()
+ * returns for it.
+ *
+ * @param {() => void} fn the caller's apply-tail
+ * @returns {Promise<boolean>} true when it ran, false when it was superseded
+ */
+function holdTail(fn) {
+  return new Promise((resolve) => {
+    held.push({ fn, resolve });
+    if (!holdTimer && typeof setTimeout === 'function') {
+      // Captured now: releaseTails() checks it, so a ceiling that fires after a
+      // newer sync has taken over must not release the newer sync's tails.
+      const mine = seq;
+      holdTimer = setTimeout(() => {
+        holdTimer = 0;
+        if (mine !== seq || !held.length) return;
+        console.warn('[usdm-overlay] the polygons for this week have not '
+          + 'arrived in ' + HOLD_CEILING_MS + ' ms, so the counties are being '
+          + 'repainted without waiting for them; the overlay will catch up on '
+          + 'its own.');
+        releaseTails(mine);
+      }, HOLD_CEILING_MS);
+    }
+  });
+}
+
+/**
+ * Run every parked tail, in the order they were parked, and resolve their
+ * promises true.
+ *
+ * The array is swapped out BEFORE the first call, so a tail that re-entered
+ * sync() — a recolour inside a recolour — cannot see itself still parked and
+ * cannot be run twice. A tail that throws is reported and the rest still run:
+ * one descriptor leaf failing is not a reason to leave the card and the live
+ * region describing a week that is no longer on screen.
+ *
+ * @param {number} mine the seq the caller was issued
+ */
+function releaseTails(mine) {
+  if (mine !== seq) return;              // superseded — dropTails() has them
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
+  if (!held.length) return;
+  const pending = held;
+  held = [];
+  for (const entry of pending) {
+    try { entry.fn(); } catch (err) {
+      console.error('[usdm-overlay] the caller\'s apply-tail threw while the '
+        + 'overlay was handing the map back to it.', err);
+    }
+    entry.resolve(true);
+  }
+}
+
+/** Abandon every parked tail — a newer sync has taken over, and the newest
+    caller's tail carries the newest colours. Silent: the reader scrubbing past
+    a week is not a failure. */
+function dropTails() {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
+  if (!held.length) return;
+  const pending = held;
+  held = [];
+  for (const entry of pending) entry.resolve(false);
+}
 
 /* ── The marker ──────────────────────────────────────────────────────────── */
 
@@ -582,8 +723,8 @@ function applyOpacity(map, raw) {
 }
 
 /** Hand the source a FeatureCollection. A no-op before the source exists,
-    which is what makes the synchronous clear in sync() safe to call at any
-    point in the layer's life.
+    which is what makes the clears in sync() and run() safe to call at any point
+    in the layer's life.
 
     Every WEEK is attached with the layer already visible, and that ordering is
     deliberate: MapLibre leaves a hidden layer's source out of
@@ -618,7 +759,8 @@ function clearStamp(map) {
 }
 
 /**
- * Stamp the week's ISO once it is REALLY on screen.
+ * Take the cutover the moment the week is REALLY drawable, and stamp its ISO
+ * once a frame has been painted from it.
  *
  * Two conditions, and the second one is the trap.
  *
@@ -640,15 +782,30 @@ function clearStamp(map) {
  *   content    once per tile as the re-tiled data lands. The last of them has
  *              every tile loaded and is the one we want.
  *
- * So: ignore `metadata`, require `isSourceLoaded`, and the only events left
- * are real. Everything between the `setData()` call and the worker's return is
- * covered for free — GeoJSONSource.loaded() is false while a worker update is
- * pending, and the tile manager's loaded() defers to it, so a straggler tile
- * from the week the reader just scrubbed away from cannot qualify either.
+ * THE `metadata` FILTER CARRIES MORE WEIGHT SINCE THE CLEAR WENT AWAY. It was
+ * always wrong to stamp there; now the tiles it answers TRUE about are last
+ * week's REAL polygons rather than an emptied source, so releasing the fused
+ * cutover on it would repaint the counties for a week whose polygons had not
+ * been tiled yet — the exact mismatch this whole arrangement exists to close,
+ * reintroduced at the one point where nothing downstream could see it.
  *
- * Then a DOUBLE requestAnimationFrame, for the same reason bumpViewSeq() does
- * it (js/app.js): the event says the data is in, not that a frame has been
- * painted from it.
+ * Everything between the `setData()` call and the worker's return is covered
+ * for free — GeoJSONSource.loaded() is false while a worker update is pending,
+ * and the tile manager's loaded() defers to it, so a straggler tile from the
+ * week the reader just scrubbed away from cannot qualify either.
+ *
+ * THEN THE ORDER OF THE LAST THREE LINES IS THE WHOLE FEATURE:
+ *
+ *   1. `attached`, because from this instant the source holds this week and the
+ *      next sync's fuse condition has to be asked about the new picture;
+ *   2. `releaseTails()`, SYNCHRONOUSLY, in this task — the caller's feature-state
+ *      writes and the freshly tiled polygons then reach GL together, because
+ *      MapLibre coalesces pending feature state inside the same `_render()` that
+ *      draws the new tiles;
+ *   3. the ISO marker, after a DOUBLE requestAnimationFrame, for the same reason
+ *      bumpViewSeq() does it (js/app.js): the event says the data is in, not
+ *      that a frame has been painted from it, and a settle signal has to mean
+ *      the stricter thing.
  */
 function stampWhenDrawn(map, iso, fc, mine) {
   clearStamp(map);
@@ -661,10 +818,15 @@ function stampWhenDrawn(map, iso, fc, mine) {
     done = true;
     map.off('sourcedata', onData);
     if (stampOff === off) stampOff = null;
+    // Superseded between the setData() and the tiles landing: the reader has
+    // scrubbed on, a newer sync has already dropped this run's tails, and
+    // nothing here is true any more. Say nothing.
+    if (mine !== seq) return;
+    attached = Object.freeze({ dateIso: iso, fc });
+    releaseTails(mine);
     afterTwoFrames(() => {
       // The reader may have scrubbed on in those two frames. Say nothing.
       if (mine !== seq) return;
-      attached = Object.freeze({ dateIso: iso, fc });
       marker(iso);
     });
   };
@@ -695,6 +857,14 @@ function stampWhenDrawn(map, iso, fc, mine) {
  * without a word — the reader scrubbing past a week is not a failure, and
  * saying so in the console would put a warning on every drag of the scrubber.
  *
+ * AND IT MAY NOW HOLD THE CALLER'S OWN WORK. `onSettle` is the apply-tail of
+ * whatever asked for this reconcile — in this app, the choropleth repaint, the
+ * county card and the live sentence (js/app.js § recolor). It runs
+ * SYNCHRONOUSLY, before this function returns, in every case except the one
+ * that would otherwise split the map in two; there it is held until the
+ * incoming week is drawable and then run in that same task, so the two halves
+ * of the picture cut over together (§ THE FUSED CUTOVER).
+ *
  * @param {object} args
  * @param {object} args.map the live MapLibre map
  * @param {object} args.handle the kit's addCountyLayers() handle, for its
@@ -707,10 +877,24 @@ function stampWhenDrawn(map, iso, fc, mine) {
  * @param {number} [args.opacity] how strongly to paint the polygons, 0–1.
  *        Anything else is the default (§ DEFAULT_OPACITY).
  * @param {(text: string) => void} [args.announce] the live region writer
- * @returns {void}
+ * @param {() => void} [args.onSettle] the caller's apply-tail. Run exactly once
+ *        for the call that wins and never for one that is superseded.
+ * @returns {Promise<boolean>} resolved once `onSettle` has run (true) or been
+ *        superseded (false). NEVER REJECTS, and callers are free to ignore it:
+ *        the reconciler is still fire-and-forget, and the only caller in this
+ *        app that awaits it is the one whose marker would otherwise claim a
+ *        paint that had not happened (js/app.js § applyDataset).
  */
-export function sync({ map, handle, on, dateIso, announce, opacity } = {}) {
-  if (!map || typeof map.getLayer !== 'function') return;
+export function sync({ map, handle, on, dateIso, announce, opacity,
+  onSettle } = {}) {
+  const settle = (typeof onSettle === 'function') ? onSettle : null;
+
+  /* No map at all — boot, or a teardown. The overlay has nothing to reconcile,
+     but the caller's repaint is not the overlay's to withhold. */
+  if (!map || typeof map.getLayer !== 'function') {
+    if (settle) settle();
+    return Promise.resolve(true);
+  }
 
   /* BEFORE the idempotence guard below, and that ordering is the whole of it:
      a change of strength is not a change of TARGET — the same week stays
@@ -726,46 +910,100 @@ export function sync({ map, handle, on, dateIso, announce, opacity } = {}) {
      its week. */
   if (on) applyOpacity(map, opacity);
 
-  const key = on ? 'on:' + (dateIso || '') : 'off';
-  if (key === targetKey) return;
+  const iso = on ? (dateIso || null) : null;
+
+  /* THE FUSE CONDITION, and it is deliberately narrow (§ THE FUSED CUTOVER).
+     Three things have to be true at once: the overlay is on, a week is really
+     drawn right now, and the target is a DIFFERENT one. That is exactly the
+     case where a synchronous county repaint would pair this week's colours with
+     last week's polygons. Anything else has no coherent picture to hold — a
+     toggle coming on from nothing, a same-week recolour, the off state, and the
+     three families that have no overlay at all — and runs the tail on the spot,
+     which is what those callers did before this parameter existed.
+
+     Asked of `attached`, never of `targetKey`: what may be held back is a
+     PICTURE, and the only honest witness to what is on the map is the value
+     written when MapLibre said the source was drawable. */
+  const showing = attached;
+  const fuse = !!on && !!showing && iso !== showing.dateIso;
+
+  const key = on ? 'on:' + (iso || '') : 'off';
+  if (key === targetKey) {
+    /* The same target as the run already under way. If that run is a cutover
+       still waiting to happen, this caller's tail belongs to it: a theme flip or
+       a county click landing mid-hold has recomputed the colours for the week
+       being held FOR, and running them now would put them on the polygons being
+       held FROM. Otherwise there is nothing to wait for. */
+    if (fuse && settle) return holdTail(settle);
+    if (settle) settle();
+    return Promise.resolve(true);
+  }
   targetKey = key;
 
   const mine = (seq += 1);
   clearStamp(map);
   abortInFlight();
+  // A newer target: every tail parked on the old one is history, and the newest
+  // caller's tail carries the newest colours.
+  dropTails();
 
-  /* CLEAR BEFORE FETCH, and SYNCHRONOUSLY — see the header. Everything below
-     this point is behind an await, and "the old week comes off before the new
-     one is asked for" has to mean before, not one microtask later and not one
-     sidecar round trip later. The reader scrubbing from July to August must
-     never see July's D4 blob over August's counties, however briefly, because
-     that picture is wrong in a direction they cannot detect.
+  /* NOTHING IS CLEARED WHEN THE CUTOVER CAN BE FUSED — the reversal, and the
+     header has the argument. The old week keeps drawing under the old counties,
+     which is a true map of a week the reader was looking at a moment ago, until
+     the new week is drawable and both change together.
 
-     A week already decoded skips it: there is nothing to wait for, so an empty
-     frame between two cached weeks would be a load that is not happening. And
-     a null week gets the clear without the marker, because `loading` would be
-     a claim that something is on its way. */
+     When it CANNOT be fused there is no coherent picture to hold: `attached` is
+     null because nothing is drawn, the source is already empty or about to be
+     wrong, and the clear is what makes `loading` mean what it says. A week
+     already decoded skips it either way — there is nothing to wait for. */
   if (on) {
-    // Whatever was on screen is not what was asked for, so nothing is
-    // `drawn()` until the new week has been through a paint.
-    attached = null;
-    const hit = dateIso ? weeks.get(dateIso) : null;
-    if (!hit || !hit.value) {
-      setData(map, EMPTY_FC);
-      if (dateIso) marker('loading');
+    const hit = iso ? weeks.get(iso) : null;
+    const cached = !!(hit && hit.value);
+    if (!fuse) attached = null;
+    if (!cached) {
+      if (!fuse) setData(map, EMPTY_FC);
+      // `loading` would be a claim that something is on its way, and a null week
+      // is not on its way anywhere; run() answers it with `missing`.
+      if (iso) marker('loading');
     }
   }
 
-  run(map, handle, mine, !!on, on ? (dateIso || null) : null, announce)
+  const done = (fuse && settle) ? holdTail(settle) : null;
+
+  run(map, handle, mine, !!on, iso, announce)
     .catch((err) => {
       // run() owns its own failures, so anything arriving here is a defect in
-      // this module rather than a fact about the network.
+      // this module rather than a fact about the network. The tail is still the
+      // caller's: a bug here must not cost the reader their choropleth.
       targetKey = null;
       console.error('[usdm-overlay] the overlay reconciler threw, which is a '
         + 'bug in js/usdm-overlay.js rather than a data problem.', err);
+      releaseTails(mine);
     });
+
+  /* LAST, and after run() has been started rather than before it. An unfused
+     tail is the caller's own code and it is allowed to throw; letting it throw
+     out of here before the reconcile had even begun would leave `targetKey`
+     claiming a target nothing is working towards, and the next sync would
+     no-op on it. Started first, a throwing tail costs exactly what it cost
+     before this parameter existed: the exception reaches the caller, and the
+     overlay is reconciled anyway. */
+  if (!done && settle) settle();
+
+  return done || Promise.resolve(true);
 }
 
+/**
+ * The asynchronous half of one reconcile.
+ *
+ * EVERY EXIT EITHER RELEASES THE HELD TAIL OR HAS ALREADY BEEN SUPERSEDED, and
+ * there is no third case. A tail is the caller's choropleth, card and live
+ * sentence, all of them true about the week the reader selected regardless of
+ * what the overlay managed to fetch — so a week the USDM never published, a CDN
+ * hiccup and a county stack that has not landed yet all hand it straight back.
+ * The only exits that DO NOT release are the ones guarded by `mine !== seq`,
+ * where a newer sync has already dropped these tails and is carrying its own.
+ */
 async function run(map, handle, mine, on, iso, announce) {
   if (!on) {
     /* THE LAYER STAYS. Hidden, not removed — the kit's own retired-stack
@@ -777,6 +1015,10 @@ async function run(map, handle, mine, on, iso, announce) {
       map.setLayoutProperty(OVERLAY_FILL_ID, 'visibility', 'none');
     }
     marker(null);
+    // Nothing was held for an `off` — the fuse condition requires `on` — so
+    // this is a no-op, and it is here so that "every exit releases" is a rule
+    // rather than a list of the exits somebody remembered.
+    releaseTails(mine);
     return;
   }
 
@@ -786,6 +1028,7 @@ async function run(map, handle, mine, on, iso, announce) {
   } catch (err) {
     if (mine !== seq) return;
     fail('the USDM weekly index could not be read', err, announce);
+    releaseTails(mine);
     return;
   }
   if (mine !== seq) return;
@@ -794,6 +1037,7 @@ async function run(map, handle, mine, on, iso, announce) {
     // Nothing was created and nothing is claimed. Drop the target so the next
     // reconcile — the one after the county stack lands — runs this again.
     targetKey = null;
+    releaseTails(mine);
     return;
   }
   // BEFORE any setData: a hidden layer's source is never updated.
@@ -816,15 +1060,19 @@ async function run(map, handle, mine, on, iso, announce) {
     attached = null;
     setData(map, EMPTY_FC);
     marker('missing');
+    // A week that was never published is an answer, not a wait. The counties
+    // for it are still real — the choropleth is computed from a different
+    // archive — so the tail goes back in the same task the answer is known.
+    releaseTails(mine);
     return;
   }
 
   const cached = weeks.get(iso);
   if (cached && cached.value) {
-    /* INSTANT — and sync() will already have left the old week up for it, so
-       there is no empty frame between two cached weeks. It may also have
-       cleared, if this week only landed in the cache while the sidecar was
-       resolving; either way the next line is the whole transition.
+    /* INSTANT, and the old week is still up for it: nothing was cleared, so
+       there is no empty frame between two cached weeks and no frame of the new
+       counties over the old polygons either — the tail is held through the one
+       re-tiling this costs, exactly as it is through a fetch.
        weekEntry() refreshes the LRU position on the way past. */
     weekEntry(iso, index);
     setData(map, cached.value);
@@ -832,9 +1080,9 @@ async function run(map, handle, mine, on, iso, announce) {
     return;
   }
 
-  /* The clear and the `loading` marker already happened, synchronously, in
-     sync() — see the comment there for why they cannot wait for this point.
-     What is left is the fetch.
+  /* The `loading` marker already happened, synchronously, in sync(). What is
+     left is the fetch, and — since the clear went away — the old week is still
+     on screen while it runs.
 
      Reuse an in-flight promise if warm-on-intent already started one. It is
      not ours to abort in that case, which is fine: the seq guard abandons the
@@ -851,8 +1099,16 @@ async function run(map, handle, mine, on, iso, announce) {
       .promise;
   } catch (err) {
     if (mine !== seq) return;                      // superseded — silent
-    if (err && err.name === 'AbortError') return;  // §8 — silent, not even a warn
+    if (err && err.name === 'AbortError') {
+      // §8 — silent, not even a warn. An abort this run is still `seq` for did
+      // not come from a newer sync (those bump seq before aborting), so it is
+      // somebody else's cancellation landing on a shared promise, and the tail
+      // is still owed to the caller.
+      releaseTails(mine);
+      return;
+    }
     fail('the USDM polygons for ' + iso + ' could not be loaded', err, announce);
+    releaseTails(mine);
     return;
   }
   if (mine !== seq) return;
@@ -931,11 +1187,13 @@ export async function ensureWeek(dateIso, { signal } = {}) {
 }
 
 /**
- * The week currently attached AND stamped, or null.
+ * The week the map is really drawing, or null.
  *
- * Deliberately not "the week that was asked for": between the request and the
- * settle the map is showing nothing, and a caller told otherwise would be told
- * about an intention rather than a picture.
+ * Deliberately not "the week that was asked for". Between the request and the
+ * settle the map is showing the PREVIOUS week (or nothing, when there was no
+ * previous week to hold), and a caller told otherwise would be told about an
+ * intention rather than a picture — which is also precisely why the fuse
+ * condition in sync() asks this and not `targetKey`.
  *
  * @returns {{dateIso: string, fc: object}|null}
  */

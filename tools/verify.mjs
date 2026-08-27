@@ -3223,9 +3223,13 @@ function outIso(out) {
  * THE ATTRIBUTE'S PRESENCE IS NOT ARRIVAL, and two of the four non-ISO values
  * are states a correct app passes through on the way in:
  *
- *   · `loading` — the source is emptied BEFORE the fetch starts, deliberately
- *     (last week's D4 blob over this week's choropleth is a map that lies), so
- *     the marker is up while nothing is drawn;
+ *   · `loading` — the week the reader asked for is being fetched. What is drawn
+ *     underneath is the PREVIOUS week, whole and unclipped, because the cutover
+ *     is fused: the app holds its own choropleth repaint until the incoming
+ *     week is drawable and then changes both halves in one task
+ *     (js/usdm-overlay.js § THE FUSED CUTOVER). So the marker is up over a
+ *     correct picture of the wrong week, which is a state a correct app is
+ *     supposed to pass through;
  *   · `missing` — on ENTRY to the drought monitor, `syncSections()` runs
  *     synchronously before the view's payload has landed, so the week's date is
  *     legitimately null for an instant and the module is told "on, no date". It
@@ -3276,6 +3280,189 @@ const settleOpacity = async (page) => {
   await page.waitForTimeout(120);
   await settleFrames(page);
 };
+
+/* ── The fused week cutover ───────────────────────────────────────────────────
+   The choropleth is one week's answer and the polygons over it are that week's
+   evidence, and they used to arrive at different times: feature state is
+   synchronous, a 250 KB weekly TopoJSON is not. So the app no longer paints on
+   a scrub — it packages the paint and hands it to the overlay, which runs it in
+   the same task the incoming week first reports drawable (js/app.js § recolor,
+   js/usdm-overlay.js § THE FUSED CUTOVER). What has to be gated is that the two
+   halves really do move together, and that the old picture is HELD rather than
+   blanked while they wait.
+
+   ── TWO WITNESSES, ONE POINT, ONE TICK ────────────────────────────────────
+   The probe samples per requestAnimationFrame, and both witnesses are read at
+   THE SAME PIXEL — the kit's own centroid for the fixture county, the way the
+   county-click check derives its click point. That is the whole reason this
+   reads as a coherence check rather than as two unrelated timelines: at one
+   square of Kansas, which week do the counties say, and which week do the
+   polygons say?
+
+     countyWeek   `getFeatureState(handle.featureRef(id)).color`, compared
+                  against the two class hexes the fixture pins. Flips when the
+                  kit's coalesced feature-state flush runs — one animation frame
+                  after the app applies.
+     polygonWeek  the `date` property of the overlay feature under that same
+                  point. Flips when the worker's re-tiled data lands in the
+                  source cache.
+
+   ── AND THEY ARE NOT THE SAME CLOCK, WHICH IS MEASURED, NOT ASSUMED ───────
+   `queryRenderedFeatures` does not read the framebuffer. It reads the source
+   cache, so it answers with the new week as soon as the tile under the point
+   has been re-tiled — BEFORE the frame that draws it. `getFeatureState` reads
+   `sourceCache._state`, which the kit writes on its own rAF, one frame after
+   the app hands it the colours. So a correct app is observed as polygons-first
+   by a small number of ticks, and the direction that would mean a DEFECT is the
+   other one.
+
+   Measured on this suite (2026-08-27, three cutovers, one cold and two warm):
+   0 ticks of counties-ahead every time, 1–3 ticks of polygons-ahead, 0 ticks
+   blank. Sampled off the drawing buffer at the same time, exactly ONE rendered
+   frame per cutover is mismatched — new polygons over old counties, ~16 ms —
+   because kit v0.4.1 offers no synchronous feature-state flush and MapLibre has
+   already queued its render for that frame by the time our settle handler runs.
+   Before this feature that window was the whole fetch: 300–700 ms of the new
+   week's counties over NO polygons at all.
+
+   So the three bounds below are:
+     · counties ahead of the polygons        — 0, and structurally so: the tail
+       is released only after `isSourceLoaded`, by which point the point query
+       already answers with the new week. This is the assertion with teeth; the
+       pre-fix app fails it on every tick of the fetch.
+     · the overlay blank, or showing neither
+       week, at any tick                     — 0. This is the check for the
+       removal of clear-before-fetch: the old polygons must still be there.
+     · polygons ahead of the counties        — a SAMPLING RAIL, not a design
+       constant. It bounds the two clocks above plus however much of the source
+       was re-tiled before it reported loaded, and it is stated as a tick count
+       because the tick cadence itself is what varies on a loaded runner. */
+const FUSE = OVERLAY.fuse;
+
+/**
+ * Install the per-tick probe, drive one week change, and bring back what every
+ * frame in between saw.
+ *
+ * IN-PAGE FROM END TO END. A CDP round trip per animation frame would sample
+ * at a tenth of the rate it is trying to measure, and would be the slowest
+ * thing in the transition it claims to be observing.
+ *
+ * The two colours are passed rather than read off the fixture because the WARM
+ * pass is the same cutover travelled backwards: `toColor` names the week being
+ * scrubbed TO, whichever of the fixture's two that is.
+ *
+ * @returns {Promise<{ticks: object[], ahead: number, behind: number,
+ *          blank: number, holdMs: number|null, markerMs: number|null,
+ *          point: number[]|null, covered: string[]|null}>}
+ */
+async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
+  const ready = await page.evaluate(async ([f, sels, kitUrl]) => {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const county = await import(kitUrl);
+    const c = app.ngpContext();
+    const map = c.getMap();
+    const handle = c.getHandle();
+    if (!map || !handle) return { ok: false, why: 'no map' };
+
+    // The kit's arithmetic, at the moment of use — never a remembered pixel.
+    const feature = c.getCounties().index.get(f.countyId);
+    const center = feature ? county.countyCentroid(feature) : null;
+    if (!center) return { ok: false, why: `no polygon for ${f.countyId}` };
+    const p = map.project(center);
+    const pt = [Math.round(p.x), Math.round(p.y)];
+    const box = map.getCanvas();
+    if (pt[0] < 0 || pt[1] < 0 || pt[0] > box.clientWidth || pt[1] > box.clientHeight) {
+      return { ok: false, why: `${f.countyId} projects off screen at this camera` };
+    }
+    if (!map.getLayer(sels.fillLayerId)) return { ok: false, why: 'the overlay layer is not on the map' };
+    const covered = map.queryRenderedFeatures(pt, { layers: [sels.fillLayerId] })
+      .map((x) => x.properties && x.properties.date);
+    if (!covered.length) {
+      return { ok: false, why: `no drought polygon covers ${f.countyId} in this week` };
+    }
+
+    window.__fuse = { ticks: [], on: true, pt, covered };
+    const tick = () => {
+      if (!window.__fuse.on) return;
+      requestAnimationFrame(tick);
+      let color = null;
+      try {
+        const st = map.getFeatureState(handle.featureRef(f.countyId));
+        color = st && st.color != null ? st.color : null;
+      } catch (e) { color = 'unreadable'; }
+      let dates = [];
+      try {
+        if (map.getLayer(sels.fillLayerId)) {
+          dates = [...new Set(map.queryRenderedFeatures(pt, { layers: [sels.fillLayerId] })
+            .map((x) => x.properties && x.properties.date))].sort();
+        }
+      } catch (e) { dates = ['unreadable']; }
+      window.__fuse.ticks.push({
+        t: Math.round(performance.now()),
+        color,
+        dates: dates.join('|') || null,
+        marker: document.documentElement.dataset.ngpOverlay ?? null,
+        seq: Number(document.documentElement.dataset.ngpViewSeq || 0),
+      });
+    };
+    requestAnimationFrame(tick);
+    return { ok: true, pt, covered };
+  }, [FUSE, OVERLAY_SELS, KIT_COUNTY_URL]);
+
+  if (!ready.ok) return { failed: ready.why };
+
+  // Driven exactly as 8a drives the scrubber — value set, `input` fired — so
+  // this is the path a dragged thumb takes and not a private entry point.
+  const t0 = await page.evaluate(([sel, week]) => {
+    const r = document.querySelector(sel);
+    if (!r) return null;
+    r.value = String(week);
+    r.dispatchEvent(new Event('input', { bubbles: true }));
+    return performance.now();
+  }, [WEEK.rangeSel, toWeek]);
+
+  const landed = await page.waitForFunction(
+    (want) => document.documentElement.dataset.ngpOverlay === want,
+    toIso, { timeout: CONFIG.switchMs }).then(() => true).catch(() => false);
+  await settleFrames(page);
+  const ticks = await page.evaluate(() => {
+    window.__fuse.on = false;
+    return window.__fuse.ticks;
+  });
+
+  const seen = ticks.filter((x) => x.t >= t0 - 40);
+  const isNew = (x) => x.color === toColor;
+  const hasNew = (x) => (x.dates || '').includes(toIso);
+  const hasOld = (x) => (x.dates || '').includes(fromIso);
+  const flip = seen.find(isNew);
+  const mark = seen.find((x) => x.marker === toIso);
+  return {
+    landed,
+    point: ready.pt,
+    covered: ready.covered,
+    ticks: seen,
+    // The counties cut over while the polygons under that same point are still
+    // not this week's. The defect.
+    ahead: seen.filter((x) => isNew(x) && !hasNew(x)).length,
+    // The polygons are this week's and the counties under them are not yet.
+    behind: seen.filter((x) => !isNew(x) && hasNew(x)).length,
+    // Nothing at all, or some third week — the clear-before-fetch check.
+    blank: seen.filter((x) => !x.dates || !(hasNew(x) || hasOld(x))).length,
+    seqMoved: seen.length ? seen[seen.length - 1].seq !== seen[0].seq : false,
+    holdMs: flip ? Math.round(flip.t - t0) : null,
+    markerMs: mark ? Math.round(mark.t - t0) : null,
+    trace: (() => {
+      const rows = [];
+      for (const x of seen) {
+        const k = `${isNew(x) ? 'NEW' : x.color === fromColor ? 'OLD' : x.color}`
+          + `/${x.dates === toIso ? 'NEW' : x.dates === fromIso ? 'OLD' : x.dates}`;
+        if (!rows.length || rows[rows.length - 1].k !== k) rows.push({ k, n: 1, t: Math.round(x.t - t0) });
+        else rows[rows.length - 1].n++;
+      }
+      return rows.map((r) => `+${r.t}ms ${r.k}×${r.n}`).join(' → ');
+    })(),
+  };
+}
 
 /** …and the other direction: the attribute gone entirely, which is the
     grammar's "not drawn". */
@@ -3670,6 +3857,12 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
        · LEAVING SOMETHING BEHIND. The layer stays resident when it is turned
          off — hidden, not destroyed, so the trip back is instant — which is
          precisely the arrangement in which "off" can still paint.
+       · CHANGING HALF THE MAP. The choropleth is one week's answer and the
+         polygons over it are that week's evidence, and a scrub used to move
+         them at different times — feature state is synchronous, a 250 KB
+         weekly file is not. The last block below watches every animation frame
+         of a cutover, cold and warm, at ONE point on the map where both halves
+         can be asked the same question.
 
      EVERY WEEK DRIVEN HERE IS IN THE 2012 FIXTURE NEIGHBOURHOOD, never "the
      latest": the archive gains a Tuesday every Thursday, so a gate that drove
@@ -4076,6 +4269,91 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         url: junkSession.page.url() }));
       junkSession.clean('usdm overlay · unusable stored values');
       await junkSession.ctx.close();
+
+      /* ── The cutover itself, frame by frame. ─────────────────────────────
+         ITS OWN SESSION, for two reasons. The cold half has to be cold — the
+         module keeps eight decoded weeks and the thrash above has already put
+         six of them in the cache, so only a fresh page can measure what a
+         reader's first scrub into a week actually costs. And this subsection
+         promises to leave the app where it found it, which is easiest to keep
+         when the measurement never touches it.
+
+         Cold then warm, in that order, off one boot: the first scrub fetches
+         2012-07-31 and the second scrubs back to 2012-07-24, which the boot
+         itself decoded. Both go through exactly the same hold. */
+      const fuseLink = `?view=${iface.slug}&year=2012&week=${FUSE.fromWeek}`
+        + '&polygons=on';
+      const fuseSession = await open({ query: fuseLink });
+      const fuseBooted = await settleOverlay(fuseSession.page);
+      if (!fuseBooted) {
+        skip('the week cutover is fused: the counties and the polygons change '
+          + 'together', `${fuseLink} never settled on a week`);
+      } else {
+        /* The WARM pass is the same cutover travelled backwards, so both the
+           weeks and the two class hexes swap with it: `toColor` always names
+           the week being scrubbed TO. */
+        const passes = [
+          ['COLD', {
+            toWeek: FUSE.toWeek, toIso: FUSE.toIso, fromIso: FUSE.fromIso,
+            fromColor: FUSE.fromColor, toColor: FUSE.toColor,
+          }],
+          ['WARM', {
+            toWeek: FUSE.fromWeek, toIso: FUSE.fromIso, fromIso: FUSE.toIso,
+            fromColor: FUSE.toColor, toColor: FUSE.fromColor,
+          }],
+        ];
+        for (const [kind, args] of passes) {
+          const probe = await fuseProbe(fuseSession.page, args);
+
+          if (probe.failed) {
+            skip(`${kind}: the week cutover is fused`, probe.failed);
+            continue;
+          }
+          check(`${kind} scrub to ${args.toIso}: the counties NEVER cut over `
+            + 'ahead of the polygons — 0 ticks of this week\'s choropleth over '
+            + 'a week the overlay has not drawn yet, at one point on the map '
+            + `(${FUSE.countyName}, where both weeks have a polygon and the `
+            + 'county changes class). This is the whole feature: before it, the '
+            + 'feature state was synchronous and every tick of the fetch showed '
+            + 'exactly that pairing',
+          probe.landed && probe.ahead === 0,
+          `landed=${probe.landed}, ahead=${probe.ahead} tick(s) of `
+            + `${probe.ticks.length} · ${probe.trace}`);
+
+          check(`${kind} scrub to ${args.toIso}: the OLD polygons are held, not `
+            + 'cleared — 0 ticks with nothing under the point and 0 showing '
+            + 'some third week. Emptying the source before the fetch was the '
+            + 'right answer while the counties repainted instantly and is the '
+            + 'wrong one now: the picture that waits is last week\'s counties '
+            + 'under last week\'s polygons, which is true of a week the reader '
+            + 'was just looking at',
+          probe.blank === 0,
+          `blank=${probe.blank} tick(s) of ${probe.ticks.length} · ${probe.trace}`);
+
+          check(`${kind} scrub to ${args.toIso}: the polygons lead the counties `
+            + `by at most ${FUSE.leadTicks} sampled tick(s) — the two witnesses `
+            + 'do not share a clock, and this bounds the gap. '
+            + 'queryRenderedFeatures answers from the SOURCE CACHE the moment '
+            + 'the point\'s tile is re-tiled, while the kit coalesces feature '
+            + 'state to its own animation frame, so a correct app is observed '
+            + 'polygons-first; what this catches is a tail released on a timer '
+            + 'or on idle rather than on the drawable event',
+          probe.behind <= FUSE.leadTicks,
+          `behind=${probe.behind} tick(s) of ${probe.ticks.length}, `
+            + `bound ${FUSE.leadTicks} · ${probe.trace}`);
+
+          check(`${kind} scrub to ${args.toIso}: it lands — the marker is the `
+            + 'new week, the counties are the new week, and data-ngp-view-seq '
+            + 'never moved, because a week is a repaint and not a view '
+            + 'transition however long the app held it',
+          probe.markerMs !== null && probe.holdMs !== null && !probe.seqMoved,
+          `counties at +${probe.holdMs} ms, marker at +${probe.markerMs} ms, `
+            + `seq moved=${probe.seqMoved}`);
+          fuseSession.clean(`usdm fused cutover · ${kind.toLowerCase()}`);
+        }
+      }
+      await fuseSession.shot('19g-usdm-fused-cutover');
+      await fuseSession.ctx.close();
     }
   }
 }
