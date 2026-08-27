@@ -519,9 +519,20 @@ export const INTERFACES = Object.freeze({
             the two weekly TopoJSONs (5 features each, D0–D4, 833 and 942 arcs,
             738 KB and 785 KB raw / 249 KB and 264 KB over the wire) both cover
             that centroid with exactly one polygon — which is what lets ONE
-            point on the map answer for both halves of the picture;
-          · `leadTicks` is a sampling rail, not a design constant, and § 8e's
-            check says exactly what it bounds. */
+            point on the map answer for both halves of the picture.
+
+        THERE IS NO TICK BUDGET IN HERE, and there used to be. `leadTicks: 5`
+        bounded how many sampled frames the polygons were allowed to lead the
+        counties by, and it was retired 2026-08-27 after failing CI at
+        `behind=7 of 5` on a ~33 fps runner: the two witnesses answer on
+        different clocks (the source cache the moment a tile is re-tiled, the
+        kit's coalesced feature-state flush on its own animation frame), and
+        the REAL-TIME gap between them legitimately stretches on a slow
+        machine while the tick cadence that measures it slows down with it. A
+        frame count over two clocks is a machine-speed measurement wearing a
+        correctness assertion's clothes. § 8e asserts an ORDERING on one clock
+        instead — the settle marker against the choropleth — and still prints
+        the lead count as evidence. */
     overlay: Object.freeze({
       sectionSel: '#usdm-polygons-seg',
       offSel: '#btn-polygons-off',
@@ -550,7 +561,6 @@ export const INTERFACES = Object.freeze({
         countyName: 'Rawlins County, Kansas',
         fromColor: '#e60000',
         toColor: '#730000',
-        leadTicks: 5,
       }),
     }),
 
