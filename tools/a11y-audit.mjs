@@ -52,12 +52,16 @@
                         scrim, which exist only after a tap
          card           a county selected, the detail card open over the map
          usdm-view      the second interface: the drought monitor, with its own
-                        drawer sections (a week scrubber and a three-way dataset
-                        seg), a categorical swatches legend where the other view
-                        has a colour ramp, and a card whose picture is a
-                        1,389-week heatmap instead of a span chart. None of that
-                        markup exists on the default view, so a run that never
-                        switched would audit half the app
+                        drawer sections (a week scrubber, a three-way dataset seg
+                        and the weekly-polygon toggle), a categorical swatches
+                        legend where the other view has a colour ramp, and a card
+                        whose picture is a 1,389-week heatmap instead of a span
+                        chart. Audited with the POLYGON OVERLAY ON, which is the
+                        app's only state where a translucent geometry is drawn
+                        over the choropleth rather than beside it, and where a
+                        third seg group shares the drawer with a range input.
+                        None of that markup exists on the default view, so a run
+                        that never switched would audit half the app
          elig-view      the third interface: LFP eligibility, whose drawer adds
                         a three-way dataset seg, a native <select> of fifteen
                         pasture types plus a sentinel, a two-way variable seg and
@@ -296,7 +300,18 @@ const STATES = [
        Waited on by the app's own view marker rather than by a timeout: the
        switch fetches a payload and the crosswalk, re-joins and recolors, and an
        axe pass taken mid-transition would audit a page with the new legend over
-       the old paint. */
+       the old paint.
+
+       AND WITH THE WEEKLY POLYGONS ON, which is a different page for axe rather
+       than a prettier one. The overlay adds a third seg group to a drawer that
+       already carries a dataset seg and a range input (so the group's own
+       labelling, and the pressed/unpressed contrast of one more pair of
+       buttons, are only auditable here), it puts a translucent second geometry
+       over the canvas — the one surface in the app where a colour is drawn over
+       another colour rather than beside it — and it adds a sentence to the live
+       region and a clause to the legend key. None of that markup or copy exists
+       in any other state. It is toggled on AFTER the card, so this state is the
+       compound a reader actually reaches, and toggled back off in exit(). */
     async enter(page) {
       await openDrawer(page);
       await page.locator(INTERFACES.usdm.switchSel).click({ timeout: 5000 });
@@ -310,17 +325,41 @@ const STATES = [
       // The card's picture on this view is the full-record weekly heatmap; its
       // <figcaption> and table twin are what axe has to see.
       await page.waitForSelector('#card-content figure svg', { timeout: 10000 });
+      /* The overlay's own settle marker, and only in its ISO form: `loading` is
+         a real state that lasts as long as a 0.7 MB weekly file takes on a cold
+         CDN, and an axe pass taken there would audit an empty source under a
+         legend that says the polygons are drawn. The predicate is written out
+         in full here for the same reason every other one is — it runs in-page,
+         so it cannot close over a pattern from tools/config.mjs (see MARKERS
+         § overlay, which is where the grammar is documented). */
+      await openDrawer(page);
+      await page.locator(INTERFACES.usdm.overlay.onSel).click({ timeout: 5000 });
+      await page.waitForFunction(() => {
+        const v = document.documentElement.dataset.ngpOverlay;
+        return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+      }, null, { timeout: SWITCH_MS });
+      await closeDrawerIfOverlay(page);
       await settleTransitions(page);
     },
     /* Escape for the card (not #card-close — at 375px that button is not
-       hit-testable, and tools/verify.mjs owns that finding), then back to the
-       default view so the `table` state below is the grazing-period table it
-       has always been. */
+       hit-testable, and tools/verify.mjs owns that finding), the overlay back
+       off, then back to the default view so the `table` state below is the
+       grazing-period table it has always been.
+
+       THE OVERLAY IS PUT BACK EXPLICITLY, not left to the view switch: it is a
+       remembered preference of this view rather than a transient, so leaving it
+       on would carry `polygons=on` in localStorage and in the URL past the state
+       that asked for it — and the states in this list share one page. */
     async exit(page) {
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.getElementById('county-card').hidden,
         null, { timeout: 5000 }).catch(() => {});
       await openDrawer(page);
+      await page.locator(INTERFACES.usdm.overlay.offSel).click({ timeout: 5000 })
+        .catch(() => {});
+      await page.waitForFunction(
+        () => document.documentElement.dataset.ngpOverlay === undefined,
+        null, { timeout: 10000 }).catch(() => {});
       await page.locator(INTERFACES.ngp.switchSel).click({ timeout: 5000 });
       await page.waitForFunction(
         (slug) => document.documentElement.dataset.ngpView === slug,

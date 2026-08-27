@@ -44,6 +44,14 @@ import { resolveToken } from 'https://sustainable-fsa.com/style/v0.4.1/map/map.j
 import { activeNgpDataset, typeSlug } from './data.js';
 import { NO_DATA, VARIABLES, ramps } from './color.js';
 import { interfaceOf, viewSelection } from './interfaces/registry.js';
+/* The one descriptor this file names directly, and the one thing it asks it:
+   which Tuesday `sel.week` is. The overlay module is keyed by ISO date and the
+   week index alone cannot be resolved to one without that family's own decoder,
+   so the alternative is re-deriving a date this app already computes — and two
+   derivations of one date is how a poster ends up titled with one week and
+   drawn with another. Everything else here still goes through the registry. */
+import { weekIso } from './interfaces/usdm.js';
+import * as usdmOverlay from './usdm-overlay.js';
 import {
   MONTH_LABELS, MONTH_STARTS, WHEEL_DAYS, monthMidAngle, wheelAngle, wheelPoint,
 } from './legend-wheel.js';
@@ -393,6 +401,17 @@ export async function runExport(ctx = appCtx) {
   const colors = colorsFor(ctx, iface, sel);
   const filename = exportFilename(iface, sel);
 
+  /* The USDM's own weekly polygons, when the reader has them on. Two things
+     about the order. The week is FROZEN here, off the same `sel` the colours
+     and the filename came from, so a scrub that lands while the capture is
+     running cannot put one Tuesday's polygons on a poster titled with another.
+     And the fetch is awaited BEFORE captureCompositeMap, so a failure reaches
+     the catch that tells the reader the export failed rather than being caught
+     inside build() and dropped: a poster that silently lacks the overlay it
+     promised is a picture that lies, and it outlives the tab it came from. */
+  const overlayOn = sel.polygons === 'on';
+  const overlayFc = overlayOn ? await usdmOverlay.ensureWeek(weekIso(sel)) : null;
+
   // Load every face the legend painters draw with BEFORE composeBranded: a
   // canvas does not wait for a font the way the DOM does, and a missed load is
   // silent — the glyphs are simply the system sans, forever.
@@ -442,6 +461,14 @@ export async function runExport(ctx = appCtx) {
       // before the capture waits for idle.
       const offHandle = addCountyLayers(offscreen, counties);
       offHandle.recolor(colors);
+      // Same anchor as on the live map — under this stack's county line layer,
+      // so the boundaries stay drawn over the overlay. The features are already
+      // in hand, so this adds no wait of its own before the rAF pair below.
+      // Nothing here writes `data-ngp-overlay`: that marker says what the READER
+      // is looking at, and nobody ever looks at this map.
+      if (overlayOn) {
+        usdmOverlay.addOverlayLayers(offscreen, overlayFc, offHandle.layers.line);
+      }
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
   });

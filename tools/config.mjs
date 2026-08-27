@@ -142,6 +142,34 @@ export const MARKERS = Object.freeze({
       this, and prefer waiting for a NAMED key (settleBoundary) over waiting for
       "something changed". */
   boundary: 'ngpBoundary',
+  /** `data-ngp-overlay` — the USDM weekly-polygon overlay's settle signal, and
+      the ONLY one it has. It is not the pill (shown by whoever starts a
+      transition, cleared by whoever finishes one) and it is deliberately not
+      `viewSeq`: a week is not a view transition, and no overlay code path
+      touches that marker at all.
+
+      THE GRAMMAR, which is the whole of what a harness may wait on:
+
+        (absent)      the overlay is not drawn — toggled off, or the active view
+                      is not the drought monitor
+        `loading`     on; the target week's fetch or decode is in flight, and the
+                      source has ALREADY been emptied (last week's D4 blob over
+                      this week's choropleth is a map that lies)
+        `YYYY-MM-DD`  on; THAT week is attached and flushed to GL. Stamped only
+                      after the map fires `sourcedata` with `isSourceLoaded` for
+                      the overlay's source and a double rAF has passed — the same
+                      after-the-paint reasoning as viewSeq above
+        `missing`     on; the week the app landed on is not a date the sidecar
+                      publishes. Weekly publishing skew, which self-heals, so it
+                      WARNS rather than gating
+        `error`       on; the promised weekly file, or the sidecar itself, could
+                      not be fetched or decoded
+
+      A wait for "the overlay is showing week W" is therefore a wait for the ISO
+      form and nothing else — `loading` is a real state that may last a second on
+      a cold CDN, and treating its presence as arrival would read the empty
+      source. */
+  overlay: 'ngpOverlay',
 });
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -201,6 +229,12 @@ export const MARKERS = Object.freeze({
  *   paintOracle async (page) → how many counties should carry a colour.
  *   week        (a view with a time control inside the year) its selectors and
  *               the format its <output> owes a reader.
+ *   overlay     (the drought monitor only) the weekly-polygon overlay: its
+ *               drawer section and two seg buttons, the param and preference key
+ *               the generic choice machinery gives it, the APP-OWNED source and
+ *               layer ids, the shape of its settle marker, the frozen week its
+ *               deep link must land on, and the two copy clauses the live region
+ *               and the legend key owe a reader while it is on.
  *   unmatchedOracle async (page) → how many source areas this view's join
  *               cannot reach, for the count the live region must say out loud.
  *   lazyAssets  committed repo assets this view loads WITH the view rather than
@@ -416,6 +450,57 @@ export const INTERFACES = Object.freeze({
           to carry that number or an absolute week index. */
       outWeek: /week\s+(\d+)\s+of\s+(\d+)/i,
       param: 'week',
+    }),
+
+    /** THE WEEKLY POLYGONS, drawn over the choropleth — the only control in the
+        app that adds a second body of geometry rather than recolouring the
+        first. Off by default, so `?polygons` is elided at rest, and remembered
+        per view by the generic choice machinery (hence `lsKey`, which is the
+        LS.choice template filled in, not a key of its own invention).
+        `sectionSel` is the drawer section the switcher must hide with the rest
+        of the drought monitor's controls when another view is on screen.
+
+        THE IDS HERE ARE THE APP'S OWN, AND THAT IS WHY THEY MAY BE LITERALS.
+        This harness holds no KIT layer id anywhere, deliberately (see the CONFIG
+        block in tools/verify.mjs): from kit v0.4.0 the tiled path keeps more
+        than one archive resident, the county layer ids carry a stack-slot suffix
+        (`sfsa-county-fill#0`), and they MOVE when the front does — while a
+        retired stack stays transparent rather than hidden and therefore still
+        answers `queryRenderedFeatures`, so a stale literal would not fail
+        loudly, it would quietly measure the archive the reader stopped looking
+        at. `ngp-usdm-overlay` and `ngp-usdm-overlay-fill` are not that kind of
+        id: js/usdm-overlay.js creates exactly one of each, they never move
+        between stacks, and they have the same standing as a DOM id in
+        index.html — frozen contract with the app, changed here in the commit
+        that changes it there. What is still asked for at the moment of use is
+        the ANCHOR the overlay sits under, which IS the kit's; that is why the
+        z-order assertion reads `handle.layers` in-page and takes nothing but
+        the app's own id from this file.
+
+        `deepLinkIso` is the FROZEN fixture, and it has to be frozen: the archive
+        gains a date every Thursday, so a gate that drove "the latest week" would
+        be asserting against a moving target. Week 30 of 2012 is the Tuesday
+        2012-07-24 on the sidecar's own gapless weekly grid — 2012 holds 52
+        Tuesdays, Jan 3 through Dec 25 — which is the same fixture `deepLink`
+        above already lands on.
+
+        `liveClause` and `legendClause` are COPY CONTRACTS, in the pattern of
+        `yearDomain.clampSays`: what a reader who cannot see the map must be told
+        while a second geometry is drawn over the first. The wording is the
+        app's; these patterns only insist that it is said. */
+    overlay: Object.freeze({
+      sectionSel: '#usdm-polygons-seg',
+      offSel: '#btn-polygons-off',
+      onSel: '#btn-polygons-on',
+      param: 'polygons',
+      lsKey: 'sfsa-ngp-polygons-usdm',
+      sourceId: 'ngp-usdm-overlay',
+      fillLayerId: 'ngp-usdm-overlay-fill',
+      markerIso: /^\d{4}-\d{2}-\d{2}$/,
+      deepLinkIso: '2012-07-24',
+      indexUrl: 'https://data.sustainable-fsa.com/data-tiles/usdm/usdm-index.json',
+      liveClause: /USDM drought polygons are drawn over the counties/,
+      legendClause: /USDM's own weekly map, drawn as published/,
     }),
 
     exportName: /^usdm_(fsa-lfp|reported|census)_\d{4}-\d{2}-\d{2}\.png$/,

@@ -2338,7 +2338,10 @@ section('▸ Compact 375×720 (touch)');
  *                      count is what the data (through the crosswalk, for a
  *                      FIPS-keyed view) says it should be
  *   5  legend          the expected body is the visible one, with a text key
- *   6  extraChecks     the view's own controls, each with its own clean()
+ *   6  extraChecks     the view's own controls, each with its own clean(). It
+ *                      is handed the whole session, not just the page: a control
+ *                      whose claim is about the POSTER needs the download flag
+ *                      and the download list, and those belong to the session
  *   7  card            title + populated rows for the view's county
  *   8  table           rows === the view's own oracle
  *   9  export          filename scheme + PNG magic bytes
@@ -2446,9 +2449,13 @@ async function verifyInterfaceSection(iface, {
   }
   clean(`view ${iface.slug} switch`);
 
-  /* 6 · The view's own controls. */
+  /* 6 · The view's own controls. The whole session goes in, not just the page:
+     a control whose claim is about the POSTER (the drought monitor's polygon
+     overlay is one — it has to appear in the export when it is on) needs the
+     download flag and the download list, and those are the session's. Everything
+     else takes what it always took. */
   if (typeof extraChecks === 'function') {
-    await extraChecks({ page, check, skip, clean, shot, iface });
+    await extraChecks({ page, check, skip, clean, shot, iface, session });
   }
 
   /* 7 · Card.
@@ -2949,7 +2956,11 @@ section('▸ View switcher + NGP datasets — FSA Official ↔ NAP-190 Derived')
        quietly dropped (Connecticut, on the NDMC-reported set);
      · a year domain that is re-authored on the way in and handed back on the
        way out, with a shared year outside the other view's range clamped and
-       ANNOUNCED rather than silently moved.
+       ANNOUNCED rather than silently moved;
+     · a SECOND BODY OF GEOMETRY over the first — the USDM's own weekly polygons,
+       togglable and off by default — which has to follow the week, survive a
+       change of county authority, stay under the county lines, reach the poster,
+       and leave nothing behind when it is turned off.
    ══════════════════════════════════════════════════════════════════════════ */
 
 /** The week control's selectors, flattened for the in-page probe: Playwright
@@ -3055,6 +3066,178 @@ const settleWeek = async (page) => {
   await settleFrames(page);
 };
 
+/* ── The weekly-polygon overlay ───────────────────────────────────────────── */
+
+/** The overlay's selectors and its APP-OWNED ids, flattened for the in-page
+    probe — Playwright serialises evaluate() arguments as data, so the entry's
+    RegExps (`markerIso`, the two copy clauses) do not survive the trip and are
+    applied here in Node, against the strings the probe brings back.
+
+    THE ONLY LAYER ID THIS FILE EVER NAMES. Everything else asks
+    `handle.layers` at the moment of use, because the kit's tiled ids are
+    slot-suffixed and MOVE when the front stack does (see the CONFIG block at
+    the top). `ngp-usdm-overlay-fill` is the app's own — one layer, one stack of
+    one, the same standing as a DOM id — and the reasoning is written out in
+    tools/config.mjs beside the literal. */
+const OVERLAY = CONFIG.interfaces.usdm.overlay;
+const OVERLAY_SELS = {
+  sectionSel: OVERLAY.sectionSel, offSel: OVERLAY.offSel, onSel: OVERLAY.onSel,
+  param: OVERLAY.param, lsKey: OVERLAY.lsKey,
+  sourceId: OVERLAY.sourceId, fillLayerId: OVERLAY.fillLayerId,
+  outSel: WEEK.outSel, weekParam: WEEK.param,
+};
+
+/**
+ * Everything the overlay, its toggle, its URL param, its stored preference and
+ * its place in the layer stack say — in one round trip.
+ *
+ * A MISSING LAYER IS AN ANSWER, not a stack trace. The overlay's layer does not
+ * exist until the toggle is first turned on (and then it stays for the session,
+ * hidden rather than removed), so "no layer, nothing painted" is a real and
+ * asserted state of the app. And it is an answer this probe must not ASK
+ * MapLibre about: `queryRenderedFeatures` on a layer the style does not hold
+ * does not throw — it reports through the map's error event, which lands in
+ * the console this harness collects (the sourceLayer lesson from the tiled
+ * cutover, § What changed). So the query is gated on `getLayer()` and the
+ * try/catch is only a belt for engines that do throw.
+ *
+ * `order` is the z-order question, and it is the one thing here that must be
+ * read AT THE MOMENT OF USE: the anchor the overlay sits under is the county
+ * LINE layer, whose id belongs to the kit's front stack and moves with it. So
+ * the indices are resolved in-page from `handle.layers` and `map.getStyle()`
+ * together, never from anything this file remembered.
+ */
+const overlayProbe = (page) => page.evaluate(async (s) => {
+  const url = new URL(location.href);
+  const q = (sel) => document.querySelector(sel);
+  const pressed = (sel) => (q(sel) ? q(sel).getAttribute('aria-pressed') : null);
+  const out = q(s.outSel);
+  const sec = q(s.sectionSel);
+  const base = {
+    hasSection: !!sec,
+    sectionHidden: sec ? sec.hidden : null,
+    hasOn: !!q(s.onSel),
+    hasOff: !!q(s.offSel),
+    on: pressed(s.onSel),
+    off: pressed(s.offSel),
+    /** `dataset.ngpOverlay` is UNDEFINED when the attribute is absent, which is
+        the grammar's "not drawn" (tools/config.mjs § MARKERS). Normalised to
+        null so an assertion can say `=== null` and mean it. */
+    marker: document.documentElement.dataset.ngpOverlay ?? null,
+    param: url.searchParams.get(s.param),
+    week: url.searchParams.get(s.weekParam),
+    view: url.searchParams.get('view'),
+    datasetParam: url.searchParams.get('dataset'),
+    out: out ? (out.textContent || '').trim() : null,
+    seq: Number(document.documentElement.dataset.ngpViewSeq || 0),
+    boundary: document.documentElement.dataset.ngpBoundary || null,
+    stored: (() => {
+      try { return localStorage.getItem(s.lsKey); } catch (e) { return 'unavailable'; }
+    })(),
+    hasSource: false,
+    hasLayer: false,
+    painted: 0,
+    order: null,
+  };
+  try {
+    const app = await import(new URL('js/app.js', document.baseURI).href);
+    const c = app.ngpContext();
+    const map = c.getMap();
+    if (!map) return base;
+    base.hasSource = !!map.getSource(s.sourceId);
+    base.hasLayer = !!map.getLayer(s.fillLayerId);
+    if (base.hasLayer) {
+      try {
+        base.painted = map.queryRenderedFeatures({ layers: [s.fillLayerId] }).length;
+      } catch (e) { base.painted = 0; }
+    }
+    const handle = typeof c.getHandle === 'function' ? c.getHandle() : null;
+    const L = handle && handle.layers ? handle.layers : null;
+    const ids = ((map.getStyle() || {}).layers || []).map((l) => l.id);
+    if (L) {
+      base.order = {
+        fill: ids.indexOf(L.fill),
+        overlay: ids.indexOf(s.fillLayerId),
+        line: ids.indexOf(L.line),
+        fillId: L.fill,
+        lineId: L.line,
+      };
+    }
+  } catch (e) { base.probeError = String(e).split('\n')[0]; }
+  return base;
+}, OVERLAY_SELS);
+
+/** The <output>'s printed Tuesday, as the ISO the marker has to carry.
+    "Jul 24, 2012 · week 30 of 52" → "2012-07-24". Built from the printed month
+    NAME rather than by parsing the string as a Date: `new Date('Jul 24, 2012')`
+    is local-midnight and a runner in a positive UTC offset turns it into the
+    23rd, which would fail a correct app in one timezone and pass it in another. */
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function outIso(out) {
+  const m = /([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4})/.exec(out || '');
+  if (!m) return null;
+  const mo = MONTH_NAMES.indexOf(m[1]);
+  if (mo < 0) return null;
+  return `${m[3]}-${String(mo + 1).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+}
+
+/**
+ * Wait for the overlay to be SHOWING a week — the ISO form of the marker and
+ * nothing else.
+ *
+ * THE ATTRIBUTE'S PRESENCE IS NOT ARRIVAL, and two of the four non-ISO values
+ * are states a correct app passes through on the way in:
+ *
+ *   · `loading` — the source is emptied BEFORE the fetch starts, deliberately
+ *     (last week's D4 blob over this week's choropleth is a map that lies), so
+ *     the marker is up while nothing is drawn;
+ *   · `missing` — on ENTRY to the drought monitor, `syncSections()` runs
+ *     synchronously before the view's payload has landed, so the week's date is
+ *     legitimately null for an instant and the module is told "on, no date". It
+ *     is upgraded to the real ISO by the recolor that follows. A wait that
+ *     treated an intermediate `missing` as a failure would be failing a correct
+ *     app for being observed too early — the same mistake open() made about
+ *     ngpReady and a deep-linked view.
+ *
+ * So: wait for the ISO, let the transients happen, and let the timeout be the
+ * only judgement. Returns false rather than throwing; the caller turns that into
+ * a named failure with its own evidence.
+ */
+const settleOverlay = async (page, ms = CONFIG.switchMs) => {
+  const landed = await page.waitForFunction(() => {
+    const v = document.documentElement.dataset.ngpOverlay;
+    return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  }, null, { timeout: ms }).then(() => true).catch(() => false);
+  await settleFrames(page);
+  return landed;
+};
+
+/** …and the other direction: the attribute gone entirely, which is the
+    grammar's "not drawn". */
+const settleOverlayGone = async (page, ms = 10000) => {
+  const gone = await page.waitForFunction(
+    () => document.documentElement.dataset.ngpOverlay === undefined,
+    null, { timeout: ms }).then(() => true).catch(() => false);
+  await settleFrames(page);
+  return gone;
+};
+
+/** One poster, downloaded and read — the section template's step 9, minus its
+    assertions, so a check that needs TWO posters to compare can have them.
+    Null if no download appeared. */
+async function poster(page, ms = 120000) {
+  const pending = page.waitForEvent('download', { timeout: ms }).catch(() => null);
+  await page.locator('#btn-export').click();
+  const dl = await pending;
+  if (!dl) return null;
+  const p = await dl.path();
+  return {
+    name: dl.suggestedFilename(),
+    bytes: p ? await readFile(p) : Buffer.alloc(0),
+  };
+}
+
 /**
  * The drought monitor's own controls — step 6 of the section template.
  *
@@ -3063,7 +3246,7 @@ const settleWeek = async (page) => {
  * tools/config.mjs is a data file that must not assert (its own header says so).
  * The selectors, formats, fixtures and oracles it reads are all in the entry.
  */
-async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
+async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session }) {
   const DS = iface.datasets;
 
   /* ── 8a. The week scrubber ──────────────────────────────────────────────── */
@@ -3381,6 +3564,341 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface }) {
     JSON.stringify({ before: beforeN && beforeN.n, again: againN && againN.n,
       param: again.weekParam }));
     clean('week across a view switch');
+  }
+
+  /* ── 8e. The USDM's own weekly polygons, over the counties ───────────────
+     The first thing this app draws that is not a county, and the first control
+     that adds geometry rather than recolouring it. The choropleth is a
+     REDUCTION — one class per county, taken from the polygons — and the overlay
+     is the thing it was reduced from, so putting them on one map is the only
+     way a reader can see what the reduction cost. It is published unclipped at
+     about 1:2,000,000, which is why its edges run past the coastline; that is
+     the map, and help.md says so rather than the app pretending the counties
+     are its frame.
+
+     WHAT NEEDS GATING HERE IS NOT "IT DREW". A translucent second geometry is
+     the easiest thing in this app to get subtly, invisibly wrong, and every
+     assertion below is one of those ways:
+
+       · DRAWING THE WRONG WEEK. The overlay follows a scrubber that can be
+         moved faster than a 0.7 MB file can arrive, and a fetch that lands late
+         over a week the reader has already left is a map that lies about the
+         date printed above it. Hence the marker (which stamps AFTER the source
+         is loaded and two frames have passed, never when the fetch was asked
+         for), the scrub, and the four-in-a-row thrash.
+       · DRAWING IT IN THE WRONG PLACE IN THE STACK. Under the county fill it is
+         invisible; over the county lines it swallows the boundaries, the hover
+         halo and the selection ring — and the ids it must sit between belong to
+         the KIT, are slot-suffixed, and MOVE when the front stack does. So the
+         z-order is asserted twice: once as drawn, and once more across a change
+         of county authority, which is exactly when a held id goes stale.
+       · BORROWING A MARKER THAT MEANS SOMETHING ELSE. `data-ngp-view-seq`
+         sequences fetch-involving VIEW transitions; a week is not one, and an
+         overlay that bumped it would make every seq-based wait in this file
+         return early on a scrub.
+       · PROMISING ON SCREEN AND NOT IN THE POSTER. A printed map that quietly
+         dropped the overlay is a lie the reader cannot check.
+       · LEAVING SOMETHING BEHIND. The layer stays resident when it is turned
+         off — hidden, not destroyed, so the trip back is instant — which is
+         precisely the arrangement in which "off" can still paint.
+
+     EVERY WEEK DRIVEN HERE IS IN THE 2012 FIXTURE NEIGHBOURHOOD, never "the
+     latest": the archive gains a Tuesday every Thursday, so a gate that drove
+     the newest week would be asserting against a moving target. Week 30 of 2012
+     is 2012-07-24 on the sidecar's own gapless grid, which is the same fixture
+     the deep-link section already lands on (tools/config.mjs § overlay).
+
+     AND IT PUTS THE APP BACK. The overlay ends OFF, its param elided, its
+     marker gone and its dataset returned to the default, so the section
+     template's remaining steps — card, table, poster, state round trip — see
+     the state 8d left them, whatever order these subsections are ever read in. */
+  section('▸ Drought monitor — the USDM\'s own weekly polygons, over the map');
+  {
+    const O = iface.overlay;
+    const dflt = DEFAULT_INTERFACE;
+    const p0 = await overlayProbe(page);
+
+    check('the drought monitor ships a weekly-polygon toggle and it is OFF: a '
+      + 'second body of geometry over the choropleth is something a visitor asks '
+      + 'for, so at rest there is no ?polygons in the URL, no settle marker, and '
+      + 'nothing of it painted',
+    p0.hasSection && p0.off === 'true' && p0.on === 'false'
+      && p0.param === null && p0.marker === null && p0.painted === 0,
+    JSON.stringify({ section: p0.hasSection, off: p0.off, on: p0.on,
+      param: p0.param, marker: p0.marker, painted: p0.painted,
+      layer: p0.hasLayer, url: page.url() }));
+
+    if (!p0.hasOn) {
+      skip('the weekly polygons draw, follow the week, survive an authority '
+        + 'change and reach the poster',
+      `${O.onSel} is not in the page — the drought monitor's polygon toggle is `
+        + 'missing');
+    } else {
+      /* ── On. ─────────────────────────────────────────────────────────────── */
+      const seqOff = await viewSeq(page);
+      await clickControl(page, O.onSel);
+      const landed = await settleOverlay(page);
+      const p1 = await overlayProbe(page);
+      const iso1 = outIso(p1.out);
+      check('turning it ON draws the week that is on screen: the marker stamps '
+        + 'that Tuesday — and stamps it only once the source is really loaded '
+        + 'and two frames have passed, so it means "drawn" rather than "asked '
+        + 'for" — and the polygons paint',
+      landed && O.markerIso.test(p1.marker || '') && !!iso1 && p1.marker === iso1
+        && p1.painted > 0,
+      JSON.stringify({ landed, marker: p1.marker, fromOutput: iso1,
+        painted: p1.painted, out: p1.out }));
+      check('?polygons=on appears and both seg buttons flip with it — the '
+        + 'overlay is shareable state, and aria-pressed is what the kit styles a '
+        + 'seg button from, so there is no second source of truth to check',
+      p1.param === 'on' && p1.on === 'true' && p1.off === 'false',
+      JSON.stringify({ param: p1.param, on: p1.on, off: p1.off,
+        url: page.url() }));
+      check('turning it on does NOT bump data-ngp-view-seq: that marker '
+        + 'sequences fetch-involving VIEW transitions, and the overlay has a '
+        + 'settle signal of its own precisely so it never borrows one that means '
+        + 'something else',
+      p1.seq === seqOff, `seq ${seqOff} → ${p1.seq}`);
+      check('the polygons go UNDER the county lines and OVER the county fill: '
+        + 'the boundaries, the hover halo and the selection ring stay legible '
+        + 'through a translucent drought map, and the two ids it sits between '
+        + 'are read from handle.layers at this instant rather than remembered',
+      !!p1.order && p1.order.fill >= 0 && p1.order.line >= 0
+        && p1.order.overlay > p1.order.fill && p1.order.overlay < p1.order.line,
+      JSON.stringify(p1.order));
+      clean('usdm overlay on');
+      await shot('19e-usdm-overlay');
+
+      /* ── It follows the week. ────────────────────────────────────────────── */
+      await scrubWeek(page, 30);
+      await settleWeek(page);
+      const landed30 = await settleOverlay(page);
+      const p2 = await overlayProbe(page);
+      const iso2 = outIso(p2.out);
+      check(`scrubbing to week 30 of 2012 moves the overlay with it: the marker `
+        + `becomes ${O.deepLinkIso} — which is both the <output>'s own printed `
+        + 'Tuesday re-derived AND the frozen fixture — the polygons still paint, '
+        + 'the seq marker still has not moved, and the URL carries the week and '
+        + 'the overlay together',
+      landed30 && !!iso2 && p2.marker === iso2 && p2.marker === O.deepLinkIso
+        && p2.painted > 0 && p2.seq === seqOff && p2.week === '30'
+        && p2.param === 'on',
+      JSON.stringify({ marker: p2.marker, fromOutput: iso2,
+        fixture: O.deepLinkIso, painted: p2.painted, seq: p2.seq,
+        week: p2.week, polygons: p2.param, out: p2.out }));
+      clean('usdm overlay follows the week');
+
+      /* ── Four scrubs in a row. ───────────────────────────────────────────
+         Driven the way 8a drives the scrubber — the value set and an `input`
+         event fired — with no settle between, so three fetches are abandoned
+         mid-flight. What must come of that is one week drawn and NOTHING said:
+         an aborted fetch is a cancellation, not a failure, and the clean()
+         below is the assertion that the app knows the difference.
+
+         The 120 ms is not a settle, it is the OPPOSITE of one: back-to-back
+         evaluates can coalesce inside the scrub's own frame throttle, and three
+         fetches that never started cannot be aborted — which would make this an
+         expensive way to assert nothing. Long enough for each request to be in
+         flight, far shorter than the 0.7 MB it is fetching. */
+      const THRASH = [12, 20, 34, 41];
+      for (const n of THRASH) {
+        await scrubWeek(page, n);
+        await page.waitForTimeout(120);
+      }
+      await settleWeek(page);
+      const landedT = await settleOverlay(page);
+      const p3 = await overlayProbe(page);
+      const iso3 = outIso(p3.out);
+      const nT = weekNumber(p3.out);
+      check('four scrubs in a row and the overlay lands on the LAST of them, not '
+        + 'on whichever abandoned fetch happened to answer first — a late arrival '
+        + 'painted over a week the reader has already left is a map that lies '
+        + 'about the date printed above it',
+      landedT && !!iso3 && p3.marker === iso3 && p3.painted > 0
+        && !!nT && nT.n === THRASH[THRASH.length - 1],
+      JSON.stringify({ marker: p3.marker, fromOutput: iso3,
+        week: nT && nT.n, wanted: THRASH[THRASH.length - 1],
+        painted: p3.painted, drove: THRASH }));
+      clean('usdm overlay week thrash');
+
+      /* ── A change of county authority. ───────────────────────────────────── */
+      const beforeSwap = p3.boundary;
+      const seqSwap = await viewSeq(page);
+      const swapped = await clickControl(page, DS.census.sel);
+      await awaitViewSeq(page, seqSwap);
+      // Not settleBoundary(key): the Census authority's answer moves with the
+      // year (2012 → the 2011 vintage), so what is waited for is "no longer the
+      // authority we were on", which needs no table.
+      await page.waitForFunction(
+        (was) => {
+          const k = document.documentElement.dataset.ngpBoundary;
+          return !!k && k !== was;
+        }, beforeSwap, { timeout: CONFIG.switchMs }).catch(() => {});
+      await settleVintage(page);
+      const landedSwap = await settleOverlay(page);
+      const p4 = await overlayProbe(page);
+      check(`the overlay survives a change of county AUTHORITY and is re-anchored `
+        + 'to the arriving stack: the kit keeps more than one archive resident, '
+        + 'its layer ids carry a slot suffix and they MOVE when the front does, '
+        + 'so an overlay that kept its old anchor would end up buried under a '
+        + 'transparent retired stack or floating over the new county lines',
+      swapped && landedSwap && !!p4.boundary && p4.boundary !== beforeSwap
+        && !!p4.order && p4.order.fill >= 0 && p4.order.line >= 0
+        && p4.order.overlay > p4.order.fill && p4.order.overlay < p4.order.line
+        && p4.painted > 0 && O.markerIso.test(p4.marker || ''),
+      JSON.stringify({ from: beforeSwap, to: p4.boundary, order: p4.order,
+        painted: p4.painted, marker: p4.marker }));
+
+      // Back to the default archive, so everything after this subsection sees
+      // the dataset 8b left behind rather than the one this check borrowed.
+      const seqRestore = await viewSeq(page);
+      await clickControl(page, DS['fsa-lfp'].sel);
+      await awaitViewSeq(page, seqRestore);
+      await settleVintage(page);
+      await settleOverlay(page);
+      const p5 = await overlayProbe(page);
+      check(`the overlay is a PREFERENCE of this view and is remembered as one `
+        + `(${O.lsKey} === 'on'): a visitor who turned the drought polygons on `
+        + 'comes back to them, and the key is namespaced per view like every '
+        + 'other choice this app stores',
+      p5.stored === 'on', 'stored ' + JSON.stringify(p5.stored));
+      clean('usdm overlay across a boundary swap');
+
+      /* ── It belongs to THIS view. ────────────────────────────────────────── */
+      const seqAway = await viewSeq(page);
+      await clickControl(page, dflt.switchSel);
+      await awaitViewSeq(page, seqAway);
+      const gone = await settleOverlayGone(page);
+      const away = await overlayProbe(page);
+      check(`leaving the drought monitor takes the overlay with it: ?polygons is `
+        + 'dropped (a param describing a control that is not on screen is a '
+        + 'smudge on every link shared afterwards), the marker is gone entirely, '
+        + `and nothing of the drought map is left painted over ${dflt.label}`,
+      gone && away.param === null && away.marker === null && away.painted === 0,
+      JSON.stringify({ param: away.param, marker: away.marker,
+        painted: away.painted, layer: away.hasLayer, url: page.url() }));
+
+      const seqHome = await viewSeq(page);
+      await clickControl(page, iface.switchSel);
+      await awaitViewSeq(page, seqHome);
+      const backLanded = await settleOverlay(page);
+      const back = await overlayProbe(page);
+      const isoBack = outIso(back.out);
+      check('and coming back restores it — the layer was hidden, not destroyed, '
+        + 'which is what makes the return instant — so the week the visitor left '
+        + 'it on is drawn again and ?polygons=on is re-emitted',
+      backLanded && O.markerIso.test(back.marker || '') && !!isoBack
+        && back.marker === isoBack && back.param === 'on' && back.painted > 0,
+      JSON.stringify({ marker: back.marker, fromOutput: isoBack,
+        param: back.param, painted: back.painted }));
+
+      const said = await settledLiveText(page, (t) => O.liveClause.test(t));
+      const vc = await viewControls(page);
+      check('a reader who cannot see the canvas is TOLD there is a second map on '
+        + 'it: the live region says the polygons are drawn over the counties, and '
+        + 'the legend key says what they are — the USDM\'s own published weekly '
+        + 'map, as published, rather than a smoothing of the county colours',
+      O.liveClause.test(said) && O.legendClause.test(vc.legend.key || ''),
+      `live region ${JSON.stringify(said.slice(0, 220))}, legend key `
+        + `${JSON.stringify((vc.legend.key || '').slice(0, 260))} — they must `
+        + `match ${O.liveClause} and ${O.legendClause}`);
+      clean('usdm overlay across a view switch');
+
+      /* ── The poster. ─────────────────────────────────────────────────────── */
+      let withOverlay = null;
+      if (session && session.acceptsDownloads) {
+        withOverlay = await poster(page);
+        check('the poster is exported with the overlay on and is a real poster: '
+          + 'named for the view it holds, PNG magic bytes, and over 100 KB rather '
+          + 'than a blank canvas',
+        !!withOverlay && withOverlay.bytes.length > 100 * 1024
+          && withOverlay.bytes[0] === 0x89 && withOverlay.bytes[1] === 0x50
+          && withOverlay.bytes[2] === 0x4e && withOverlay.bytes[3] === 0x47
+          && iface.exportName.test(withOverlay.name || ''),
+        withOverlay
+          ? `${withOverlay.name}, ${Math.round(withOverlay.bytes.length / 1024)} KB`
+          : 'no download appeared inside 120s');
+        clean('usdm overlay export · polygons on');
+      } else {
+        skip('the poster carries the overlay when the overlay is on',
+          'this session was not opened with downloads: true');
+      }
+
+      /* ── Off again — which is also this subsection putting the app back. ─── */
+      await clickControl(page, O.offSel);
+      const cleared = await settleOverlayGone(page);
+      const off = await overlayProbe(page);
+      check('turning it back OFF leaves nothing behind: the marker is gone, '
+        + '?polygons is elided at its default, both buttons flipped back, and the '
+        + 'layer — which stays RESIDENT for the trip back, hidden rather than '
+        + 'removed — paints nothing at all',
+      cleared && off.marker === null && off.param === null
+        && off.off === 'true' && off.on === 'false' && off.painted === 0,
+      JSON.stringify({ marker: off.marker, param: off.param, off: off.off,
+        on: off.on, painted: off.painted, layer: off.hasLayer,
+        url: page.url() }));
+
+      if (withOverlay) {
+        const without = await poster(page);
+        check('…and the two posters are not the same picture: the same week, the '
+          + 'same dataset, the same theme, exported once with the polygons and '
+          + 'once without, differ byte for byte — a poster that silently lacked '
+          + 'what the screen promised is a lie the reader cannot check',
+        !!without && without.bytes.length > 0
+          && !without.bytes.equals(withOverlay.bytes),
+        without
+          ? `${Math.round(withOverlay.bytes.length / 1024)} KB with the overlay, `
+            + `${Math.round(without.bytes.length / 1024)} KB without`
+          : 'no second download appeared inside 120s');
+        clean('usdm overlay export · polygons off');
+      }
+
+      /* ── Two fresh boots, in their own contexts. ─────────────────────────
+         Both have to BOOT on the drought monitor, and that is not incidental
+         framing: the app reads a view's choices out of the URL and localStorage
+         once, for the family it boots into. A page that started on the grazing
+         periods and switched would take its overlay state from the in-memory
+         view state instead — which is the path the round trip above already
+         covers, and which would make both of these assert nothing. */
+      const link = `?view=${iface.slug}&year=2012&week=30&polygons=on`;
+      const deepSession = await open({ query: link });
+      const deepLanded = await settleOverlay(deepSession.page);
+      const deep = await overlayProbe(deepSession.page);
+      check(`a shared link carries the overlay: ${link} boots straight onto the `
+        + `polygons for ${O.deepLinkIso}, painted, with the toggle already `
+        + 'pressed — following somebody\'s link is not supposed to end in turning '
+        + 'the thing they were showing you back on',
+      deepLanded && deep.marker === O.deepLinkIso && deep.painted > 0
+        && deep.on === 'true' && deep.off === 'false' && deep.param === 'on'
+        && deep.week === '30',
+      JSON.stringify({ marker: deep.marker, painted: deep.painted,
+        on: deep.on, off: deep.off, param: deep.param, week: deep.week,
+        out: deep.out }));
+      deepSession.clean('usdm overlay deep link');
+      await deepSession.shot('19f-usdm-overlay-deep-link');
+      await deepSession.ctx.close();
+
+      /* A stored value the app does not offer. The clean() is half the
+         assertion: an unusable PREFERENCE is a warning, not a tripwire — the
+         app cannot stop a visitor's storage from holding anything at all — and
+         a console.error here would gate CI on a condition no code change can
+         prevent. */
+      const junkSession = await open({
+        query: `?view=${iface.slug}`,
+        storage: { [O.lsKey]: 'banana' },
+      });
+      const junk = await overlayProbe(junkSession.page);
+      check(`a stored ${O.lsKey} of "banana" falls back to off rather than to on `
+        + 'or to a crash: every remembered value is re-validated on read exactly '
+        + 'like a URL param',
+      junk.off === 'true' && junk.on === 'false' && junk.marker === null
+        && junk.param === null && junk.painted === 0,
+      JSON.stringify({ off: junk.off, on: junk.on, marker: junk.marker,
+        param: junk.param, painted: junk.painted, stored: junk.stored,
+        url: junkSession.page.url() }));
+      junkSession.clean('usdm overlay · an unusable stored value');
+      await junkSession.ctx.close();
+    }
   }
 }
 

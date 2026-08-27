@@ -36,6 +36,8 @@
              derived; disasters: one archive, so this view never emits it)
      ?year   2000–2026, narrowed to the ACTIVE view's own domain
      ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
+     ?polygons on — the drought monitor's overlay of the USDM's own weekly
+             polygons over the counties; elided at its default, which is off
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?source which county aggregation a dataset that publishes several is read
              at (eligibility's derived archive; dropped on every other dataset)
@@ -128,6 +130,12 @@ import {
 } from './interfaces/registry.js';
 import { loadDataset } from './decoders/common.js';
 import { loadCrosswalk } from './decoders/crosswalk.js';
+/* The drought monitor's optional overlay of the USDM's OWN weekly polygons,
+   drawn over the county choropleth. A module rather than a descriptor leaf
+   because it owns a GeoJSON source, a layer and a fetch of its own, and a
+   descriptor paints counties and nothing else. app.js only ever tells it what
+   is on screen — see § The USDM polygon overlay. */
+import * as usdmOverlay from './usdm-overlay.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -187,9 +195,10 @@ const LS = Object.freeze({
   source: (view) => 'sfsa-ngp-source-' + view,
   /** One of a family's own enumerated choices (§ Enumerated choices), per
       interface and per choice — `sfsa-ngp-<choice>-<view>`, which means nothing
-      to any other view. No shipped family declares a choice today, so nothing
-      writes one; the disaster designations did until that map was narrowed to
-      the single slice it is about, and the two keys it wrote
+      to any other view. The drought monitor's `polygons` overlay toggle is the
+      first one shipped, so `sfsa-ngp-polygons-usdm` is the one key written
+      today; the disaster designations wrote two until that map was narrowed to
+      the single slice it is about, and those two
       (`sfsa-ngp-decl-disasters`, `sfsa-ngp-disaster-disasters`) are now read by
       nobody. A stale one in a returning visitor's storage is inert: every value
       here is re-validated against the family's own list on read, and a family
@@ -622,8 +631,9 @@ function selection() {
   sel.boundary = boundaryFor(sel);
   // Whatever enumerated choices the active family declares, by name — so a
   // descriptor leaf reads its own slice off `sel` exactly the way it reads
-  // `sel.year`. Every shipped family declares none today and therefore carries
-  // none (§ Enumerated choices).
+  // `sel.year`. The drought monitor declares one (`polygons`, its overlay
+  // toggle); every other family declares none and therefore carries none
+  // (§ Enumerated choices).
   for (const choice of choicesOf(iface)) {
     sel[choice.id] = choiceValue(iface, choice.id);
   }
@@ -854,8 +864,9 @@ function pushState() {
   }
   // The active family's own enumerated choices, each elided at its own default
   // and none of them emitted while another family is on screen — a param for a
-  // control the reader cannot see would describe a different map. No shipped
-  // family declares one, so this loop emits nothing (§ Enumerated choices).
+  // control the reader cannot see would describe a different map. Today that is
+  // `?polygons=on`, and only while the drought monitor is up (§ Enumerated
+  // choices).
   for (const choice of choicesOf(iface)) {
     const value = choiceValue(iface, choice.id);
     if (value !== choice.default) p[choice.id] = value;
@@ -893,7 +904,7 @@ function persist() {
   if (iface.controls.source && vs.source) lsSet(LS.source(state.view), vs.source);
   // A choice is a way of READING the archive rather than a place in it — like
   // the aggregation above and unlike the week — so it is a preference worth
-  // remembering: a reader who came here for Presidential declarations meant it.
+  // remembering: a reader who turned the drought polygons on meant it.
   for (const choice of choicesOf(iface)) {
     lsSet(LS.choice(state.view, choice.id), choiceValue(iface, choice.id));
   }
@@ -965,6 +976,14 @@ function recolor() {
 
   // The card is a readout of the same selection as the map.
   if (state.countyId) fillCard(state.countyId);
+
+  // And so is the overlay, when the drought monitor has it on: every year step,
+  // week scrub and dataset toggle reaches here, which makes this the one place
+  // that already knows the week changed. The early returns above are covered
+  // elsewhere — a view switch runs syncSections(), which reconciles too, and
+  // that is the path where the overlay has to come OFF (§ The USDM polygon
+  // overlay).
+  syncUsdmOverlay();
 }
 
 /**
@@ -1591,6 +1610,14 @@ async function swapBoundary(want) {
     counties = next;
     document.documentElement.dataset.ngpBoundary = want.key;
 
+    // The flip built a NEW layer stack, and the overlay was anchored under the
+    // outgoing one's line layer — which is now behind the arriving stack's six.
+    // Re-anchoring is a move, not a rebuild: the polygons stay attached and the
+    // reader sees the boundaries change underneath them. It happens here, past
+    // both post-await guards, because a superseded swap that reanchored would
+    // be pushing the overlay under a stack the winner is about to retire.
+    usdmOverlay.reanchor(map, handle.layers.line);
+
     // The handle drops a selection whose polygon is gone; the DATA for that
     // county is still real, so the card stays open and now says WHICH authority
     // is missing it.
@@ -1857,6 +1884,56 @@ function applyWeek(instance) {
   syncWeekControl();
 }
 
+/* ── The USDM polygon overlay ────────────────────────────────────────────────
+   The county choropleth answers "what class did this county end up in"; the
+   overlay is the map that ANSWER was read off — the USDM's own weekly polygons,
+   published unclipped at about 1:2,000,000, drawn translucent over the counties
+   when the reader asks for them.
+
+   Everything about it is the module's (js/usdm-overlay.js): the source, the
+   layer, the fetch, the LRU and the `data-ngp-overlay` settle marker. What this
+   file owns is the one sentence the module cannot know — WHICH week is on
+   screen and WHETHER the drought monitor is the family showing it — and it says
+   it by calling the reconciler after every change that could alter either
+   answer. syncUsdmOverlay() is therefore idempotent by construction: it is
+   allowed to run far more often than the overlay actually changes, which is
+   what lets recolor() and syncSections() carry it without either of them
+   knowing what an overlay is. */
+
+/** The selected week as an ISO date, or null when the family on screen has no
+    weeks (or its payload has not landed yet). UTC-pinned via toISOString,
+    because every date in the weekly decoder is a UTC midnight. */
+function usdmWeekIsoNow() {
+  const wd = weekData();
+  if (!wd || typeof wd.weekDate !== 'function') return null;
+  const w = absoluteWeek();
+  if (!Number.isInteger(w)) return null;
+  return wd.weekDate(w).toISOString().slice(0, 10);
+}
+
+/**
+ * Tell the overlay module what is on screen.
+ *
+ * The guard is first and it is not a nicety: syncSections() runs during boot,
+ * before the map exists, and the module's job starts with `map.addLayer`.
+ */
+function syncUsdmOverlay() {
+  if (!map || !handle) return;
+  const iface = currentInterface();
+  const on = state.view === 'usdm' && choiceValue(iface, 'polygons') === 'on';
+  usdmOverlay.sync({
+    map,
+    handle,
+    on,
+    dateIso: on ? usdmWeekIsoNow() : null,
+    // The module speaks to the reader exactly once — when a week it was told to
+    // draw could not be fetched — and this is the same channel every other
+    // sentence in this file uses. Wrapped rather than passed, because `live` is
+    // built during boot and this function can run before it exists.
+    announce: (text) => { if (live) live.announce(text); },
+  });
+}
+
 function setType(next) {
   if (next === state.type) return;
   state.type = next;
@@ -2049,13 +2126,16 @@ function applySource(instance) {
    colour-by: several states of one table, none of them a different file and
    none of them a different quantity.
 
-   NO SHIPPED FAMILY DECLARES ONE TODAY. The disaster designations did — read as
-   Secretarial or Presidential, for drought alone or for all 22 disaster types —
-   until that map was narrowed to the one slice it is about (js/interfaces/
-   disasters.js § ONE SLICE). The mechanism stays because it is the shape that
-   question has whenever it comes back, and because everything below is generic:
-   `choicesOf()` answers with an empty list, and every function is a no-op over
-   it. Nothing here is reachable from the page as it stands.
+   ONE SHIPPED FAMILY DECLARES ONE: the drought monitor's `polygons`, which says
+   whether the USDM's own weekly polygons are drawn over the counties
+   (js/interfaces/usdm.js, § The USDM polygon overlay below). It is the first
+   user of this machinery and it needed no new plumbing, which is what the
+   mechanism was kept for — the disaster designations had two (Secretarial or
+   Presidential, drought alone or all 22 disaster types) until that map was
+   narrowed to the one slice it is about (js/interfaces/disasters.js § ONE
+   SLICE), and everything below stayed generic: `choicesOf()` answers with an
+   empty list for a family that declares none, and every function is a no-op
+   over it.
 
    A family DECLARES its choices — `descriptor.choices`, a frozen list of
    `{id, values[], default}` — and everything here is generic. The button group,
@@ -2065,11 +2145,14 @@ function applySource(instance) {
    at its default on the way out, remembered per interface so switching away and
    back is a return rather than a reset.
 
-   Two things a choice is deliberately NOT. It is not a dataset: nothing is
-   fetched, so a change is a synchronous repaint and does NOT bump
+   Two things a choice is deliberately NOT. It is not a dataset: no PAYLOAD is
+   fetched, so the choropleth repaint is synchronous and does NOT bump
    `data-ngp-view-seq` — that counter means "a transition that involved a fetch
    has landed" (tools/config.mjs § MARKERS), and a week scrub does not bump it
-   either. And it is not a payload-driven select like the aggregation picker
+   either. `polygons` does fetch a file of its own, and it still does not bump
+   the counter: what it fetches is drawn OVER the map rather than being the map,
+   and it settles on a marker of its own (§ The USDM polygon overlay). And it is
+   not a payload-driven select like the aggregation picker
    above: the values are static, so a choice param needs no parking and is
    resolved at boot like any other whitelisted param. */
 
@@ -2190,6 +2273,12 @@ function syncSections() {
   // descriptor so a screen reader is never told a drought map is a
   // grazing-period map.
   els.map.setAttribute('aria-label', currentInterface().mapLabel);
+  // The overlay is one family's control too, and hiding its SECTION is not the
+  // same as taking its polygons off the map. This runs on every view switch,
+  // including the ones where the arriving family's payload has not landed and
+  // recolor() returns early, so it is the path that guarantees a drought
+  // overlay never survives onto a grazing-period map.
+  syncUsdmOverlay();
 }
 
 /** aria-pressed IS the styling source of truth for both segmented groups
@@ -2631,6 +2720,24 @@ function wireControls() {
   for (const btn of els.choiceBtns) {
     btn.addEventListener('click', () => setChoice(btn.getAttribute('data-choice'),
       btn.getAttribute('data-value')));
+    // The overlay toggle is the one choice that costs a fetch, so it gets the
+    // same pair of intent handlers the two switchers do — and on the OFF button
+    // as well as the ON one, because the reader who is about to turn it back on
+    // is standing in the same place. The module swallows a failed warm-up: a
+    // warm that did not happen costs a slower first draw and nothing else.
+    //
+    // Nothing is asked for while there is no week to ask about. A disabled
+    // button still fires pointerenter, so this handler is live during the
+    // payload's own load — and "warm the week I do not know yet" is a request
+    // for a filename with `null` in it.
+    if (btn.getAttribute('data-choice') === 'polygons') {
+      const warm = () => {
+        const iso = usdmWeekIsoNow();
+        if (iso) usdmOverlay.warm(iso);
+      };
+      btn.addEventListener('pointerenter', warm);
+      btn.addEventListener('focus', warm);
+    }
   }
 
   els.btnShare.addEventListener('click', share);
