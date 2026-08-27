@@ -1,6 +1,6 @@
 /* ============================================================================
    LFP Explorer · js/usdm-overlay.js
-   The U.S. Drought Monitor's OWN weekly map, drawn translucent over the county
+   The U.S. Drought Monitor's OWN weekly map, drawn IN PLACE OF the county
    choropleth — and the one module that knows how to get it onto the map.
 
    ES module, no build step. Kit dependency: TILE_BASE, taken through
@@ -18,10 +18,32 @@
    size of San Bernardino wears D4 for a blob covering four per cent of it, and
    nothing on screen says which four per cent.
 
-   This overlay puts the blob back. Same five NDMC hexes, translucent, drawn
-   over the counties, so a reader can see the shape the county colour was
-   reduced FROM. It is off by default, because the reduction is the subject of
-   the view and the raw polygons are the evidence for it.
+   This layer puts the blob back. Same five NDMC hexes, drawn where the NDMC
+   drew them, so a reader can see the shape the county colour was reduced FROM.
+   It is off by default, because the reduction is the subject of the view and
+   the raw polygons are the evidence for it.
+
+   ── IT IS A HARD SWITCH, NOT AN OVERLAY (2026-08-27) ───────────────────────
+   It shipped translucent over the live choropleth, and the owner walked that
+   back on sight: "too confusing to see them over the county layers." Two maps
+   of the same week, blended, answer the same question twice at every pixel,
+   and no opacity — there was a slider, and it is gone — tells a reader which
+   answer they are looking at.
+
+   So ON means the map IS the Drought Monitor's weekly map. The polygons draw
+   at `fill-opacity: 1`, and the counties beneath them all paint the warm None
+   (js/interfaces/usdm.js § colorsFor, the hard switch), which is the same "no
+   drought here" the legend already names — so the composite is one complete
+   honest map: D0–D4 where the Monitor drew them, None everywhere it did not.
+   The county lines, the state mesh, the hover halo and the selection ring stay
+   above it, because a reader still has to be able to say which county a blob
+   is sitting on.
+
+   The two halves of that switch live in two files, and neither one can be
+   moved without the other: the colours are the descriptor's (they are data,
+   and a paint swap in here would be this module deciding what a county's class
+   is), and the layer is this module's. What connects them is the same fuse
+   that already connected a change of week — see § THE FUSED CUTOVER.
 
    NOTHING IS CLIPPED OR MASKED. The USDM is drawn at roughly 1:2,000,000 and
    published unclipped, so its edges overrun the coastline and spill past the
@@ -72,10 +94,11 @@
 
      (absent)      not drawn — the toggle is off, or the view is not the
                    drought monitor
-     loading       on; the target week is being fetched or decoded. What is on
-                   screen underneath is the PREVIOUS week, whole — see § THE
-                   FUSED CUTOVER — or nothing at all when there was no previous
-                   week to hold
+     loading       on; the target week is being fetched or decoded. What the
+                   reader is looking at meanwhile is whatever the fused cutover
+                   is HOLDING — the previous week, whole, on a scrub; the county
+                   choropleth itself on the way in from the toggle (see § THE
+                   FUSED CUTOVER)
      YYYY-MM-DD    on; THAT week is attached and has been flushed to GL
      missing       on; the selected week is not one the USDM published
      error         on; the week's fetch or decode failed, or the sidecar is
@@ -84,7 +107,7 @@
    The ISO stamps only after MapLibre says the source is loaded and two frames
    have passed — see `stampWhenDrawn()`, which has the whole argument.
 
-   ── THE FUSED CUTOVER, AND WHY NOTHING IS CLEARED ANY MORE ────────────────
+   ── THE FUSED CUTOVER, AND WHAT IS STILL CLEARED ──────────────────────────
    This module used to empty the source before it went to the network, and the
    argument for it was good: leaving July's D4 blob up over August's choropleth
    is not a slow map but a wrong one, and it is wrong in the direction a reader
@@ -105,18 +128,43 @@
    week axis: the outgoing picture keeps drawing, whole and coherent, until the
    incoming picture is really drawable, and then there is one flip.
 
-   So the clear is gone. What a reader looks at during the fetch is last week's
-   counties under last week's polygons — a true map of a week they were looking
-   at a moment ago — rather than this week's counties under nothing. A retired
-   picture that is internally consistent is worth more than a fresh one that is
-   half missing, which is the same argument the kit makes for keeping a retired
-   county stack resident rather than blank.
+   So the clear is gone FROM THE PATH THAT HOLDS A PICTURE. What a reader looks
+   at during a scrub is last week's counties under last week's polygons — a true
+   map of a week they were looking at a moment ago — rather than this week's
+   counties under nothing. A retired picture that is internally consistent is
+   worth more than a fresh one that is half missing, which is the same argument
+   the kit makes for keeping a retired county stack resident rather than blank.
 
-   THE FUSE IS DECIDED PER CALL AND IT IS NARROW: the overlay is on, something
-   is already drawn, and the target is a DIFFERENT week. Everything else — the
-   toggle coming on from nothing, a same-week recolour, a theme flip, the three
-   families that have no overlay at all, the off state — runs the tail
-   synchronously inside sync(), exactly as it ran before any of this existed.
+   IT SURVIVES ON THE TOGGLE, and for the original reason. Coming on from off,
+   nothing of this layer is being held: the source still contains whatever week
+   was up when the reader last switched it off (the layer is hidden, never
+   emptied, so the trip back is instant), and the layer is about to be made
+   visible over a live choropleth. That pairing — some old week's blobs over
+   this week's counties — is exactly the map that lies, so that one path still
+   empties the source before it goes to the network. A cached target week skips
+   it either way: there is nothing to wait for.
+
+   THE FUSE IS DECIDED PER CALL: the overlay is on, the caller handed us a
+   tail, and the week the source is really showing is not the target. That
+   covers two transitions, and the second one arrived with the hard switch:
+
+     a change of WEEK while on — the case this machinery was built for, and
+     now a near-no-op on the county side, because both weeks paint the same
+     None. The polygons still swap atomically, the old week held rather than
+     blanked, so there is no frame without a drought map on it;
+
+     the TOGGLE COMING ON, which fuses because `attached` is null and any real
+     week differs from nothing. Without it the tail would repaint every county
+     None the instant the button was pressed and then sit there for the length
+     of a fetch: an all-None map, which is a map of a week with no drought in
+     it anywhere, and there has never been such a week. Held, the reader keeps
+     the live choropleth right up to the single flip into the Monitor's map.
+
+   Everything else runs the tail synchronously inside sync(), exactly as it ran
+   before any of this existed: a same-week recolour, a theme flip, the three
+   families that have no overlay at all, and the TOGGLE GOING OFF — which has
+   nothing to fetch and nothing to wait for, so the choropleth comes back and
+   the polygons are hidden in one task.
 
    AND EVERY EXIT RUNS IT. A failed fetch, a week the USDM never published, a
    county stack that is not on the map yet: the county repaint is true whether
@@ -141,11 +189,14 @@
    otherwise leave this layer stranded above the new counties.
 
    ── What this module does NOT do ───────────────────────────────────────────
-   It has no opinion about whether the overlay should be on, or about how
-   strongly it should be drawn. Both are the reader's — the `polygons` choice
-   and the opacity slider beneath it — and this module is told both answers on
-   every reconcile. It holds no week of its own either: the week is the app's
-   selection, and `sync()` is a reconciler, not a controller.
+   It has no opinion about whether the polygons should be drawn: that is the
+   reader's `polygons` choice, and this module is told the answer on every
+   reconcile. It has no opinion about the COUNTY colours either, and that
+   division is load-bearing now that the switch changes both — the county fills
+   are data, painted by the descriptor through the app's one paint path, and a
+   module that reached over and swapped them would be a second author of the
+   choropleth. It holds no week of its own: the week is the app's selection,
+   and `sync()` is a reconciler, not a controller.
 
    It also assumes ONE live map, because this app has one. The poster's
    throwaway offscreen map goes through `addOverlayLayers()`, which touches no
@@ -221,33 +272,6 @@ const EMPTY_FC = Object.freeze({ type: 'FeatureCollection', features: [] });
 const HOLD_CEILING_MS = 6000;
 
 /**
- * How strongly the polygons are painted when nobody has said otherwise, as a
- * GL opacity rather than the app's percentage.
- *
- * 0.45 is the shipped look and the whole of the original design: opaque enough
- * that a D4 blob reads as a shape, sheer enough that the county colour and the
- * county lines survive under it. It is now a DEFAULT rather than a constant —
- * the reader has a slider — but it is still what an overlay comes up at, what
- * a poster is printed at when nothing else is asked for, and what any value
- * this module cannot use falls back to.
- */
-const DEFAULT_OPACITY = 0.45;
-
-/**
- * A caller's opacity, or the default — validated here rather than trusted,
- * because a paint property is the one place a `NaN` or a string would not
- * announce itself: MapLibre would take it, and the layer would simply stop
- * being visible with nothing in the console to say why.
- *
- * @param {number} raw a GL opacity, 0–1
- * @returns {number}
- */
-function normalizeOpacity(raw) {
-  return (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1)
-    ? raw : DEFAULT_OPACITY;
-}
-
-/**
  * What the live region says when a week the index promised could not be
  * fetched. VERBATIM — the a11y gate matches this sentence.
  */
@@ -265,16 +289,17 @@ const SENTENCE_FETCH_FAIL = 'The USDM drought polygons for this week could not '
    D0 through D4, and drought-free is the absence of a polygon rather than a
    polygon of its own. The `match` fallback is fully transparent for the same
    reason — a class this app does not know must draw as nothing, never as a
-   default colour that would read as a real drought class.
+   default colour that would read as a real drought class. Where no polygon
+   covers a county, what shows through is the warm None the counties are all
+   painted while this layer is up, which is the same answer by a different
+   route and the reason the composite is complete.
 
-   0.45 is where it starts, and for a long time it was the whole of the design:
-   opaque enough that a D4 blob reads as a shape, sheer enough that the county
-   colour and the county lines survive under it. It is a default now, because
-   the two things a reader wants from this layer pull in opposite directions —
-   read the drought's shape, or read the county underneath it — and no single
-   number serves both. The slider is the app's (§ The USDM polygon overlay in
-   js/app.js); what this module owns is that the number reaching GL is one it
-   validated.
+   `fill-opacity` IS 1, AND IT IS A CONSTANT AGAIN. It shipped at 0.45, then
+   briefly at whatever a slider said; both are gone (§ IT IS A HARD SWITCH).
+   Anything under 1 mixes this layer's hex with the county fill beneath it and
+   produces a colour that is in no legend — at 0.45 a D1 county under a D3
+   blob rendered as neither — which is precisely the confusion the walk-back
+   was about.
 
    There is no line layer — an outline on five nested national polygons is a
    cage of hairlines at any zoom a reader actually uses, and the county
@@ -284,9 +309,9 @@ const SENTENCE_FETCH_FAIL = 'The USDM drought polygons for this week could not '
    v0.4.1). `fill-color` here IS data-driven, so it is written once at layer
    creation and never touched again; the overlay is hidden with `visibility`, a
    LAYOUT property, which is exactly why the retired-stack trick that broke the
-   kit's hover layer cannot happen here — and it is why `fill-opacity` is the
-   property the slider drives (§ applyOpacity). */
-function fillLayerDef(opacity) {
+   kit's hover layer cannot happen here. Nothing in this file calls
+   setPaintProperty at all any more. */
+function fillLayerDef() {
   return {
     id: OVERLAY_FILL_ID,
     type: 'fill',
@@ -296,7 +321,7 @@ function fillLayerDef(opacity) {
         'D0', CLASS_HEX.D0, 'D1', CLASS_HEX.D1, 'D2', CLASS_HEX.D2,
         'D3', CLASS_HEX.D3, 'D4', CLASS_HEX.D4,
         'rgba(0,0,0,0)'],
-      'fill-opacity': normalizeOpacity(opacity),
+      'fill-opacity': 1,
     },
   };
 }
@@ -349,17 +374,6 @@ let holdTimer = 0;
 
 /** The sidecar, once. Cleared on failure so a later sync retries it. */
 let indexPromise = null;
-
-/** The strength the app last asked for, 0–1. Held rather than read at layer
-    creation, because the reader can move the slider while the layer does not
-    exist yet — before the overlay has ever been turned on, and while it is
-    off — and the value they left it at is what it must come up at. */
-let wantOpacity = DEFAULT_OPACITY;
-
-/** The strength actually written to the layer, or null while there is no layer.
-    The difference between this and `wantOpacity` is the whole of the "only when
-    it changed" test in applyOpacity(). */
-let paintedOpacity = null;
 
 /**
  * iso → `{promise, value}`, insertion-ordered, capped at WEEK_CACHE_MAX.
@@ -691,35 +705,8 @@ function ensureLayer(map, handle) {
   if (!map.getSource(OVERLAY_SOURCE_ID)) {
     map.addSource(OVERLAY_SOURCE_ID, { type: 'geojson', data: EMPTY_FC });
   }
-  map.addLayer(fillLayerDef(wantOpacity), beforeId);
-  paintedOpacity = normalizeOpacity(wantOpacity);
+  map.addLayer(fillLayerDef(), beforeId);
   return true;
-}
-
-/**
- * Set the overlay's strength, and only when it has really changed.
- *
- * SAFE, and it is worth saying why in the file that says the opposite two
- * screens up. The rule from kit v0.4.1 is about a DATA-DRIVEN paint property
- * with a transition declared on it: flipping one leaves MapLibre's paint binder
- * holding a value whose expression has no `evaluate`, and the next
- * feature-state change throws inside a render. `fill-opacity` here is neither
- * half of that — it is a plain constant, no `['case', …]` and no `['get', …]`
- * anywhere in it, and this layer declares no transitions at all — so
- * `setPaintProperty` on it is an ordinary paint update.
- *
- * The "only when changed" guard is not about safety, it is about noise:
- * sync() runs from recolor(), which runs on every week scrub, every theme flip
- * and every county click, and a repeated setPaintProperty would re-upload the
- * paint on all of them.
- */
-function applyOpacity(map, raw) {
-  const next = normalizeOpacity(raw);
-  wantOpacity = next;
-  if (!map.getLayer(OVERLAY_FILL_ID)) return;   // ensureLayer() will use it
-  if (paintedOpacity === next) return;
-  map.setPaintProperty(OVERLAY_FILL_ID, 'fill-opacity', next);
-  paintedOpacity = next;
 }
 
 /** Hand the source a FeatureCollection. A no-op before the source exists,
@@ -762,10 +749,10 @@ function clearStamp(map) {
  * Take the cutover the moment the week is REALLY drawable, and stamp its ISO
  * once a frame has been painted from it.
  *
- * Two conditions, and the second one is the trap.
+ * Three conditions, and two of them are traps.
  *
  * `sourcedata` with `isSourceLoaded === true` for our source is the necessary
- * one. But MapLibre fires that event three ways after a `setData()`, and they
+ * one. But MapLibre fires that event several ways after a `setData()`, and they
  * do not all mean the same thing (measured against the vendored maplibre-gl
  * 5.18.0, and true of the whole 5.x line):
  *
@@ -775,19 +762,33 @@ function clearStamp(map) {
  *              all of them loaded — so it answers TRUE for a source that has
  *              not drawn one polygon of the new data. Stamping here would tell
  *              a harness "2012-07-24 is up" over last week's picture.
- *   content    fired immediately after, and the tile manager's own handler
- *              (which runs first, being the source's evented parent) has
- *              already called reload(); every in-view tile is 'reloading', so
- *              `isSourceLoaded` is false and this event filters itself out.
- *   content    once per tile as the re-tiled data lands. The last of them has
- *              every tile loaded and is the one we want.
+ *   content    fired immediately after. When the layer is already on screen the
+ *              tile manager's own handler (which runs first, being the source's
+ *              evented parent) has already called reload(), so every in-view
+ *              tile is 'reloading' and `isSourceLoaded` is false — which is why
+ *              this one looked like it filtered itself out.
+ *   tile       once per tile as the re-tiled data lands, each carrying the tile
+ *              it is about. The last of them has every tile loaded and is the
+ *              one we want.
  *
- * THE `metadata` FILTER CARRIES MORE WEIGHT SINCE THE CLEAR WENT AWAY. It was
- * always wrong to stamp there; now the tiles it answers TRUE about are last
- * week's REAL polygons rather than an emptied source, so releasing the fused
- * cutover on it would repaint the counties for a week whose polygons had not
- * been tiled yet — the exact mismatch this whole arrangement exists to close,
- * reintroduced at the one point where nothing downstream could see it.
+ * SO THE FILTER IS `e.tile`, AND IT HAD TO BECOME THAT ON 2026-08-27. The
+ * content event above is only self-filtering while the layer is VISIBLE. Turn
+ * the polygons off and on again — the layer is hidden, never removed, so the
+ * trip back is instant — and MapLibre has stopped updating that source's cache
+ * (a hidden layer's source is not `used`). An empty tile cache has no tile to
+ * mark 'reloading', `SourceCache.loaded()` therefore answers TRUE the instant
+ * the worker returns, and the `content` event carries it. MEASURED on a warm
+ * toggle-on: the qualifying content event lands at +46 ms with
+ * `queryRenderedFeatures` answering ZERO, and the real tiles arrive at
+ * +102–121 ms. Releasing the fused tail there paints every county None over a
+ * map with no polygons on it yet — an all-None national map, which is a map of
+ * a week that has never happened, and precisely the flash the hold exists to
+ * prevent. Requiring a TILE-level event (`e.tile`, part of MapLibre's
+ * documented MapSourceDataEvent) is the honest test: a source cache is drawable
+ * when a tile of it has just finished loading and none is outstanding. The
+ * `metadata` guard stays above it as documentation — metadata events never
+ * carry a tile, so it is now redundant twice over, and the day one of these
+ * filters is loosened the other one is the note explaining why not.
  *
  * Everything between the `setData()` call and the worker's return is covered
  * for free — GeoJSONSource.loaded() is false while a worker update is pending,
@@ -814,6 +815,7 @@ function stampWhenDrawn(map, iso, fc, mine) {
   const onData = (e) => {
     if (done || !e || e.sourceId !== OVERLAY_SOURCE_ID) return;
     if (e.sourceDataType === 'metadata') return;
+    if (!e.tile) return;
     if (e.isSourceLoaded !== true) return;
     done = true;
     map.off('sourcedata', onData);
@@ -857,13 +859,14 @@ function stampWhenDrawn(map, iso, fc, mine) {
  * without a word — the reader scrubbing past a week is not a failure, and
  * saying so in the console would put a warning on every drag of the scrubber.
  *
- * AND IT MAY NOW HOLD THE CALLER'S OWN WORK. `onSettle` is the apply-tail of
+ * AND IT MAY HOLD THE CALLER'S OWN WORK. `onSettle` is the apply-tail of
  * whatever asked for this reconcile — in this app, the choropleth repaint, the
  * county card and the live sentence (js/app.js § recolor). It runs
- * SYNCHRONOUSLY, before this function returns, in every case except the one
- * that would otherwise split the map in two; there it is held until the
- * incoming week is drawable and then run in that same task, so the two halves
- * of the picture cut over together (§ THE FUSED CUTOVER).
+ * SYNCHRONOUSLY, before this function returns, except where running it now
+ * would put a picture on screen that is true of no week: a change of week with
+ * the polygons up, and the toggle coming on. There it is held until the
+ * incoming week is drawable and then run in that same task, so both halves of
+ * the map cut over together (§ THE FUSED CUTOVER).
  *
  * @param {object} args
  * @param {object} args.map the live MapLibre map
@@ -874,8 +877,6 @@ function stampWhenDrawn(map, iso, fc, mine) {
  * @param {string|null} args.dateIso the selected week's Tuesday, ISO. Null
  *        while `on` is a week the app cannot name yet, and is treated exactly
  *        like a week the USDM never published.
- * @param {number} [args.opacity] how strongly to paint the polygons, 0–1.
- *        Anything else is the default (§ DEFAULT_OPACITY).
  * @param {(text: string) => void} [args.announce] the live region writer
  * @param {() => void} [args.onSettle] the caller's apply-tail. Run exactly once
  *        for the call that wins and never for one that is superseded.
@@ -885,8 +886,7 @@ function stampWhenDrawn(map, iso, fc, mine) {
  *        app that awaits it is the one whose marker would otherwise claim a
  *        paint that had not happened (js/app.js § applyDataset).
  */
-export function sync({ map, handle, on, dateIso, announce, opacity,
-  onSettle } = {}) {
+export function sync({ map, handle, on, dateIso, announce, onSettle } = {}) {
   const settle = (typeof onSettle === 'function') ? onSettle : null;
 
   /* No map at all — boot, or a teardown. The overlay has nothing to reconcile,
@@ -896,36 +896,26 @@ export function sync({ map, handle, on, dateIso, announce, opacity,
     return Promise.resolve(true);
   }
 
-  /* BEFORE the idempotence guard below, and that ordering is the whole of it:
-     a change of strength is not a change of TARGET — the same week stays
-     attached to the same source — so an opacity-only reconcile has the same key
-     as the one before it and would return at the next line without ever
-     reaching the paint.
-
-     Only while the overlay is ON, though. `off` is also what the app says while
-     ANOTHER family is on screen, and another family has no overlay and
-     therefore no opinion about how strongly to draw one — it would be saying
-     the default, which would quietly retune a hidden layer the reader is coming
-     back to. A retired overlay keeps its strength for the same reason it keeps
-     its week. */
-  if (on) applyOpacity(map, opacity);
-
   const iso = on ? (dateIso || null) : null;
 
-  /* THE FUSE CONDITION, and it is deliberately narrow (§ THE FUSED CUTOVER).
-     Three things have to be true at once: the overlay is on, a week is really
-     drawn right now, and the target is a DIFFERENT one. That is exactly the
-     case where a synchronous county repaint would pair this week's colours with
-     last week's polygons. Anything else has no coherent picture to hold — a
-     toggle coming on from nothing, a same-week recolour, the off state, and the
-     three families that have no overlay at all — and runs the tail on the spot,
-     which is what those callers did before this parameter existed.
+  /* THE FUSE CONDITION (§ THE FUSED CUTOVER). Three things at once: the overlay
+     is ON, there is a tail to hold, and the week the source is really showing
+     is not the target — where "really showing" is `attached`, which is null
+     until MapLibre has said a week is drawable.
 
-     Asked of `attached`, never of `targetKey`: what may be held back is a
-     PICTURE, and the only honest witness to what is on the map is the value
-     written when MapLibre said the source was drawable. */
+     That null is what brings the TOGGLE onto this axis. Turning the polygons on
+     makes every county None (js/interfaces/usdm.js § the hard switch), and
+     running that tail on the press would put an all-None map — a map of a week
+     with no drought anywhere in it, which no week has ever been — on screen for
+     the length of a fetch. Held instead, the live choropleth stays up to the
+     instant the Monitor's map can replace it, and there is one flip.
+
+     Everything else runs the tail on the spot: a same-week recolour, the off
+     state (nothing to fetch, so the choropleth comes straight back), and the
+     three families with no polygons at all. `settle` is in the condition
+     because a hold with nothing to hold is just a delay. */
   const showing = attached;
-  const fuse = !!on && !!showing && iso !== showing.dateIso;
+  const fuse = !!on && !!settle && iso !== (showing && showing.dateIso);
 
   const key = on ? 'on:' + (iso || '') : 'off';
   if (key === targetKey) {
@@ -934,7 +924,7 @@ export function sync({ map, handle, on, dateIso, announce, opacity,
        a county click landing mid-hold has recomputed the colours for the week
        being held FOR, and running them now would put them on the polygons being
        held FROM. Otherwise there is nothing to wait for. */
-    if (fuse && settle) return holdTail(settle);
+    if (fuse) return holdTail(settle);
     if (settle) settle();
     return Promise.resolve(true);
   }
@@ -947,28 +937,35 @@ export function sync({ map, handle, on, dateIso, announce, opacity,
   // caller's tail carries the newest colours.
   dropTails();
 
-  /* NOTHING IS CLEARED WHEN THE CUTOVER CAN BE FUSED — the reversal, and the
-     header has the argument. The old week keeps drawing under the old counties,
-     which is a true map of a week the reader was looking at a moment ago, until
-     the new week is drawable and both change together.
+  /* NOTHING IS CLEARED WHILE A PICTURE IS BEING HELD — the reversal the fused
+     cutover brought, and the header has the argument. Last week's polygons keep
+     drawing over last week's counties, which is a true map of a week the reader
+     was looking at a moment ago, until the new week is drawable and both change
+     together.
 
-     When it CANNOT be fused there is no coherent picture to hold: `attached` is
-     null because nothing is drawn, the source is already empty or about to be
-     wrong, and the clear is what makes `loading` mean what it says. A week
-     already decoded skips it either way — there is nothing to wait for. */
+     A HOLD IS NOT THE SAME THING AS A HELD PICTURE, and the toggle is where the
+     two come apart. Turning the polygons on fuses (there is a tail worth
+     holding) but holds nothing on this layer: `attached` is null, and what the
+     source still contains is whatever week was up the last time the reader
+     turned the polygons OFF — the layer is hidden then, never emptied, so the
+     trip back is instant. Showing THAT over the live choropleth for the length
+     of a fetch is the pairing this whole arrangement exists to prevent, so the
+     clear stays for exactly this case. A week already decoded skips it either
+     way: run() has the real data in hand in the same task. */
   if (on) {
     const hit = iso ? weeks.get(iso) : null;
     const cached = !!(hit && hit.value);
-    if (!fuse) attached = null;
-    if (!cached) {
-      if (!fuse) setData(map, EMPTY_FC);
-      // `loading` would be a claim that something is on its way, and a null week
-      // is not on its way anywhere; run() answers it with `missing`.
-      if (iso) marker('loading');
+    const holding = fuse && !!showing;
+    if (!holding) {
+      attached = null;
+      if (!cached) setData(map, EMPTY_FC);
     }
+    // `loading` would be a claim that something is on its way, and a null week
+    // is not on its way anywhere; run() answers it with `missing`.
+    if (!cached && iso) marker('loading');
   }
 
-  const done = (fuse && settle) ? holdTail(settle) : null;
+  const done = fuse ? holdTail(settle) : null;
 
   run(map, handle, mine, !!on, iso, announce)
     .catch((err) => {
@@ -1204,14 +1201,12 @@ export function drawn() {
 /**
  * Build the overlay on a throwaway map — the poster's offscreen composite.
  *
- * Same ids, which is safe because layer ids are per-map, and same paint, which
- * is the point: the poster has to be the picture the reader was looking at.
- * That now includes the STRENGTH they set it to — a printed map at an opacity
- * nobody chose is a different picture — and the caller passes it rather than
- * this module reading `wantOpacity`, because the poster's whole discipline is
- * that every value on it is frozen off one `sel` before the capture starts.
- * Omitted, it is the default, which is what every caller written before the
- * slider existed meant.
+ * Same ids, which is safe because layer ids are per-map, and the same paint out
+ * of the same one function, which is the point: the poster has to be the
+ * picture the reader was looking at. There is nothing left to pass — the layer
+ * has one appearance now (§ Paint) — and the OTHER half of the switch reaches
+ * the poster on its own, because js/export.js paints the offscreen counties
+ * from the same descriptor colours the screen is painted from.
  *
  * Touches NO module state and writes NO marker; the settle machinery above is
  * about the live map, and this map is captured and disposed inside one call.
@@ -1219,10 +1214,9 @@ export function drawn() {
  * @param {object} targetMap the offscreen map
  * @param {object} fc an ensureWeek() FeatureCollection
  * @param {string} beforeId the offscreen handle's county line layer
- * @param {{opacity?: number}} [opts] the reader's strength, 0–1
  * @returns {void}
  */
-export function addOverlayLayers(targetMap, fc, beforeId, { opacity } = {}) {
+export function addOverlayLayers(targetMap, fc, beforeId) {
   if (!targetMap || typeof targetMap.getLayer !== 'function' || !fc) return;
 
   const src = targetMap.getSource(OVERLAY_SOURCE_ID);
@@ -1231,7 +1225,7 @@ export function addOverlayLayers(targetMap, fc, beforeId, { opacity } = {}) {
 
   if (targetMap.getLayer(OVERLAY_FILL_ID)) return;
   const anchor = (beforeId && targetMap.getLayer(beforeId)) ? beforeId : undefined;
-  targetMap.addLayer(fillLayerDef(opacity), anchor);
+  targetMap.addLayer(fillLayerDef(), anchor);
 }
 
 /**

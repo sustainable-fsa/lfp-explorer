@@ -152,9 +152,12 @@ export const MARKERS = Object.freeze({
 
         (absent)      the overlay is not drawn — toggled off, or the active view
                       is not the drought monitor
-        `loading`     on; the target week's fetch or decode is in flight, and the
-                      source has ALREADY been emptied (last week's D4 blob over
-                      this week's choropleth is a map that lies)
+        `loading`     on; the target week's fetch or decode is in flight. What
+                      is on screen underneath is whatever the fused cutover is
+                      HOLDING — the previous week, whole, on a scrub; the live
+                      choropleth on the way in from the toggle, where the source
+                      is emptied first because last week's D4 blob over this
+                      week's counties is a map that lies
         `YYYY-MM-DD`  on; THAT week is attached and flushed to GL. Stamped only
                       after the map fires `sourcedata` with `isSourceLoaded` for
                       the overlay's source and a double rAF has passed — the same
@@ -229,13 +232,14 @@ export const MARKERS = Object.freeze({
  *   paintOracle async (page) → how many counties should carry a colour.
  *   week        (a view with a time control inside the year) its selectors and
  *               the format its <output> owes a reader.
- *   overlay     (the drought monitor only) the weekly-polygon overlay: its
+ *   overlay     (the drought monitor only) the weekly-polygon HARD SWITCH: its
  *               drawer section and two seg buttons, the param and preference key
  *               the generic choice machinery gives it, the APP-OWNED source and
  *               layer ids, the shape of its settle marker, the frozen week its
  *               deep link must land on, the two copy clauses the live region
- *               and the legend key owe a reader while it is on, and the strength
- *               slider that appears with it (the `opacity*` entries).
+ *               and the legend key owe a reader while it is on, and the witness
+ *               county the switch and its fused cutover are measured at
+ *               (`fuse`).
  *   unmatchedOracle async (page) → how many source areas this view's join
  *               cannot reach, for the count the live region must say out loud.
  *   lazyAssets  committed repo assets this view loads WITH the view rather than
@@ -453,10 +457,19 @@ export const INTERFACES = Object.freeze({
       param: 'week',
     }),
 
-    /** THE WEEKLY POLYGONS, drawn over the choropleth — the only control in the
-        app that adds a second body of geometry rather than recolouring the
-        first. Off by default, so `?polygons` is elided at rest, and remembered
-        per view by the generic choice machinery (hence `lsKey`, which is the
+    /** THE WEEKLY POLYGONS — the only control in the app that adds a second
+        body of geometry rather than recolouring the first, and since
+        2026-08-27 a HARD SWITCH rather than an overlay: on, every classed
+        county paints the legend's None (`noneColor`) and the Monitor's own
+        polygons draw over them at `fill-opacity: 1`. It shipped translucent
+        with a strength slider; the owner walked that back ("too confusing to
+        see them over the county layers"), and the `opacity*` entries that used
+        to sit in this block went with the slider, along with `?opacity` and
+        `sfsa-ngp-opacity-usdm` — both retired-inert, read by nothing, so there
+        is nothing here for a gate to assert about them.
+
+        Off by default, so `?polygons` is elided at rest, and remembered per
+        view by the generic choice machinery (hence `lsKey`, which is the
         LS.choice template filled in, not a key of its own invention).
         `sectionSel` is the drawer section the switcher must hide with the rest
         of the drought monitor's controls when another view is on screen.
@@ -486,40 +499,47 @@ export const INTERFACES = Object.freeze({
         above already lands on.
 
         `liveClause` and `legendClause` are COPY CONTRACTS, in the pattern of
-        `yearDomain.clampSays`: what a reader who cannot see the map must be told
-        while a second geometry is drawn over the first. The wording is the
-        app's; these patterns only insist that it is said.
+        `yearDomain.clampSays`: what a reader who cannot see the map must be
+        told while the canvas has stopped being the choropleth. Both were
+        rewritten with the switch — the old pair said the polygons were drawn
+        OVER the counties, which is now the one thing they are not. The wording
+        is the app's; these patterns only insist that it is said.
 
-        THE `opacity*` ENTRIES ARE THE STRENGTH SLIDER, which appears with the
-        polygons and not before them — `opacityWrapSel` is the wrap whose
-        `hidden` says so, and it is narrower than `sectionSel` on purpose, the
-        way `#elig-source-wrap` is narrower than the eligibility section. The
-        param is emitted only while the overlay is actually drawn and elided at
-        `opacityDefault`, so a drought-monitor URL at rest still carries neither.
-        `opacityDefault` is a PERCENTAGE, which is the reader's unit and the
-        <output>'s; the paint property it drives is the same number over 100,
-        which is what an assertion reading `getPaintProperty` has to compare
-        against.
+        `noneColor` IS THE HARD SWITCH'S WHOLE VISIBLE CLAIM: CLASS_COLORS[0] in
+        js/interfaces/usdm.js, the warm neutral the legend already calls None.
+        While the polygons are on, EVERY county the archive classed wears it —
+        including the D4 ones — because the class the reader is looking at
+        arrives from the polygon above the county rather than from the county.
+        An assertion reads it off `getFeatureState`, which is where the paint
+        really is.
 
-        `fuse` IS THE FUSED WEEK CUTOVER'S WITNESS PAIR, and every value in it
-        was MEASURED rather than chosen (2026-08-27):
+        `fuse` IS THE WITNESS, for both the switch and the fused cutover, and
+        every value in it was MEASURED rather than chosen (2026-08-27):
 
+          · `countyId` 20153 is Rawlins County, Kansas — D3 in week 30 of 2012,
+            which is `classColor` #e60000 in js/interfaces/usdm.js's
+            CLASS_COLORS, and D4 (#730000) in week 31. A big, rectangular
+            plains county, so the bbox centroid the kit computes lands inside
+            it, and the two weekly TopoJSONs (5 features each, D0–D4, 833 and
+            942 arcs, 738 KB and 785 KB raw / 249 KB and 264 KB over the wire)
+            both cover that centroid with exactly one polygon — which is what
+            lets ONE point on the map answer for both halves of the picture:
+            what colour is the county here, and which week are the polygons
+            here;
           · the two weeks are adjacent Tuesdays on the sidecar's own gapless
             grid — week 30 and week 31 of 2012, 2012-07-24 and 2012-07-31.
-            `fromIso` is deliberately the same frozen fixture `deepLinkIso` and
-            `deepLink` already land on;
-          · they are a usable pair: read straight out of
-            usdm-counties-fsa-lfp.json (week0 2000-01-04, indices 655 and 656),
-            415 of the archive's 3,221 counties change drought class between
-            them;
-          · `countyId` 20153 is Rawlins County, Kansas — D3 in the first week and
-            D4 in the second, which is `fromColor` #e60000 to `toColor` #730000
-            in js/interfaces/usdm.js's CLASS_COLORS. A big, rectangular plains
-            county, so the bbox centroid the kit computes lands inside it, and
-            the two weekly TopoJSONs (5 features each, D0–D4, 833 and 942 arcs,
-            738 KB and 785 KB raw / 249 KB and 264 KB over the wire) both cover
-            that centroid with exactly one polygon — which is what lets ONE
-            point on the map answer for both halves of the picture.
+            `iso` is deliberately the same frozen fixture `deepLinkIso` and
+            `deepLink` already land on. 415 of the archive's 3,221 counties
+            change drought class between them (read straight out of
+            usdm-counties-fsa-lfp.json, week0 2000-01-04, indices 655 and 656)
+            — which mattered when the witnessed transition was a scrub, and is
+            kept because the scrub-while-on pass still drives it;
+          · `nextWeek`/`nextIso` are that second week. The TRANSITION the frame
+            probe watches is now the TOGGLE (off → on at `week`), because that
+            is where the two halves can come apart under the hard switch: the
+            counties go None the instant the button is pressed unless something
+            holds them, and an all-None map is a map of a week that never
+            happened.
 
         THERE IS NO TICK BUDGET IN HERE, and there used to be. `leadTicks: 5`
         bounded how many sampled frames the polygons were allowed to lead the
@@ -541,26 +561,24 @@ export const INTERFACES = Object.freeze({
       lsKey: 'sfsa-ngp-polygons-usdm',
       sourceId: 'ngp-usdm-overlay',
       fillLayerId: 'ngp-usdm-overlay-fill',
-      opacityWrapSel: '#usdm-opacity-wrap',
-      opacityRangeSel: '#opacity-range',
-      opacityOutSel: '#opacity-out',
-      opacityParam: 'opacity',
-      opacityLsKey: 'sfsa-ngp-opacity-usdm',
-      opacityDefault: 45,
+      noneColor: '#f0ead8',
       markerIso: /^\d{4}-\d{2}-\d{2}$/,
       deepLinkIso: '2012-07-24',
       indexUrl: 'https://data.sustainable-fsa.com/data-tiles/usdm/usdm-index.json',
-      liveClause: /USDM drought polygons are drawn over the counties/,
-      legendClause: /USDM's own weekly map, drawn as published/,
+      liveClause: /the county colors are set aside while it is on/,
+      legendClause: /the map is the USDM's own weekly map, drawn as published/,
       fuse: Object.freeze({
-        fromWeek: 30,
-        toWeek: 31,
-        fromIso: '2012-07-24',
-        toIso: '2012-07-31',
+        week: 30,
+        iso: '2012-07-24',
+        nextWeek: 31,
+        nextIso: '2012-07-31',
         countyId: '20153',
         countyName: 'Rawlins County, Kansas',
-        fromColor: '#e60000',
-        toColor: '#730000',
+        classColor: '#e60000',
+        /** What the CARD must still say for that county while the map is the
+            Monitor's own: the readouts report the data, not the paint. The
+            phrase is js/interfaces/usdm.js's FULL[4]. */
+        classPhrase: 'Extreme drought',
       }),
     }),
 

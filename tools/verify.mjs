@@ -3418,10 +3418,6 @@ const OVERLAY_SELS = {
   param: OVERLAY.param, lsKey: OVERLAY.lsKey,
   sourceId: OVERLAY.sourceId, fillLayerId: OVERLAY.fillLayerId,
   outSel: WEEK.outSel, weekParam: WEEK.param,
-  opacityWrapSel: OVERLAY.opacityWrapSel, opacityRangeSel: OVERLAY.opacityRangeSel,
-  opacityOutSel: OVERLAY.opacityOutSel, opacityParam: OVERLAY.opacityParam,
-  opacityLsKey: OVERLAY.opacityLsKey,
-  opacityRangeId: OVERLAY.opacityRangeSel.replace('#', ''),
 };
 
 /**
@@ -3444,10 +3440,10 @@ const OVERLAY_SELS = {
  * the indices are resolved in-page from `handle.layers` and `map.getStyle()`
  * together, never from anything this file remembered.
  *
- * `fillOpacity` is read off the LAYER rather than off the slider, and that is
- * the point of it: the <output>, the URL and localStorage can all agree on a
- * number the map is not actually painted at. It is the paint property that a
- * reader sees.
+ * `fillOpacity` is read off the LAYER, and under the hard switch it is a
+ * one-value assertion rather than a slider readback: anything below 1 mixes the
+ * Monitor's hex with the county fill underneath and produces a colour that is
+ * in no legend, which is exactly what the walk-back was about.
  */
 const overlayProbe = (page) => page.evaluate(async (s) => {
   const url = new URL(location.href);
@@ -3455,9 +3451,6 @@ const overlayProbe = (page) => page.evaluate(async (s) => {
   const pressed = (sel) => (q(sel) ? q(sel).getAttribute('aria-pressed') : null);
   const out = q(s.outSel);
   const sec = q(s.sectionSel);
-  const wrap = q(s.opacityWrapSel);
-  const range = q(s.opacityRangeSel);
-  const opacityOut = q(s.opacityOutSel);
   const base = {
     hasSection: !!sec,
     sectionHidden: sec ? sec.hidden : null,
@@ -3465,24 +3458,6 @@ const overlayProbe = (page) => page.evaluate(async (s) => {
     hasOff: !!q(s.offSel),
     on: pressed(s.onSel),
     off: pressed(s.offSel),
-    /* The strength slider, which is narrower than the section it sits in: the
-       wrap's `hidden` is the app saying whether there is anything to make
-       stronger. `opacityNamed` asks the same WCAG 1.3.1/4.1.2 question the week
-       scrubber's `named` does — a bare range is an unnamed control — and
-       accepts either form, an sr-only <label for> or an aria-label. */
-    hasOpacity: !!range,
-    opacityWrapHidden: wrap ? wrap.hidden : null,
-    opacityValue: range ? range.value : null,
-    opacityStep: range ? range.step : null,
-    opacityNamed: range ? !!(range.getAttribute('aria-label')
-      || document.querySelector(`label[for="${s.opacityRangeId}"]`)) : null,
-    opacityOut: opacityOut ? (opacityOut.textContent || '').trim() : null,
-    opacityOutFor: opacityOut ? opacityOut.getAttribute('for') : null,
-    opacityParam: url.searchParams.get(s.opacityParam),
-    storedOpacity: (() => {
-      try { return localStorage.getItem(s.opacityLsKey); }
-      catch (e) { return 'unavailable'; }
-    })(),
     fillOpacity: null,
     /** `dataset.ngpOverlay` is UNDEFINED when the attribute is absent, which is
         the grammar's "not drawn" (tools/config.mjs § MARKERS). Normalised to
@@ -3584,61 +3559,40 @@ const settleOverlay = async (page, ms = CONFIG.switchMs) => {
   return landed;
 };
 
-/**
- * Move the strength slider the way a pointer does.
- *
- * Driven exactly as scrubWeek() drives the week — the value set and an `input`
- * event fired — because that is the event the app throttles to a frame, and a
- * `change` alone would test a path a dragging thumb never takes.
- *
- * Returns false if there is no slider to move, rather than throwing: the
- * control does not exist until the polygons are on, and a missing one is a
- * named failure of its own check.
- */
-const dragOpacity = (page, pct) => page.evaluate(([s, v]) => {
-  const r = document.querySelector(s.opacityRangeSel);
-  if (!r) return false;
-  r.value = String(v);
-  r.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
-}, [OVERLAY_SELS, pct]);
+/* ── The fused cutover, now on the TOGGLE axis ───────────────────────────────
+   The map's two halves — the county fills and the Monitor's polygons — are one
+   picture under the hard switch, and neither one is a map on its own. Coloured
+   counties under an opaque drought map is the blend the switch replaced;
+   all-None counties with no polygons is a map of a week with no drought
+   anywhere in it, and there has never been such a week. The county fills change
+   synchronously and a 250 KB weekly TopoJSON does not, so the app no longer
+   paints on either transition — it packages the paint and hands it to the
+   overlay, which runs it in the same task the incoming week first reports
+   drawable (js/app.js § recolor, js/usdm-overlay.js § THE FUSED CUTOVER).
 
-/** One strength change, waited out. There is NOTHING to settle on but frames:
-    the app throttles the slider to one rAF like the year and the week, and what
-    a landed change does is a single setPaintProperty — no fetch, so no marker
-    moves and no counter bumps. The 120 ms is the same "let the frame throttle
-    have its frame" allowance settleWeek() makes, without its announcement
-    debounce, because this control deliberately says nothing. */
-const settleOpacity = async (page) => {
-  await page.waitForTimeout(120);
-  await settleFrames(page);
-};
+   THE WITNESSED TRANSITION IS THE TOGGLE, and it moved there with the switch.
+   While the polygons are on, both weeks of a scrub paint the same None, so a
+   week scrub can no longer produce a county/polygon mismatch at all — what it
+   can still do is blank the drought map for the length of a fetch, which is
+   the third pass below. The toggle is where the halves can now come apart, and
+   it is the one a reader hits first.
 
-/* ── The fused week cutover ───────────────────────────────────────────────────
-   The choropleth is one week's answer and the polygons over it are that week's
-   evidence, and they used to arrive at different times: feature state is
-   synchronous, a 250 KB weekly TopoJSON is not. So the app no longer paints on
-   a scrub — it packages the paint and hands it to the overlay, which runs it in
-   the same task the incoming week first reports drawable (js/app.js § recolor,
-   js/usdm-overlay.js § THE FUSED CUTOVER). What has to be gated is that the two
-   halves really do move together, and that the old picture is HELD rather than
-   blanked while they wait.
+   ── THREE WITNESSES, ONE POINT, ONE TICK ──────────────────────────────────
+   The probe samples per requestAnimationFrame, and the first two witnesses are
+   read at THE SAME PIXEL — the kit's own centroid for the fixture county, the
+   way the county-click check derives its click point. That is the whole reason
+   this reads as a coherence check rather than as two unrelated timelines: at
+   one square of Kansas, what colour is the county, and what is drawn over it?
 
-   ── TWO WITNESSES, ONE POINT, ONE TICK ────────────────────────────────────
-   The probe samples per requestAnimationFrame, and both witnesses are read at
-   THE SAME PIXEL — the kit's own centroid for the fixture county, the way the
-   county-click check derives its click point. That is the whole reason this
-   reads as a coherence check rather than as two unrelated timelines: at one
-   square of Kansas, which week do the counties say, and which week do the
-   polygons say?
-
-     countyWeek   `getFeatureState(handle.featureRef(id)).color`, compared
-                  against the two class hexes the fixture pins. Flips when the
-                  kit's coalesced feature-state flush runs — one animation frame
-                  after the app applies.
+     countyColor  `getFeatureState(handle.featureRef(id)).color`. Before the
+                  switch lands it is the county's real class (`classColor`,
+                  #e60000 — Rawlins is D3 that week); after, it is the legend's
+                  None (`noneColor`). Flips when the kit's coalesced
+                  feature-state flush runs — one animation frame after the app
+                  applies.
      polygonWeek  the `date` property of the overlay feature under that same
-                  point. Flips when the worker's re-tiled data lands in the
-                  source cache.
+                  point, or nothing at all before the layer exists. Flips when
+                  the worker's re-tiled data lands in the source cache.
      marker       `data-ngp-overlay`, the module's own settle signal. Flips two
                   animation frames after the app applies, and it is the third
                   witness because it is the one that shares the counties' clock.
@@ -3652,24 +3606,15 @@ const settleOpacity = async (page) => {
    by a small number of ticks, and the direction that would mean a DEFECT is the
    other one.
 
-   Measured on this suite (2026-08-27, three cutovers, one cold and two warm):
-   0 ticks of counties-ahead every time, 1–3 ticks of polygons-ahead, 0 ticks
-   blank. Sampled off the drawing buffer at the same time, exactly ONE rendered
-   frame per cutover is mismatched — new polygons over old counties, ~16 ms —
-   because kit v0.4.1 offers no synchronous feature-state flush and MapLibre has
-   already queued its render for that frame by the time our settle handler runs.
-   Before this feature that window was the whole fetch: 300–700 ms of the new
-   week's counties over NO polygons at all.
-
-   So the three assertions below are:
-     · counties ahead of the polygons        — 0, and structurally so: the tail
-       is released only after `isSourceLoaded`, by which point the point query
-       already answers with the new week. This is the assertion with teeth; the
-       pre-fix app fails it on every tick of the fetch.
-     · the overlay blank, or showing neither
-       week, at any tick                     — 0. This is the check for the
-       removal of clear-before-fetch: the old polygons must still be there.
-     · the marker ahead of the counties      — 0, and this one is an ORDERING,
+   So the assertions on a toggle-on are:
+     · the ALL-NONE FLASH                    — 0 ticks with the county already
+       painted None while nothing is drawn over it. This is the assertion with
+       teeth and the reason § 3 of the contract exists: without the hold, every
+       tick of the fetch is exactly that picture.
+     · the live choropleth is HELD           — 0 ticks, before the flip, where
+       the county is anything but its real class. The reader keeps their own
+       last true map right up to the single cutover.
+     · the marker never leads the counties   — 0, and this one is an ORDERING,
        not a budget. Both of its witnesses move off the SAME event: the tail is
        released in the task that hears the drawable `sourcedata`, the kit's
        coalesced flush lands the colours on the next frame, and the marker
@@ -3680,35 +3625,59 @@ const settleOpacity = async (page) => {
        after it — which is the regression this is here to catch.
 
    ── WHAT USED TO BE HERE, AND WHY IT IS NOT ───────────────────────────────
-   The third assertion was a tick BUDGET on the fourth quantity — how many
-   sampled frames the polygons led the counties by (`FUSE.leadTicks`, 5). It
-   failed CI on 2026-08-27 at `behind=7 of 5` on a runner drawing ~33 fps, and
-   it deserved to: it counts frames across the two clocks named above, whose
-   real-time gap is dominated by re-tiling and therefore stretches on a slow
-   machine exactly while the cadence measuring it slows down. Every tunable
-   number would have been a guess about the runner, not about the app. The
-   quantity is still MEASURED and still printed in the detail of the ordering
-   check — it is good evidence, it is just not a verdict. */
+   A tick BUDGET on a fourth quantity: how many sampled frames the polygons led
+   the counties by (`FUSE.leadTicks`, 5). It failed CI on 2026-08-27 at
+   `behind=7 of 5` on a runner drawing ~33 fps, and it deserved to: it counts
+   frames across the two clocks named above, whose real-time gap is dominated by
+   re-tiling and therefore stretches on a slow machine exactly while the cadence
+   measuring it slows down. Every tunable number would have been a guess about
+   the runner, not about the app. The quantity is still MEASURED and still
+   printed in the detail of the ordering check — it is good evidence, it is just
+   not a verdict. */
 const FUSE = OVERLAY.fuse;
 
+/** One tick, the way the trace writes it: what the county under the point is
+    wearing, then what is drawn over it. */
+const isNone = (x) => x.color === OVERLAY.noneColor;
+const isClass = (x) => x.color === FUSE.classColor;
+const covers = (x, iso) => (x.dates || '').includes(iso);
+
+/** Runs of identical ticks, collapsed, with the offset each run began at. The
+    evidence a passing run carries and the first thing to read when one fails. */
+function traceOf(ticks, t0, keyOf) {
+  const rows = [];
+  for (const x of ticks) {
+    const k = keyOf(x);
+    if (!rows.length || rows[rows.length - 1].k !== k) {
+      rows.push({ k, n: 1, t: Math.round(x.t - t0) });
+    } else rows[rows.length - 1].n++;
+  }
+  return rows.map((r) => `+${r.t}ms ${r.k}×${r.n}`).join(' → ');
+}
+
 /**
- * Install the per-tick probe, drive one week change, and bring back what every
+ * Install the per-tick probe, drive ONE transition, and bring back what every
  * frame in between saw.
  *
  * IN-PAGE FROM END TO END. A CDP round trip per animation frame would sample
  * at a tenth of the rate it is trying to measure, and would be the slowest
  * thing in the transition it claims to be observing.
  *
- * The two colours are passed rather than read off the fixture because the WARM
- * pass is the same cutover travelled backwards: `toColor` names the week being
- * scrubbed TO, whichever of the fixture's two that is.
+ * The layer is NOT required to exist when the probe is installed, and that is
+ * the difference the toggle made: on a cold toggle-on there is no overlay layer
+ * until the app builds one, so "nothing is drawn over the county" is a real
+ * sample rather than a broken probe. What IS required is a county polygon that
+ * projects on screen — without it there is no point to ask either question at.
  *
- * @returns {Promise<{ticks: object[], ahead: number, markerEarly: number,
- *          markerEarlyAt: string|null, atMarker: string|null, behind: number,
- *          blank: number, holdMs: number|null, markerMs: number|null,
- *          point: number[]|null, covered: string[]|null, trace: string}>}
+ * @param {object} args
+ * @param {'toggle'|'week'} args.drive which control to hit
+ * @param {number} [args.week] the week to scrub to, when driving the scrubber
+ * @param {string} args.wantIso the ISO the marker must land on
+ * @returns {Promise<{failed?: string, landed: boolean, t0: number,
+ *          point: number[], ticks: object[]}>} raw ticks; every verdict is the
+ *          caller's, because the three passes below judge them differently
  */
-async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
+async function cutoverProbe(page, { drive, week, wantIso }) {
   const ready = await page.evaluate(async ([f, sels, kitUrl]) => {
     const app = await import(new URL('js/app.js', document.baseURI).href);
     const county = await import(kitUrl);
@@ -3727,14 +3696,8 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
     if (pt[0] < 0 || pt[1] < 0 || pt[0] > box.clientWidth || pt[1] > box.clientHeight) {
       return { ok: false, why: `${f.countyId} projects off screen at this camera` };
     }
-    if (!map.getLayer(sels.fillLayerId)) return { ok: false, why: 'the overlay layer is not on the map' };
-    const covered = map.queryRenderedFeatures(pt, { layers: [sels.fillLayerId] })
-      .map((x) => x.properties && x.properties.date);
-    if (!covered.length) {
-      return { ok: false, why: `no drought polygon covers ${f.countyId} in this week` };
-    }
 
-    window.__fuse = { ticks: [], on: true, pt, covered };
+    window.__fuse = { ticks: [], on: true, pt };
     const tick = () => {
       if (!window.__fuse.on) return;
       requestAnimationFrame(tick);
@@ -3745,6 +3708,9 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
       } catch (e) { color = 'unreadable'; }
       let dates = [];
       try {
+        // GATED on getLayer: querying a layer the style does not hold does not
+        // throw, it reports through the map's error event and straight into the
+        // console this harness collects.
         if (map.getLayer(sels.fillLayerId)) {
           dates = [...new Set(map.queryRenderedFeatures(pt, { layers: [sels.fillLayerId] })
             .map((x) => x.properties && x.properties.date))].sort();
@@ -3759,89 +3725,38 @@ async function fuseProbe(page, { toWeek, toIso, fromIso, fromColor, toColor }) {
       });
     };
     requestAnimationFrame(tick);
-    return { ok: true, pt, covered };
+    return { ok: true, pt };
   }, [FUSE, OVERLAY_SELS, KIT_COUNTY_URL]);
 
   if (!ready.ok) return { failed: ready.why };
 
-  // Driven exactly as 8a drives the scrubber — value set, `input` fired — so
-  // this is the path a dragged thumb takes and not a private entry point.
-  const t0 = await page.evaluate(([sel, week]) => {
-    const r = document.querySelector(sel);
-    if (!r) return null;
-    r.value = String(week);
-    r.dispatchEvent(new Event('input', { bubbles: true }));
+  /* Driven the way a reader drives it: a real click on the seg button, or the
+     value set and an `input` fired on the scrubber (which is the event the app
+     throttles to a frame, and the path 8a already uses). Neither is a private
+     entry point. */
+  const t0 = await page.evaluate(([sel, wk, mode]) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    if (mode === 'toggle') el.click();
+    else {
+      el.value = String(wk);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     return performance.now();
-  }, [WEEK.rangeSel, toWeek]);
+  }, [drive === 'toggle' ? OVERLAY_SELS.onSel : WEEK.rangeSel, week ?? 0, drive]);
+
+  if (t0 === null) return { failed: `nothing to drive for ${drive}` };
 
   const landed = await page.waitForFunction(
     (want) => document.documentElement.dataset.ngpOverlay === want,
-    toIso, { timeout: CONFIG.switchMs }).then(() => true).catch(() => false);
+    wantIso, { timeout: CONFIG.switchMs }).then(() => true).catch(() => false);
   await settleFrames(page);
   const ticks = await page.evaluate(() => {
     window.__fuse.on = false;
     return window.__fuse.ticks;
   });
 
-  const seen = ticks.filter((x) => x.t >= t0 - 40);
-  const isNew = (x) => x.color === toColor;
-  const hasNew = (x) => (x.dates || '').includes(toIso);
-  const hasOld = (x) => (x.dates || '').includes(fromIso);
-  /** One tick the way the trace writes it: which week the counties under the
-      point say, then which week the polygons under it say. */
-  const keyOf = (x) => `${isNew(x) ? 'NEW' : x.color === fromColor ? 'OLD' : x.color}`
-    + `/${x.dates === toIso ? 'NEW' : x.dates === fromIso ? 'OLD' : x.dates}`;
-  const at = (x) => `+${Math.round(x.t - t0)}ms ${keyOf(x)}`;
-  const flip = seen.find(isNew);
-  const mark = seen.find((x) => x.marker === toIso);
-  /* THE ORDERING INVARIANT: a tick that has been TOLD the new week is up while
-     the county under the point is NOT yet wearing the new week's colour. Zero
-     of these is what "one cutover" means on the clock the app itself controls.
-
-     NOT `x.color === fromColor`, which is the narrower reading of the same
-     sentence and lets the regression through. Measured against an injected
-     fault (feature-state writes deferred 300 ms, which is what "released on a
-     timer" looks like): the offending ticks read `null/NEW`, not `OLD/NEW`,
-     because the flush that was supposed to land the new colours is what is
-     late. Anything that is not the new week under a marker that says it is the
-     new week is the defect. */
-  const early = seen.filter((x) => x.marker === toIso && !isNew(x));
-  return {
-    landed,
-    point: ready.pt,
-    covered: ready.covered,
-    ticks: seen,
-    // The counties cut over while the polygons under that same point are still
-    // not this week's. The defect.
-    ahead: seen.filter((x) => isNew(x) && !hasNew(x)).length,
-    // The marker says the new week is up while the counties still say the old
-    // one. The ordering invariant — asserted, and the one with no number in it.
-    markerEarly: early.length,
-    // The first few offenders, so a failure names WHEN rather than only how many.
-    markerEarlyAt: early.length
-      ? early.slice(0, 5).map(at).join(', ') + (early.length > 5 ? ', …' : '')
-      : null,
-    // What both witnesses said on the tick the marker first read the new week.
-    atMarker: mark ? at(mark) : null,
-    // The polygons are this week's and the counties under them are not yet.
-    // INFORMATIONAL: two clocks, so this is a property of the runner as much as
-    // of the app (see the § header). Printed, never asserted.
-    behind: seen.filter((x) => !isNew(x) && hasNew(x)).length,
-    // Nothing at all, or some third week — the clear-before-fetch check.
-    blank: seen.filter((x) => !x.dates || !(hasNew(x) || hasOld(x))).length,
-    seqMoved: seen.length ? seen[seen.length - 1].seq !== seen[0].seq : false,
-    holdMs: flip ? Math.round(flip.t - t0) : null,
-    markerMs: mark ? Math.round(mark.t - t0) : null,
-    trace: (() => {
-      const rows = [];
-      for (const x of seen) {
-        const k = keyOf(x);
-        if (!rows.length || rows[rows.length - 1].k !== k) rows.push({ k, n: 1, t: Math.round(x.t - t0) });
-        else rows[rows.length - 1].n++;
-      }
-      return rows.map((r) => `+${r.t}ms ${r.k}×${r.n}`).join(' → ');
-    })(),
-  };
+  return { landed, t0, point: ready.pt, ticks: ticks.filter((x) => x.t >= t0 - 40) };
 }
 
 /** …and the other direction: the attribute gone entirely, which is the
@@ -4197,21 +4112,28 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
     clean('week across a view switch');
   }
 
-  /* ── 8e. The USDM's own weekly polygons, over the counties ───────────────
-     The first thing this app draws that is not a county, and the first control
-     that adds geometry rather than recolouring it. The choropleth is a
-     REDUCTION — one class per county, taken from the polygons — and the overlay
-     is the thing it was reduced from, so putting them on one map is the only
-     way a reader can see what the reduction cost. It is published unclipped at
-     about 1:2,000,000, which is why its edges run past the coastline; that is
-     the map, and help.md says so rather than the app pretending the counties
-     are its frame.
+  /* ── 8e. The USDM's own weekly polygons, INSTEAD OF the counties ─────────
+     The first thing this app draws that is not a county, and the only control
+     that changes what the map IS rather than how it is coloured. The
+     choropleth is a REDUCTION — one class per county, taken from the polygons
+     — and this switch puts the thing it was reduced from on screen in its
+     place. It is published unclipped at about 1:2,000,000, which is why its
+     edges run past the coastline; that is the map, and help.md says so rather
+     than the app pretending the counties are its frame.
 
-     WHAT NEEDS GATING HERE IS NOT "IT DREW". A translucent second geometry is
-     the easiest thing in this app to get subtly, invisibly wrong, and every
-     assertion below is one of those ways:
+     IT SHIPPED AS A TRANSLUCENT OVERLAY WITH A STRENGTH SLIDER, and both were
+     walked back on 2026-08-27 ("too confusing to see them over the county
+     layers"): two maps of one week, blended, answer the same question twice at
+     every pixel. ON now means the counties all paint the legend's None and the
+     polygons draw opaque over them. The slider's checks went with the slider;
+     what replaced them is the hard-switch proof below, which is a stronger
+     assertion than any of them — it reads the county's PAINT and the county's
+     DATA in the same breath and requires them to disagree.
 
-       · DRAWING THE WRONG WEEK. The overlay follows a scrubber that can be
+     WHAT NEEDS GATING HERE IS NOT "IT DREW". Every assertion below is a way
+     this is easy to get subtly, invisibly wrong:
+
+       · DRAWING THE WRONG WEEK. The polygons follow a scrubber that can be
          moved faster than a 0.7 MB file can arrive, and a fetch that lands late
          over a week the reader has already left is a map that lies about the
          date printed above it. Hence the marker (which stamps AFTER the source
@@ -4227,22 +4149,26 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
          sequences fetch-involving VIEW transitions; a week is not one, and an
          overlay that bumped it would make every seq-based wait in this file
          return early on a scrub.
-       · MOVING THE READOUT AND NOT THE MAP. The strength slider's whole job is
-         one `setPaintProperty`, and every other thing it touches — the
-         <output>, the URL, localStorage — can agree on a number the layer is
-         not painted at. So the strength is asserted off `getPaintProperty`,
-         never off the control.
+       · HALF A SWITCH. Two files have to agree: the descriptor paints the
+         counties None and the module draws the polygons opaque. Either one
+         alone is a wrong map — counties still coloured under an opaque drought
+         map is the blend the walk-back removed, and all-None counties with no
+         polygons is a map of a week that never happened. So the proof asserts
+         both at once, at a county whose real class is D3.
+       · TELLING THE READER THE PAINT INSTEAD OF THE DATA. The card, the
+         tooltip and the table are READOUTS, and they must keep naming the
+         county's own class while the map is the Monitor's. Asserted on the card
+         at the same county in the same breath as its None paint.
        · PROMISING ON SCREEN AND NOT IN THE POSTER. A printed map that quietly
-         dropped the overlay is a lie the reader cannot check.
+         dropped the polygons is a lie the reader cannot check.
        · LEAVING SOMETHING BEHIND. The layer stays resident when it is turned
          off — hidden, not destroyed, so the trip back is instant — which is
          precisely the arrangement in which "off" can still paint.
-       · CHANGING HALF THE MAP. The choropleth is one week's answer and the
-         polygons over it are that week's evidence, and a scrub used to move
-         them at different times — feature state is synchronous, a 250 KB
-         weekly file is not. The last block below watches every animation frame
-         of a cutover, cold and warm, at ONE point on the map where both halves
-         can be asked the same question.
+       · CHANGING HALF THE MAP AT A TIME. The counties are synchronous and a
+         250 KB weekly file is not, so both of the transitions that move both
+         halves — the toggle, and a week scrub while it is on — are watched
+         frame by frame in the last block, at ONE point on the map where both
+         halves can be asked the same question.
 
      EVERY WEEK DRIVEN HERE IS IN THE 2012 FIXTURE NEIGHBOURHOOD, never "the
      latest": the archive gains a Tuesday every Thursday, so a gate that drove
@@ -4251,10 +4177,10 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
      the deep-link section already lands on (tools/config.mjs § overlay).
 
      AND IT PUTS THE APP BACK. The overlay ends OFF, its param elided, its
-     marker gone, its strength back at the shipped default and its dataset
-     returned to the default, so the section template's remaining steps — card,
-     table, poster, state round trip — see the state 8d left them, whatever
-     order these subsections are ever read in. */
+     marker gone, no county card open and its dataset returned to the default,
+     so the section template's remaining steps — card, table, poster, state
+     round trip — see the state 8d left them, whatever order these subsections
+     are ever read in. */
   section('▸ Drought monitor — the USDM\'s own weekly polygons, over the map');
   {
     const O = iface.overlay;
@@ -4303,73 +4229,21 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         + 'something else',
       p1.seq === seqOff, `seq ${seqOff} → ${p1.seq}`);
       check('the polygons go UNDER the county lines and OVER the county fill: '
-        + 'the boundaries, the hover halo and the selection ring stay legible '
-        + 'through a translucent drought map, and the two ids it sits between '
-        + 'are read from handle.layers at this instant rather than remembered',
+        + 'the boundaries, the hover halo and the selection ring stay drawn over '
+        + 'the drought map, so a reader can still see which county a blob is '
+        + 'sitting on — and the two ids it sits between are read from '
+        + 'handle.layers at this instant rather than remembered',
       !!p1.order && p1.order.fill >= 0 && p1.order.line >= 0
         && p1.order.overlay > p1.order.fill && p1.order.overlay < p1.order.line,
       JSON.stringify(p1.order));
+      check('and they are drawn OPAQUE: fill-opacity is exactly 1 on the layer '
+        + 'itself. Anything less mixes the Monitor\'s hex with the county fill '
+        + 'beneath it and yields a colour that is in no legend — which is the '
+        + 'blend the hard switch replaced, slider and all',
+      p1.fillOpacity === 1,
+      JSON.stringify({ fillOpacity: p1.fillOpacity }));
       clean('usdm overlay on');
       await shot('19e-usdm-overlay');
-
-      /* ── How strongly it is drawn. ───────────────────────────────────────
-         A translucent layer has a second question after "is it on": how far
-         through it can the reader see. There is no right answer — the drought's
-         own shape and the county colour under it want different numbers — so
-         the app hands it over, and what is gated here is that the number the
-         reader sets is the number GL is painted at, not merely the number the
-         readout prints. The slider is asserted to arrive WITH the polygons, on
-         the `#elig-source-wrap` pattern: a strength control for a layer that is
-         not drawn is a slider with nothing on the other end of it. */
-      check('the strength slider appears WITH the polygons and not before them — '
-        + 'it is hidden while they are off, visible the moment they are on, '
-        + 'named for a screen reader rather than left as a bare range, and it '
-        + `opens at the shipped ${O.opacityDefault}% with the paint property to `
-        + 'match',
-      p0.opacityWrapHidden === true && p1.opacityWrapHidden === false
-        && p1.opacityNamed === true
-        && p1.opacityOutFor === OVERLAY_SELS.opacityRangeId
-        && p1.opacityValue === String(O.opacityDefault)
-        && p1.opacityOut === `${O.opacityDefault}%`
-        && p1.fillOpacity === O.opacityDefault / 100
-        && p1.opacityParam === null,
-      JSON.stringify({ hiddenWhileOff: p0.opacityWrapHidden,
-        hiddenWhenOn: p1.opacityWrapHidden, named: p1.opacityNamed,
-        outFor: p1.opacityOutFor, value: p1.opacityValue, out: p1.opacityOut,
-        paint: p1.fillOpacity, param: p1.opacityParam, url: page.url() }));
-
-      const dragged = await dragOpacity(page, 70);
-      await settleOpacity(page);
-      const up = await overlayProbe(page);
-      check('dragging it to 70% reaches the LAYER: fill-opacity is 0.70 on the '
-        + 'map itself, the readout says so, the URL carries ?opacity=70 and the '
-        + 'preference is stored — a slider that moved only the number under the '
-        + 'thumb would pass every check but the first one here',
-      dragged && up.fillOpacity === 0.7 && up.opacityOut === '70%'
-        && up.opacityValue === '70' && up.opacityParam === '70'
-        && up.storedOpacity === '70' && up.painted > 0,
-      JSON.stringify({ paint: up.fillOpacity, out: up.opacityOut,
-        value: up.opacityValue, param: up.opacityParam,
-        stored: up.storedOpacity, painted: up.painted, url: page.url() }));
-      check('and it does not repaint the choropleth or move any marker: a '
-        + 'translucency is not a fetch, not a view transition and not a new '
-        + 'week, so data-ngp-view-seq stands still and the overlay stays '
-        + 'stamped with the week it was already showing',
-      up.seq === seqOff && up.marker === p1.marker,
-      JSON.stringify({ seq: [seqOff, up.seq], marker: [p1.marker, up.marker] }));
-
-      await dragOpacity(page, O.opacityDefault);
-      await settleOpacity(page);
-      const home = await overlayProbe(page);
-      check(`dragging it back to ${O.opacityDefault}% DROPS ?opacity — a param `
-        + 'sitting at its default is a permanent smudge on every link shared '
-        + 'afterwards, and this one is elided exactly the way ?week and '
-        + '?polygons are',
-      home.opacityParam === null && home.fillOpacity === O.opacityDefault / 100
-        && home.opacityOut === `${O.opacityDefault}%`,
-      JSON.stringify({ param: home.opacityParam, paint: home.fillOpacity,
-        out: home.opacityOut, url: page.url() }));
-      clean('usdm overlay strength');
 
       /* ── It follows the week. ────────────────────────────────────────────── */
       await scrubWeek(page, 30);
@@ -4389,6 +4263,61 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         fixture: O.deepLinkIso, painted: p2.painted, seq: p2.seq,
         week: p2.week, polygons: p2.param, out: p2.out }));
       clean('usdm overlay follows the week');
+
+      /* ── THE HARD SWITCH ITSELF. ─────────────────────────────────────────
+         The one assertion that would have passed just as happily against the
+         translucent overlay this replaced is "the polygons paint", which is why
+         it is not the assertion. What is gated here is that the OTHER half
+         happened: at the frozen week, a county the archive puts in D3 is
+         painted the legend's None, while the drought map above it is what is
+         actually rendering. Either half alone is a wrong map — coloured
+         counties under an opaque drought map is the blend that was walked back,
+         and all-None counties with no polygons is a map of a week that never
+         happened — so both are read in one breath, at ONE county
+         (tools/config.mjs § overlay, `fuse`, where the class was measured
+         against the published payload).
+
+         AND THE CARD IS ASKED THE SAME QUESTION. The paint is not the data: the
+         card, the tooltip and the table are readouts of the archive, and a card
+         that started saying "None" for a D3 county because the map does would
+         be a defect the map itself could never show. So the county is opened,
+         its rows are read, and it is closed again — the section leaves nothing
+         selected. */
+      const W = O.fuse;
+      const wColor = await colorOf(page, W.countyId);
+      await page.evaluate(async (id) => {
+        const app = await import(new URL('js/app.js', document.baseURI).href);
+        app.ngpContext().selectCounty(id);
+      }, W.countyId);
+      await page.waitForFunction(() => !document.getElementById('county-card').hidden,
+        null, { timeout: 8000 }).catch(() => {});
+      await settleFrames(page);
+      const wCard = await page.evaluate(() => ({
+        open: !document.getElementById('county-card').hidden,
+        title: (document.getElementById('card-title').textContent || '').trim(),
+        values: Array.from(document.querySelectorAll('#card-rows dd'))
+          .map((n) => (n.textContent || '').trim()),
+      }));
+      const wProbe = await overlayProbe(page);
+      check(`the switch is HARD: at ${W.iso}, ${W.countyName} — which this `
+        + `archive puts in ${W.classPhrase.toLowerCase()} (${W.classColor}) — is `
+        + `painted ${O.noneColor}, the legend's None, while the drought map above it `
+        + 'renders. The county colours are not a second reading of the week any '
+        + 'more; the class a reader sees comes from the polygon over the county',
+      wColor === O.noneColor && wProbe.painted > 0 && wProbe.fillOpacity === 1,
+      JSON.stringify({ county: W.countyId, stateColor: wColor,
+        wantedNone: O.noneColor, itsRealClass: W.classColor,
+        polygonsPainted: wProbe.painted, fillOpacity: wProbe.fillOpacity }));
+      check('…and the county CARD still names that county\'s real class: the '
+        + 'readouts report the archive, not the paint, so a reader who clicks '
+        + `through the drought map is told ${JSON.stringify(W.classPhrase)} `
+        + 'rather than the None the county is standing in',
+      wCard.open && wCard.values.some((v) => v.includes(W.classPhrase)),
+      JSON.stringify({ open: wCard.open, title: wCard.title,
+        values: wCard.values, wanted: W.classPhrase }));
+      await page.locator('#card-close').click();
+      await settleFrames(page);
+      clean('usdm hard switch');
 
       /* ── Four scrubs in a row. ───────────────────────────────────────────
          Driven the way 8a drives the scrubber — the value set and an `input`
@@ -4466,12 +4395,7 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       p5.stored === 'on', 'stored ' + JSON.stringify(p5.stored));
       clean('usdm overlay across a boundary swap');
 
-      /* ── It belongs to THIS view. ──────────────────────────────────────────
-         The strength is taken OFF its default first, so that the round trip has
-         something to lose: at 45 the param is elided, and "the param came back"
-         would be indistinguishable from "the param was never there". */
-      await dragOpacity(page, 70);
-      await settleOpacity(page);
+      /* ── It belongs to THIS view. ────────────────────────────────────────── */
       const seqAway = await viewSeq(page);
       await clickControl(page, dflt.switchSel);
       await awaitViewSeq(page, seqAway);
@@ -4484,14 +4408,6 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       gone && away.param === null && away.marker === null && away.painted === 0,
       JSON.stringify({ param: away.param, marker: away.marker,
         painted: away.painted, layer: away.hasLayer, url: page.url() }));
-      check('…and it takes the STRENGTH with it: ?opacity describes a slider '
-        + 'that is not on screen — twice over, since the control it belongs to '
-        + 'is gone too — so the param is dropped and the slider goes back into '
-        + 'its wrap with the rest of the drought monitor\'s controls',
-      away.opacityParam === null && away.opacityWrapHidden === true,
-      JSON.stringify({ param: away.opacityParam,
-        wrapHidden: away.opacityWrapHidden, url: page.url() }));
-
       const seqHome = await viewSeq(page);
       await clickControl(page, iface.switchSel);
       await awaitViewSeq(page, seqHome);
@@ -4505,34 +4421,19 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
         && back.marker === isoBack && back.param === 'on' && back.painted > 0,
       JSON.stringify({ marker: back.marker, fromOutput: isoBack,
         param: back.param, painted: back.painted }));
-      check('…at the strength it was left at, on the PAINT and not merely in the '
-        + 'readout: 70% is a way of READING this map rather than a place in it, '
-        + 'so it is remembered per view exactly like the toggle above it and '
-        + 'comes back in the URL with it',
-      back.fillOpacity === 0.7 && back.opacityParam === '70'
-        && back.opacityValue === '70' && back.opacityOut === '70%'
-        && back.opacityWrapHidden === false,
-      JSON.stringify({ paint: back.fillOpacity, param: back.opacityParam,
-        value: back.opacityValue, out: back.opacityOut,
-        wrapHidden: back.opacityWrapHidden, url: page.url() }));
-
       const said = await settledLiveText(page, (t) => O.liveClause.test(t));
       const vc = await viewControls(page);
-      check('a reader who cannot see the canvas is TOLD there is a second map on '
-        + 'it: the live region says the polygons are drawn over the counties, and '
-        + 'the legend key says what they are — the USDM\'s own published weekly '
-        + 'map, as published, rather than a smoothing of the county colours',
+      check('a reader who cannot see the canvas is TOLD the map has stopped '
+        + 'being the choropleth: the live region says the county colours are set '
+        + 'aside, and the legend key — whose swatches deliberately do not change, '
+        + 'because the five hexes mean the same thing on either map — says the '
+        + 'map is now the USDM\'s own weekly one, drawn as published, and that '
+        + 'the counties it does not cover are showing the same None',
       O.liveClause.test(said) && O.legendClause.test(vc.legend.key || ''),
       `live region ${JSON.stringify(said.slice(0, 220))}, legend key `
         + `${JSON.stringify((vc.legend.key || '').slice(0, 260))} — they must `
         + `match ${O.liveClause} and ${O.legendClause}`);
       clean('usdm overlay across a view switch');
-
-      /* Back to the shipped strength before the poster below, so what is
-         exported — and everything after this subsection — is the picture the
-         app comes up on rather than the one the round trip above borrowed. */
-      await dragOpacity(page, O.opacityDefault);
-      await settleOpacity(page);
 
       /* ── The poster. ─────────────────────────────────────────────────────── */
       let withOverlay = null;
@@ -4567,14 +4468,6 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       JSON.stringify({ marker: off.marker, param: off.param, off: off.off,
         on: off.on, painted: off.painted, layer: off.hasLayer,
         url: page.url() }));
-      check('…including the strength slider, which goes back into its wrap with '
-        + `it — and ?opacity stays out of the URL, at ${O.opacityDefault}% and `
-        + 'with nothing left to be strong',
-      off.opacityWrapHidden === true && off.opacityParam === null
-        && off.opacityValue === String(O.opacityDefault),
-      JSON.stringify({ wrapHidden: off.opacityWrapHidden,
-        param: off.opacityParam, value: off.opacityValue, url: page.url() }));
-
       if (withOverlay) {
         const without = await poster(page);
         check('…and the two posters are not the same picture: the same week, the '
@@ -4615,16 +4508,17 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       await deepSession.shot('19f-usdm-overlay-deep-link');
       await deepSession.ctx.close();
 
-      /* Stored values the app does not offer — BOTH of the overlay's keys, the
-         enumeration and the number, because they are validated by different
-         code and a fallback that only half works is a page that boots with a
-         NaN in a paint property. The clean() is half the assertion: an unusable
-         PREFERENCE is a warning, not a tripwire — the app cannot stop a
-         visitor's storage from holding anything at all — and a console.error
-         here would gate CI on a condition no code change can prevent. */
+      /* A stored value the app does not offer. The clean() is half the
+         assertion: an unusable PREFERENCE is a warning, not a tripwire — the app
+         cannot stop a visitor's storage from holding anything at all — and a
+         console.error here would gate CI on a condition no code change can
+         prevent. (This used to seed a second junk key, `sfsa-ngp-opacity-usdm`,
+         for the strength slider. That key is retired-inert: nothing reads it, so
+         there is no fallback left to assert and a junk value in it is as inert
+         as the two retired disaster keys beside it.) */
       const junkSession = await open({
         query: `?view=${iface.slug}`,
-        storage: { [O.lsKey]: 'banana', [O.opacityLsKey]: 'banana' },
+        storage: { [O.lsKey]: 'banana' },
       });
       const junk = await overlayProbe(junkSession.page);
       check(`a stored ${O.lsKey} of "banana" falls back to off rather than to on `
@@ -4635,18 +4529,6 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
       JSON.stringify({ off: junk.off, on: junk.on, marker: junk.marker,
         param: junk.param, painted: junk.painted, stored: junk.stored,
         url: junkSession.page.url() }));
-      check(`and a stored ${O.opacityLsKey} of "banana" falls back to `
-        + `${O.opacityDefault}% rather than to a NaN — which is the failure `
-        + 'worth naming here, because MapLibre takes a NaN opacity without '
-        + 'complaint and the overlay simply stops being visible, with nothing '
-        + 'in the console to say why. The slider reads the default and no '
-        + '?opacity is minted from an unusable preference',
-      junk.opacityValue === String(O.opacityDefault)
-        && junk.opacityOut === `${O.opacityDefault}%`
-        && junk.opacityParam === null,
-      JSON.stringify({ value: junk.opacityValue, out: junk.opacityOut,
-        param: junk.opacityParam, stored: junk.storedOpacity,
-        url: junkSession.page.url() }));
       junkSession.clean('usdm overlay · unusable stored values');
       await junkSession.ctx.close();
 
@@ -4654,98 +4536,188 @@ async function usdmExtraChecks({ page, check, skip, clean, shot, iface, session 
          ITS OWN SESSION, for two reasons. The cold half has to be cold — the
          module keeps eight decoded weeks and the thrash above has already put
          six of them in the cache, so only a fresh page can measure what a
-         reader's first scrub into a week actually costs. And this subsection
+         reader's first press of this button actually costs. And this subsection
          promises to leave the app where it found it, which is easiest to keep
          when the measurement never touches it.
 
-         Cold then warm, in that order, off one boot: the first scrub fetches
-         2012-07-31 and the second scrubs back to 2012-07-24, which the boot
-         itself decoded. Both go through exactly the same hold. */
-      const fuseLink = `?view=${iface.slug}&year=2012&week=${FUSE.fromWeek}`
-        + '&polygons=on';
-      const fuseSession = await open({ query: fuseLink });
-      const fuseBooted = await settleOverlay(fuseSession.page);
-      if (!fuseBooted) {
-        skip('the week cutover is fused: the counties and the polygons change '
-          + 'together', `${fuseLink} never settled on a week`);
-      } else {
-        /* The WARM pass is the same cutover travelled backwards, so both the
-           weeks and the two class hexes swap with it: `toColor` always names
-           the week being scrubbed TO. */
-        const passes = [
-          ['COLD', {
-            toWeek: FUSE.toWeek, toIso: FUSE.toIso, fromIso: FUSE.fromIso,
-            fromColor: FUSE.fromColor, toColor: FUSE.toColor,
-          }],
-          ['WARM', {
-            toWeek: FUSE.fromWeek, toIso: FUSE.fromIso, fromIso: FUSE.toIso,
-            fromColor: FUSE.toColor, toColor: FUSE.fromColor,
-          }],
-        ];
-        for (const [kind, args] of passes) {
-          const probe = await fuseProbe(fuseSession.page, args);
+         THE BOOT IS DELIBERATELY POLYGONS-OFF, which is also the app's default:
+         a page that booted with them on would have fetched the week before the
+         probe could watch anything, and the cold press is the whole measurement.
+         Three passes off one boot, in this order:
 
+           COLD   off → on at week 30, whose TopoJSON this session has never
+                  seen. The hold is a real fetch.
+           WARM   on → off (synchronous, nothing to fetch — asserted on the way
+                  past, because the choropleth coming straight back is the other
+                  half of the switch) → on again, with the week now decoded. The
+                  hold is one re-tiling.
+           SCRUB  week 30 → 31 while on, which is what is left of the axis this
+                  section used to watch: both weeks paint the same None now, so
+                  what can still go wrong is the drought map blanking. */
+      const fuseLink = `?view=${iface.slug}&year=2012&week=${FUSE.week}`;
+      const fuseSession = await open({ query: fuseLink });
+      const fusePage = fuseSession.page;
+      /* open() has already waited for ngpReady, for `data-ngp-view` to be this
+         view — a deep-linked view lands AFTER ngpReady — and for the pill to
+         come down. What is left is the week's own scrub throttle, and then the
+         FIXTURE, checked rather than assumed: every measurement below is
+         meaningless unless the witness county starts out wearing its real class
+         with the polygons off, which is also the cheapest possible statement of
+         "the choropleth is what is on screen right now". */
+      await settleWeek(fusePage);
+      const fuseStart = await colorOf(fusePage, FUSE.countyId);
+      if (!fuseSession.ready || fuseStart !== FUSE.classColor) {
+        skip('the switch into the drought map is fused: the counties and the '
+          + 'polygons change together',
+        `${fuseLink} did not open on the fixture — ready=${fuseSession.ready}, `
+          + `${FUSE.countyName} paints ${fuseStart} and the measurement needs `
+          + `${FUSE.classColor}`);
+      } else {
+        /** The county under the probe point, in the two states it has: its real
+            class before the switch, the legend's None after it. */
+        const keyToggle = (x) => `${isNone(x) ? 'NONE' : isClass(x) ? 'CLASS' : x.color}`
+          + `/${covers(x, FUSE.iso) ? 'USDM' : (x.dates || '—')}`;
+
+        for (const kind of ['COLD', 'WARM']) {
+          if (kind === 'WARM') {
+            /* Off, and asserted on the way past: turning the switch off fetches
+               nothing, so there is nothing to hold and the choropleth is back in
+               the same task the polygons are hidden in. */
+            await clickControl(fusePage, O.offSel);
+            await settleOverlayGone(fusePage);
+            const backColor = await colorOf(fusePage, FUSE.countyId);
+            check('turning the switch OFF is synchronous: the polygons are hidden '
+              + `and ${FUSE.countyName} is wearing its real class `
+              + `(${FUSE.classColor}) again in the same task. There is nothing to `
+              + 'fetch on the way out, so there is nothing to hold — the fuse is '
+              + 'for the direction that has to wait',
+            backColor === FUSE.classColor,
+            JSON.stringify({ county: FUSE.countyId, stateColor: backColor,
+              wanted: FUSE.classColor }));
+          }
+
+          const probe = await cutoverProbe(fusePage, {
+            drive: 'toggle', wantIso: FUSE.iso,
+          });
           if (probe.failed) {
-            skip(`${kind}: the week cutover is fused`, probe.failed);
+            skip(`${kind}: the switch into the drought map is fused`, probe.failed);
             continue;
           }
-          check(`${kind} scrub to ${args.toIso}: the counties NEVER cut over `
-            + 'ahead of the polygons — 0 ticks of this week\'s choropleth over '
-            + 'a week the overlay has not drawn yet, at one point on the map '
-            + `(${FUSE.countyName}, where both weeks have a polygon and the `
-            + 'county changes class). This is the whole feature: before it, the '
-            + 'feature state was synchronous and every tick of the fetch showed '
-            + 'exactly that pairing',
-          probe.landed && probe.ahead === 0,
-          `landed=${probe.landed}, ahead=${probe.ahead} tick(s) of `
-            + `${probe.ticks.length} · ${probe.trace}`);
+          const { ticks, t0 } = probe;
+          const trace = traceOf(ticks, t0, keyToggle);
+          const flip = ticks.find(isNone);
+          const mark = ticks.find((x) => x.marker === FUSE.iso);
+          const at = (x) => `+${Math.round(x.t - t0)}ms ${keyToggle(x)}`;
+          // The all-None flash: the county already standing in None with nothing
+          // drawn over it. The defect this hold exists to prevent.
+          const flash = ticks.filter((x) => isNone(x) && !covers(x, FUSE.iso));
+          // Before the flip, anything that is not the county's real class. The
+          // live choropleth is what the reader keeps until the cutover.
+          const strayHold = ticks.filter((x) => (!flip || x.t < flip.t) && !isClass(x));
+          // The marker says the drought map is up while the counties say it is
+          // not. An ordering on one clock (see the § header).
+          const markerEarly = ticks.filter((x) => x.marker === FUSE.iso && !isNone(x));
+          // Informational: the polygons rendered before the kit's coalesced
+          // feature-state flush landed the None. Two clocks; printed, not judged.
+          const behind = ticks.filter((x) => !isNone(x) && covers(x, FUSE.iso)).length;
+          const seqMoved = ticks.length
+            ? ticks[ticks.length - 1].seq !== ticks[0].seq : false;
 
-          check(`${kind} scrub to ${args.toIso}: the OLD polygons are held, not `
-            + 'cleared — 0 ticks with nothing under the point and 0 showing '
-            + 'some third week. Emptying the source before the fetch was the '
-            + 'right answer while the counties repainted instantly and is the '
-            + 'wrong one now: the picture that waits is last week\'s counties '
-            + 'under last week\'s polygons, which is true of a week the reader '
-            + 'was just looking at',
-          probe.blank === 0,
-          `blank=${probe.blank} tick(s) of ${probe.ticks.length} · ${probe.trace}`);
+          check(`${kind} switch on at ${FUSE.iso}: the map is NEVER all-None — 0 `
+            + `ticks with ${FUSE.countyName} already painted the legend's None `
+            + 'while nothing is drawn over it. Without the hold that picture is '
+            + 'every frame of the fetch: a national map with no drought anywhere '
+            + 'on it, which no week in the record has ever been',
+          probe.landed && flash.length === 0,
+          `landed=${probe.landed}, all-None=${flash.length} tick(s) of `
+            + `${ticks.length}`
+            + `${flash.length ? ` at ${flash.slice(0, 5).map(at).join(', ')}` : ''}`
+            + ` · ${trace}`);
 
-          check(`${kind} scrub to ${args.toIso}: no tick is ever TOLD the new `
-            + 'week is up while the counties are still the old one — 0 ticks '
-            + 'with the settle marker at the new ISO over the old choropleth. '
-            + 'This is an ordering and not a budget, and both of its witnesses '
-            + 'move off one event: the tail is released in the task that hears '
-            + 'the drawable sourcedata, the kit\'s coalesced flush lands the '
-            + 'colours on the next frame, and the marker stamps a frame after '
-            + 'that (js/usdm-overlay.js § stampWhenDrawn). So the counties flip '
-            + 'before or with the marker at ANY frame rate, and a tail released '
-            + 'on a timer or on idle flips them frames after it',
-          probe.markerEarly === 0,
-          `marker-ahead=${probe.markerEarly} tick(s) of ${probe.ticks.length}`
-            + `${probe.markerEarlyAt ? ` at ${probe.markerEarlyAt}` : ''} · at `
-            + `the marker's own tick: ${probe.atMarker} · informational, not `
-            + `asserted: the polygons led the counties by ${probe.behind} `
-            + 'tick(s) (two clocks — a slower runner stretches that gap; it was '
-            + `a bound until it failed CI at 7 of 5) · ${probe.trace}`);
+          check(`${kind} switch on at ${FUSE.iso}: the LIVE CHOROPLETH is held `
+            + `until the drought map can replace it — every tick before the flip `
+            + `has ${FUSE.countyName} at ${FUSE.classColor}, its real class for `
+            + 'that week. The reader keeps their own last true map right up to '
+            + 'the single cutover, which is the retired-stack principle applied '
+            + 'to a layer that has not arrived yet',
+          strayHold.length === 0,
+          `stray=${strayHold.length} tick(s) of ${ticks.length} before the flip`
+            + `${strayHold.length ? ` at ${strayHold.slice(0, 5).map(at).join(', ')}` : ''}`
+            + ` · ${trace}`);
 
-          check(`${kind} scrub to ${args.toIso}: it lands — the marker is the `
-            + 'new week, the counties are the new week, and data-ngp-view-seq '
-            + 'never moved, because a week is a repaint and not a view '
-            + 'transition however long the app held it',
-          probe.markerMs !== null && probe.holdMs !== null && !probe.seqMoved,
-          `counties at +${probe.holdMs} ms, marker at +${probe.markerMs} ms, `
-            + `seq moved=${probe.seqMoved}`);
+          check(`${kind} switch on at ${FUSE.iso}: no tick is ever TOLD the `
+            + 'drought map is up while the counties still say it is not — 0 '
+            + 'ticks with the settle marker at the target ISO over a county that '
+            + 'has not gone None yet. This is an ordering and not a budget, and '
+            + 'both of its witnesses move off one event: the tail is released in '
+            + 'the task that hears the drawable sourcedata, the kit\'s coalesced '
+            + 'flush lands the colours on the next frame, and the marker stamps '
+            + 'a frame after that (js/usdm-overlay.js § stampWhenDrawn). So the '
+            + 'counties flip before or with the marker at ANY frame rate, and a '
+            + 'tail released on a timer or on idle flips them frames after it',
+          markerEarly.length === 0,
+          `marker-ahead=${markerEarly.length} tick(s) of ${ticks.length}`
+            + `${markerEarly.length ? ` at ${markerEarly.slice(0, 5).map(at).join(', ')}` : ''}`
+            + ` · at the marker's own tick: ${mark ? at(mark) : 'never'} · `
+            + `informational, not asserted: the polygons rendered ${behind} `
+            + 'tick(s) before the counties went None (two clocks — a slower '
+            + 'runner stretches that gap; it was a bound until it failed CI at 7 '
+            + `of 5) · ${trace}`);
 
-          /* PRINTED, NOT JUDGED — and printed unconditionally, because a detail
-             string is only shown when its check fails and this is evidence a
-             PASSING run should carry. It is what the retired tick bound used to
-             assert on; the § header says why a frame count across two clocks
-             describes the machine as much as the app. Worth having in the log
-             the day one of the three zeros above goes red. */
-          console.log(`    ${kind} cutover: counties +${probe.holdMs} ms, `
-            + `marker +${probe.markerMs} ms, polygons led by ${probe.behind} `
-            + `tick(s) of ${probe.ticks.length} · ${probe.trace}`);
-          fuseSession.clean(`usdm fused cutover · ${kind.toLowerCase()}`);
+          check(`${kind} switch on at ${FUSE.iso}: it lands — the marker is that `
+            + 'week, the counties are None, the polygons are drawn, and '
+            + 'data-ngp-view-seq never moved, because a second layer is not a '
+            + 'view transition however long the app held it',
+          !!flip && !!mark && !seqMoved,
+          `counties at +${flip ? Math.round(flip.t - t0) : null} ms, marker at `
+            + `+${mark ? Math.round(mark.t - t0) : null} ms, seq moved=${seqMoved}`);
+
+          console.log(`    ${kind} switch-on: counties `
+            + `+${flip ? Math.round(flip.t - t0) : null} ms, marker `
+            + `+${mark ? Math.round(mark.t - t0) : null} ms, polygons led by `
+            + `${behind} tick(s) of ${ticks.length} · ${trace}`);
+          fuseSession.clean(`usdm hard switch · ${kind.toLowerCase()}`);
+        }
+
+        /* ── And the week axis, which still has one thing to lose. ──────────
+           With the counties pinned to None a scrub cannot mismatch them any
+           more — both weeks are the same colour — so what is left is the
+           polygons themselves: the old week must keep drawing until the new one
+           is drawable, never blank, and the counties must stay None throughout.
+           That is the § 2 reversal's check (clear-before-fetch removed) on the
+           axis it was written for. */
+        const scrub = await cutoverProbe(fusePage, {
+          drive: 'week', week: FUSE.nextWeek, wantIso: FUSE.nextIso,
+        });
+        if (scrub.failed) {
+          skip(`SCRUB to ${FUSE.nextIso} with the switch on: the old polygons are `
+            + 'held', scrub.failed);
+        } else {
+          const keyScrub = (x) => `${isNone(x) ? 'NONE' : x.color}/`
+            + `${covers(x, FUSE.nextIso) ? 'NEW' : covers(x, FUSE.iso) ? 'OLD' : (x.dates || '—')}`;
+          const sTrace = traceOf(scrub.ticks, scrub.t0, keyScrub);
+          const blank = scrub.ticks.filter(
+            (x) => !covers(x, FUSE.iso) && !covers(x, FUSE.nextIso));
+          const notNone = scrub.ticks.filter((x) => !isNone(x));
+          check(`SCRUB to ${FUSE.nextIso} with the switch on: the OLD polygons `
+            + 'are held, not cleared — 0 ticks with nothing under the point and '
+            + '0 showing some third week. Emptying the source before the fetch '
+            + 'was the right answer while the counties repainted instantly and '
+            + 'is the wrong one now: what waits is last week\'s drought map, '
+            + 'which is true of a week the reader was just looking at, and the '
+            + 'alternative is a blank country',
+          scrub.landed && blank.length === 0,
+          `landed=${scrub.landed}, blank=${blank.length} tick(s) of `
+            + `${scrub.ticks.length} · ${sTrace}`);
+          check(`SCRUB to ${FUSE.nextIso} with the switch on: the counties never `
+            + 'flicker back — every tick has them at the legend\'s None, because '
+            + 'both weeks paint the same None while the drought map is up. This '
+            + 'is why the witnessed transition moved to the toggle: the week axis '
+            + 'has no county/polygon mismatch left to produce',
+          notNone.length === 0,
+          `not-None=${notNone.length} tick(s) of ${scrub.ticks.length} · ${sTrace}`);
+          console.log(`    SCRUB ${FUSE.iso} → ${FUSE.nextIso}: ${sTrace}`);
+          fuseSession.clean('usdm hard switch · week scrub while on');
         }
       }
       await fuseSession.shot('19g-usdm-fused-cutover');

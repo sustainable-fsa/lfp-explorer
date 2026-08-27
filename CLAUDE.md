@@ -115,27 +115,27 @@ Specifics that bite in this repo:
   year-domain `years.max` tripwire in `applyYearDomain` (`js/app.js`), fixed
   2026-08-26 after two releases of gating nothing.
 
-## Where we left off (2026-08-26)
+## Where we left off (2026-08-27)
 
-**The Drought monitor now draws the drought itself.** The *USDM polygons*
-toggle lays the selected week's actual Drought Monitor map over the county
-choropleth — translucent (`fill-opacity` 0.45 by default, the same NDMC class
-hexes, `CLASS_HEX` in js/interfaces/usdm.js), between the front county fill
-and the county lines, so every thin line, the state mesh and the selection
-ring stay on top. OFF by default; `?polygons=on`, elided at off; LS
-`sfsa-ngp-polygons-usdm`. An owner-requested **opacity slider** (same day)
-sits under the toggle while it is On: 0–100 step 5, default 45, `?opacity=NN`
-elided at the default, LS `sfsa-ngp-opacity-usdm`, honored by the poster —
-NOT a `choices` value (it is a number, not an enumeration), so it carries its
-own validating accessor, and `fill-opacity` is safe to retune live because it
-is a constant on a transition-free layer (neither half of the v0.4.1
-failure). It is the FIRST USER of the dormant
-`descriptor.choices` mechanism, which supplied the URL param, the LS key, the
-boot re-validation and the aria-pressed sync with zero new plumbing. The
-owner's call, twice: translucent over the live choropleth (not a paint swap),
-and NO masking — the polygons are published unclipped at ~1:2M and are drawn
-exactly as published, coastline overspill and all, with the control note and
-help.md saying so.
+**The Drought monitor now draws the drought itself — as a HARD SWITCH.** The
+*USDM polygons* toggle swaps the county colors for the selected week's actual
+Drought Monitor map: ON paints every classed county the warm None
+(`CLASS_COLORS[0]`, `#f0ead8`) through `colorsFor()` and draws the polygons at
+`fill-opacity: 1` between the front county fill and the county lines, so the
+composite IS an honest complete drought map — D0–D4 where the Monitor drew
+them, None showing through everywhere it didn't — with every thin line, the
+state mesh and the selection ring on top, and THE LEGEND UNCHANGED. The card,
+tooltip and table keep reading the DATA (a county's worst class): readouts,
+not paint. OFF by default; `?polygons=on`, elided at off; LS
+`sfsa-ngp-polygons-usdm`; the FIRST USER of the dormant `descriptor.choices`
+mechanism, which supplied the URL param, LS key, boot re-validation and
+aria-pressed sync with zero new plumbing. NO masking — the polygons are
+published unclipped at ~1:2M and drawn exactly as published, coastline
+overspill and all. This shipped first as a translucent 0.45 overlay with an
+opacity slider, and the owner walked that back the same day ("too confusing
+to see them over the county layers"): the slider is GONE and `?opacity` /
+`sfsa-ngp-opacity-usdm` are retired-inert, documented beside the LS table on
+the retired-disasters-keys precedent.
 
 **`js/usdm-overlay.js` owns everything about it** — the sidecar, the per-week
 TopoJSON fetch/decode LRU (cap 8; raw weeks trend hard upward, 0.45 MB in 2000
@@ -150,28 +150,27 @@ layer, so a mid-stack app layer is stranded above the new stack on every swap
 and at creation). A week scrub refetches WITHOUT bumping `data-ngp-view-seq`;
 the marker, not the pill, is the overlay's settle signal.
 
-**The week cutover is FUSED (2026-08-27, owner-reported).** With the overlay
-on, a scrub used to repaint the counties instantly and the polygons a fetch
-later — two cutovers, and the old polygons were CLEARED at scrub start. Now
-`recolor()` packages its whole apply-tail (`handle.recolor`, the live
-region, the card) into `sync({onSettle})`, and the module releases it in the
-SAME TASK as the incoming week's drawable `sourcedata` — the old coherent
-picture (old counties + old polygons) holds through the fetch, then one
-flip. Clear-before-fetch is REVERSED: it existed because the counties moved
-first; under the hold, old-over-old is the truth. Not fusing (toggle-on from
-nothing, same-week recolors, the other families) is byte-for-byte the old
-synchronous path; failures and `missing` still release the tail (the county
-repaint is never lost to the overlay); a 6 s `HOLD_CEILING_MS` releases it
-if a fetch never answers, because `applyDataset` now AWAITS `recolor()`
-before `bumpViewSeq` — the seq marker means "recolored and flushed" and must
-not lie over a held tail. Measured: counties never lead the polygons (0
-ticks, structurally — the tail releases only after `isSourceLoaded`); the
-residual is ONE ~16 ms rendered frame of new polygons over old counties,
+**The cutover is FUSED, and under the hard switch it lives on the TOGGLE
+axis.** `recolor()` packages its whole apply-tail (`handle.recolor`, the
+live region, the card) into `sync({onSettle})`, and the module releases it
+in the SAME TASK as the incoming week's drawable `sourcedata` — the old
+coherent picture holds through the fetch, then one flip. Originally built
+for week scrubs (owner-reported: counties repainted instantly, polygons a
+fetch later, old polygons cleared at scrub start); with counties pinned to
+None while ON, a scrub can no longer mismatch, so the fuse condition now
+also covers TOGGLE-ON (`attached === null` fuses too): the reader keeps the
+live choropleth right up to the single flip into the Monitor's map — never
+an all-None flash. Toggle-OFF is synchronous (nothing to fetch). Failures
+and `missing` still release the tail (the county repaint is never lost to
+the overlay); a 6 s `HOLD_CEILING_MS` backstops it, because `applyDataset`
+AWAITS `recolor()` before `bumpViewSeq` — the seq marker means "recolored
+and flushed" and must not lie over a held tail. Measured on the toggle
+axis, COLD and WARM: zero all-None-flash ticks, zero marker-early ticks,
+choropleth held throughout; the residual is ONE ~16 ms rendered frame,
 because the kit's `recolor()` coalesces feature state to its own rAF while
-MapLibre queues a render before firing `sourcedata`. Closing that last
-frame needs a synchronous feature-state flush in the kit — a v0.4.2
-candidate (§ Open threads). Pre-fix the mismatch was the whole fetch,
-270–480 ms.
+MapLibre queues a render before firing `sourcedata` — closing it needs a
+synchronous feature-state flush in the kit, a v0.4.2 candidate (§ Open
+threads).
 
 **The map has a scale bar that refuses to lie (2026-08-27).** MapLibre's
 `ScaleControl` was never an option: it reads the displayed coordinates as
@@ -196,7 +195,7 @@ that names the exact future mistake of swapping `maplibregl.ScaleControl`
 back in. Dual USGS-style bars, miles over kilometers, bottom-left, vendor
 chrome classes, zero app CSS.
 
-Three facts measured on the way in, worth not rediscovering:
+Facts measured on the way in, worth not rediscovering:
 
 - **MapLibre 5.18 fires `sourcedata` with `sourceDataType: 'metadata'` and
   `isSourceLoaded: true` computed from the PREVIOUS data** immediately on
@@ -207,6 +206,13 @@ Three facts measured on the way in, worth not rediscovering:
   abort time**, not at rejection time — scrub away and straight back
   otherwise hangs the marker on `loading` forever, waiting on a promise whose
   fetch was already cancelled.
+- **A HIDDEN layer's source cache holds zero tiles, so `isSourceLoaded:
+  true` fires before any tile exists** (2026-08-27): with the overlay off,
+  `setData` on the hidden layer's source got a `content` event with
+  `isSourceLoaded: true` at +46 ms and `queryRenderedFeatures` still 0, real
+  tiles at +102–121 ms — a stamp on that event announces a week nothing can
+  draw. The settle listener in js/usdm-overlay.js also requires `e.tile` (a
+  tile-level `MapSourceDataEvent`), which is what "drawable" actually means.
 - **`queryRenderedFeatures` on a layer the style does not hold does not
   throw** — it reports through the map's error event, straight into the
   console the harnesses collect. Same lesson as the missing-`sourceLayer` one
@@ -221,9 +227,10 @@ Three facts measured on the way in, worth not rediscovering:
   structural. Ground truth on actual pixels needs `map.on('render')` +
   scanline reads.
 
-Gates after: verify prints 607 (was 535 — new `8e` in `usdmExtraChecks`,
-including the slider's eight, plus the fused cutover's own section running
-the frame probe COLD then WARM, plus `▸ The scale bar tells the truth`, plus
+Gates after: verify prints 606 (was 535 — new `8e` in `usdmExtraChecks`,
+including the hard-switch and card-readout proofs, plus the fused cutover's
+own section running the toggle-axis frame probe COLD, WARM and
+SCRUB-while-on, plus `▸ The scale bar tells the truth`, plus
 `data-ngp-overlay` in the MARKERS table and the `overlay` fixture block in
 tools/config.mjs, all driven at the frozen 2012-07-24 week, never the moving
 newest); the a11y `usdm-view` state now audits with the overlay ON;
@@ -547,7 +554,7 @@ priority order:
    load-bearing gate. The cheap first move: `console.time` per section
    banner to learn whether the 10.3 min is one section or twenty, then split
    only the heavy one behind an env gate the way the a11y filter works.
-3. **One rendered frame still mismatches on a fused week cutover** — ~16 ms
+3. **One rendered frame still mismatches on a fused cutover** — ~16 ms
    of the new polygons over the old counties, measured on framebuffer
    scanlines (§ Where we left off). The app cannot close it: the kit's
    `recolor()` coalesces feature state to its own rAF, and MapLibre's
