@@ -18,6 +18,8 @@
 
 **The projection.** The map is drawn in CONUS Albers Equal Area (EPSG:5070), with Alaska, Hawaii, and Puerto Rico repositioned as insets — the same equal-area projection every other Sustainable FSA figure uses, so county sizes here are comparable and match the project's printed maps.
 
+**The scale bar.** A distance scale in miles and kilometers appears at the bottom-left of the map whenever the view sits within a single part of that composite, and it reflects that part's own scale. The three insets are drawn at their own sizes — Alaska at half scale, Hawaii at one and a half, Puerto Rico at two and a half — so no single bar can be true for a view that holds more than one. Zoom out to the whole country, or pan across the gap between two of them, and the bar steps aside rather than tell you something that is not so.
+
 **Change the theme.** The navbar toggle switches between the light theme and a high-contrast theme that strengthens outlines and text contrast.
 
 **Share what you are looking at.** The address bar always reflects the current view — year, pasture type, color-by variable, selected county, and whether the controls panel is collapsed — so copying it or bookmarking it reproduces exactly what is on your screen. The **Share** button copies that link for you.

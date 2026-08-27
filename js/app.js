@@ -121,6 +121,11 @@ import {
 } from './data.js';
 import { NO_DATA, VARIABLES, loadRamps, ramps } from './color.js';
 import { PROJECTED_BOUNDS } from './projection.js';
+/* The distance scale. Its own module because MapLibre's built-in cannot be used
+   on this map — see js/scale-bar.js § Why MapLibre's own ScaleControl is not
+   used here — and because knowing which of the composite's four regions is on
+   screen is the bulk of it. */
+import { addScaleBar } from './scale-bar.js';
 /* Which polygons a selection is allowed to be drawn on. The ONLY module that
    knows; app.js resolves a declaration and never a tileset name (§ Geometry). */
 import {
@@ -3106,6 +3111,9 @@ async function boot() {
     position: 'top-left',
     onBeforeFit: () => { if (cardCtl && cardCtl.isOpen()) cardCtl.close(); },
   });
+  // Bottom-left, and it hides itself whenever more than one of the composite's
+  // four differently-scaled regions is on screen (js/scale-bar.js).
+  addScaleBar(map);
   // PROJECTED_BOUNDS, not counties.bounds, for the fit control, the zoom floor
   // AND the clean-URL default check — deliberately one framing for the whole
   // session. It is the projection module's own hardcoded extent (the two

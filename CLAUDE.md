@@ -173,6 +173,29 @@ frame needs a synchronous feature-state flush in the kit — a v0.4.2
 candidate (§ Open threads). Pre-fix the mismatch was the whole fetch,
 270–480 ms.
 
+**The map has a scale bar that refuses to lie (2026-08-27).** MapLibre's
+`ScaleControl` was never an option: it reads the displayed coordinates as
+geographic, and this map's are dummy degrees — it would understate distance
+4.83× (measured). `js/scale-bar.js` converts through `js/projection.js`'s own
+exported `M_TO_DEG` instead, and because the gudermannian pre-shear makes
+Mercator render true Albers proportions, meters-per-pixel is constant across
+the viewport — the bar is exact everywhere it shows. Where it shows is the
+owner's rule: ONLY when the viewport sits within exactly ONE region — CONUS,
+or the Alaska / Hawaii / Puerto Rico insets, which AlbersUSA draws at 0.5× /
+1.5× / 2.5× linear scale (verified in data-tiles' R source; real = drawn ÷
+factor) — so a national view shows no bar rather than a wrong one, and an
+inset names itself in the control's title. The region rectangles are pinned
+from measurement over all 21 authorities' county boxes (the four raw bboxes
+are NOT disjoint — the insets tuck inside CONUS's rectangle and Alaska's
+panhandle interleaves with Kaua'i, so AK and HI are each two rectangles cut
+at measured gap midpoints), and verify's `▸ The scale bar tells the truth`
+section re-derives them from the live census-2020 sidecar, truth-checks the
+bar against two reference points in every region (≤0.013% error), and keeps
+a TEETH check asserting the naive geographic reading is >3× off — the check
+that names the exact future mistake of swapping `maplibregl.ScaleControl`
+back in. Dual USGS-style bars, miles over kilometers, bottom-left, vendor
+chrome classes, zero app CSS.
+
 Three facts measured on the way in, worth not rediscovering:
 
 - **MapLibre 5.18 fires `sourcedata` with `sourceDataType: 'metadata'` and
@@ -198,9 +221,9 @@ Three facts measured on the way in, worth not rediscovering:
   structural. Ground truth on actual pixels needs `map.on('render')` +
   scanline reads.
 
-Gates after: verify prints 580 (was 535 — new `8e` in `usdmExtraChecks`,
+Gates after: verify prints 607 (was 535 — new `8e` in `usdmExtraChecks`,
 including the slider's eight, plus the fused cutover's own section running
-the frame probe COLD then WARM, plus
+the frame probe COLD then WARM, plus `▸ The scale bar tells the truth`, plus
 `data-ngp-overlay` in the MARKERS table and the `overlay` fixture block in
 tools/config.mjs, all driven at the frozen 2012-07-24 week, never the moving
 newest); the a11y `usdm-view` state now audits with the overlay ON;
@@ -521,7 +544,15 @@ priority order:
    call inside the drawable task — and `check-tiled.mjs` would want a frame
    gate like the app's. One frame, one property, but it is the same class of
    honesty the buffered swap bought, and the seam is known.
-3. **A cancelled tile request used to be reported as an error.** MapLibre
+3. **The scale bar is invisible to axe and absent from the poster.** Every
+   a11y-audit state sits at the national fit, where the region-gated bar is
+   correctly hidden — one state with a zoomed `?lng&lat&zoom` camera would
+   sweep it (risk is low: `role="img"` + `aria-label`, vendor colors the
+   attribution control already passes). And `js/export.js` renders a canvas,
+   so the DOM control never reaches the PNG; painting a bar there belongs in
+   that file's own idiom beside the title/legend/attribution, using the
+   poster camera's region and factor.
+4. **A cancelled tile request used to be reported as an error.** MapLibre
    decides whether a rejection was a cancellation with exactly one test —
    `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
    with that name; at the network layer Chrome gives
@@ -549,28 +580,28 @@ priority order:
    why this took two harness changes to place: the source LOCATION in the
    console capture (now permanent, and what put it in the bundle rather than in
    app code), then a `requestfailed` listener to name `net::ERR_ABORTED`.
-3. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
+5. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
    fires on any `.sfsa-card-body` whose content has no focusable element at
    compact widths — the other views escape only because their card bodies
    contain a `<details><summary>`. The durable fix belongs in the kit's
    card component; this app carries a per-view `tabindex="0"` meanwhile.
-4. **Fire events for eligibility** remain out of scope until the archive
+6. **Fire events for eligibility** remain out of scope until the archive
    adds them to an events payload.
-5. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
+7. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
    for now; moving it behind an archive-published Pages URL is a one-line
    URL change in `js/decoders/crosswalk.js`. It now serves TWO datasets rather
    than five — the nClimGrid grazing periods and the disaster designations —
    because everything else draws its own polygons.
-6. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
+8. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
    honest: the archive keys nine planning regions and the FSA LFP determination
    boundaries answer eight traditional counties. Drawing it would need a
    planning-region tileset, which nobody publishes. The *Census counties*
    dataset already shows Connecticut correctly from program year 2023.
-7. **Compact reveal is best-effort only**: the bottom sheet gets a
+9. **Compact reveal is best-effort only**: the bottom sheet gets a
    mesonet-style pan, which the bounds cage clamps at the fit floor. A
    vertical push (`#map { bottom: var(--sheet-h) }` + resize, mirroring the
    desktop push) is the symmetric fix if it ever matters on phones.
-8. **The card's "Combined from" rows are gone from the drought view**, and that
+10. **The card's "Combined from" rows are gone from the drought view**, and that
    was a real loss to the reduction story, not an oversight — an identity
    authority has no constituents. It survives on the two views that still
    crosswalk.
