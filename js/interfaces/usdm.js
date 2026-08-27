@@ -83,13 +83,40 @@ import { makeUsdmData } from '../decoders/usdm-max-class.js';
    both themes; and 6.1 / 9.0 from the two themes' --map-bg, so a drought-free
    county does not dissolve into the page either. Like every data color in this
    app (js/color.js), it is NOT themed. */
+
+/**
+ * The five drought classes BY NAME rather than by index.
+ *
+ * The same five hexes as CLASS_COLORS[1..5] and the same objection to changing
+ * them — this is just the reading a consumer OUTSIDE the choropleth needs. The
+ * weekly-polygon overlay (js/usdm-overlay.js) matches on the USDM's own
+ * `usdm_class` property, which is the string "D2" and not the number 3, and a
+ * layer that looked its colours up by index would have to know that this
+ * app's code 3 is the USDM's D2 — the off-by-one D2_CODE exists to name.
+ *
+ * `None` is deliberately absent. The weekly files carry one feature per class
+ * PRESENT, D0 through D4; drought-free is the absence of a polygon there, not
+ * a polygon of its own, so an overlay has nothing to paint it on.
+ */
+export const CLASS_HEX = Object.freeze({
+  D0: '#ffff00',   // Abnormally Dry
+  D1: '#fcd37f',   // Moderate Drought
+  D2: '#ffaa00',   // Severe Drought
+  D3: '#e60000',   // Extreme Drought
+  D4: '#730000',   // Exceptional Drought
+});
+
+/** The palette AS THE PAYLOAD INDEXES IT: the code a county carries this week
+    is a position in this array, `None` included. Derived from CLASS_HEX rather
+    than restated, so the map and the polygons drawn over it cannot drift into
+    two slightly different yellows. */
 const CLASS_COLORS = Object.freeze([
-  '#f0ead8',   // None — see above
-  '#ffff00',   // D0 Abnormally Dry
-  '#fcd37f',   // D1 Moderate Drought
-  '#ffaa00',   // D2 Severe Drought
-  '#e60000',   // D3 Extreme Drought
-  '#730000',   // D4 Exceptional Drought
+  '#f0ead8',       // None — see above
+  CLASS_HEX.D0,    // D0 Abnormally Dry
+  CLASS_HEX.D1,    // D1 Moderate Drought
+  CLASS_HEX.D2,    // D2 Severe Drought
+  CLASS_HEX.D3,    // D3 Extreme Drought
+  CLASS_HEX.D4,    // D4 Exceptional Drought
 ]);
 
 /** The class codes, as the USDM writes them. Index = the payload's own code. */
@@ -387,12 +414,28 @@ function legendNoDataLabel() {
  * map legible in grayscale, to a CVD reader and to a screen reader — and the
  * place the any-area rule is stated, because a reader who takes this for an
  * area-weighted average will misread every county on it.
+ *
+ * @param {object} [sel] the app's selection (js/app.js § syncLegend calls this
+ *        as `legend.key(sel)`). Taken now because the polygon overlay puts a
+ *        second thing on the map, and a key that described only the counties
+ *        would be describing half the picture.
  */
-function legendKey() {
-  return 'Color is the worst drought class touching any part of the county that '
+function legendKey(sel) {
+  let msg = 'Color is the worst drought class touching any part of the county that '
     + 'week — the same any-area rule LFP uses (7 U.S.C. § 1531(d)(3)). Yellow is '
     + 'abnormally dry; deep red is exceptional drought. Pale counties are '
     + 'drought-free; gray counties are not in this week\'s county set.';
+  /* The swatches are the same five hexes either way (CLASS_HEX), so nothing in
+     the legend's PICTURE changes when the overlay comes on — which is exactly
+     why the key has to say it in words. "Drawn as published" is doing real
+     work: the USDM is issued at roughly 1:2,000,000 and unclipped, so its
+     edges overrun the coastline, and a reader who took that for a rendering
+     fault would distrust the layer instead of reading it. */
+  if (sel && sel.polygons === 'on') {
+    msg += ' The translucent overlay is the USDM\'s own weekly map, drawn as '
+      + 'published.';
+  }
+  return msg;
 }
 
 /* ── Tooltip ─────────────────────────────────────────────────────────────── */
@@ -755,8 +798,18 @@ function liveSentence(sel, shown, total, missingGeometry, stats) {
     ? 'Week of ' + stats.label
       + (stats.week ? ' (week ' + stats.week + ' of ' + stats.weeks + ')' : '')
     : 'Drought monitor';
+  /* The overlay is a second layer on the same canvas, and the canvas has one
+     live region. A reader who cannot see it is otherwise told the county
+     counts and nothing about the polygons sitting over them — which on this
+     view is the difference between "the county reached D4" and "here is the
+     four per cent of it that did". No numbers: a week is 3–5 national
+     MultiPolygons, and "5 features" is a fact about the file rather than about
+     the map. Appended to BOTH endings below, because the polygons can be on
+     screen while the county payload is still arriving. */
+  const overlay = (sel && sel.polygons === 'on')
+    ? ' The weekly USDM drought polygons are drawn over the counties.' : '';
   if (!stats || !stats.total) {
-    return head + ', ' + datasetLabel(sel) + ': nothing to show yet.';
+    return head + ', ' + datasetLabel(sel) + ': nothing to show yet.' + overlay;
   }
 
   /* `shown` and not stats.classed, and this is the whole reason app.js computes
@@ -791,7 +844,7 @@ function liveSentence(sel, shown, total, missingGeometry, stats) {
       + ' not in ' + (sel.boundary ? sel.boundary.label : 'the county set on screen')
       + '.';
   }
-  return msg;
+  return msg + overlay;
 }
 
 /* ── The data table ──────────────────────────────────────────────────────── */
@@ -889,8 +942,13 @@ function exportTitle() {
 }
 
 /** The Tuesday, as an ISO date. UTC-pinned via toISOString, because every date
-    in this interface is a UTC midnight (js/decoders/usdm-max-class.js). */
-function weekIso(sel) {
+    in this interface is a UTC midnight (js/decoders/usdm-max-class.js).
+
+    EXPORTED because it is now two things: the poster's filename, and the key
+    the weekly-polygon archive is addressed by (js/export.js asks for the
+    week's polygons by this exact string). One derivation, so a poster cannot
+    be titled one week and drawn with another's. */
+export function weekIso(sel) {
   const inst = instanceFor(sel);
   if (!inst || !Number.isInteger(sel.week)) return 'unknown-week';
   return inst.weekDate(sel.week).toISOString().slice(0, 10);
@@ -997,6 +1055,31 @@ export const USDM = Object.freeze({
   /** No pasture type and no color-by variable — one quantity, one scale — and a
       week within the year, which no other family has. */
   controls: Object.freeze({ type: false, variable: false, week: true }),
+  /**
+   * The first enumerated choice any shipped family declares (js/app.js
+   * § Enumerated choices): whether the USDM's OWN weekly polygons are drawn,
+   * translucent, over the county choropleth (js/usdm-overlay.js).
+   *
+   * OFF BY DEFAULT, and that is an editorial decision rather than a
+   * performance one. The subject of this view is the reduction — the worst
+   * class touching a county, which is what LFP is administered on — and the
+   * raw polygons are the evidence a reader turns to when they want to check
+   * it. Opening with both layers up would present the reduction and its
+   * evidence as one picture, which is the confusion this view exists to
+   * remove.
+   *
+   * A choice and not a dataset: it changes nothing about which numbers are
+   * read, which county set is drawn, or what the legend's swatches mean. Only
+   * whether a second layer is on the canvas. The app's generic machinery
+   * carries it from here — `?polygons=on` (elided at the default),
+   * `sfsa-ngp-polygons-usdm`, and the seg buttons — with no plumbing of its
+   * own, which is the whole point of declaring it rather than wiring it.
+   */
+  choices: Object.freeze([Object.freeze({
+    id: 'polygons',
+    values: Object.freeze(['off', 'on']),
+    default: 'off',
+  })]),
   colorsFor,
   legend: Object.freeze({
     kind: legendKind,

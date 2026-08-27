@@ -370,6 +370,107 @@ export async function loadCountyIndex() {
     cw.size === wantCrosswalked.size && [...wantCrosswalked].every((r) => cw.has(r)),
     [...cw].join(', '));
 
+  /* ── 9. THE USDM WEEKLY POLYGONS ─────────────────────────────────────────
+     The other geometry the app draws, and the only one that is not a county
+     set: the Drought Monitor's OWN weekly map, published as one TopoJSON per
+     Tuesday beside the county tilesets.
+
+     It belongs in this gate rather than in verify.mjs for the same reason
+     everything above does — it is a claim about the PUBLISHED DATA, and the
+     browser cannot make it. verify.mjs proves the overlay draws the week the
+     scrubber says; nothing it can see would notice the producer renaming the
+     object key, dropping a Tuesday out of the middle of the grid, or shipping a
+     class code the paint expression has no branch for. Each of those draws a
+     perfectly convincing map: an unmatched `usdm_class` falls through the
+     `match` to transparent, so a sixth class would simply not be there, and a
+     missing week resolves to a URL that 404s behind a marker most readers never
+     look at.
+
+     THE WHOLE THING IS DRIVEN OFF THE SIDECAR'S OWN FIELDS, never off a
+     filename this file composed: `url` is a bare `{date}` template resolved
+     RELATIVE to the sidecar's directory, which is what lets the producer rename
+     or content-hash without a consumer change. Composing an archive filename
+     from a key is exactly the mistake the county tiles' `tiles.url` rule exists
+     to prevent, and it would be the same mistake here.
+
+     The NEWEST date is the one fetched, deliberately: it is the file that has
+     never been read before, and the only one whose shape a producer change can
+     have broken since the last run. */
+  const USDM_INDEX = 'https://data.sustainable-fsa.com/data-tiles/usdm/usdm-index.json';
+  {
+    const ir = await fetch(USDM_INDEX);
+    const ix = ir.ok ? await ir.json() : null;
+    check('the USDM weekly index is published, and declares the schema, space, '
+      + 'object key and {date} template js/usdm-overlay.js reads it by',
+      !!ix && ix.schema === 'sfsa-usdm-index/1'
+      && ix.space === 'sfsa-albers-usa/1' && ix.object === 'usdm'
+      && typeof ix.url === 'string' && ix.url.includes('{date}')
+      && Array.isArray(ix.dates) && ix.dates.length > 0,
+      ix ? JSON.stringify({ schema: ix.schema, space: ix.space, object: ix.object,
+        url: ix.url, dates: Array.isArray(ix.dates) ? ix.dates.length : null })
+        : `HTTP ${ir.status}`);
+
+    if (ix && Array.isArray(ix.dates) && ix.dates.length) {
+      /* The grid itself. A gap is the failure mode with no symptom: `?week=N` is
+         1-based WITHIN A YEAR, so a missing Tuesday silently renumbers every
+         week after it and a shared link starts meaning a different map. */
+      const d = ix.dates;
+      const iso = d.every((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+      const asc = d.every((s, i) => i === 0 || s > d[i - 1]);
+      const steps = d.filter((s, i) => i > 0
+        && Date.parse(s + 'T00:00:00Z') - Date.parse(d[i - 1] + 'T00:00:00Z')
+          !== 7 * 86400000);
+      const tuesdays = d.every((s) => new Date(s + 'T00:00:00Z').getUTCDay() === 2);
+      check(`the index is a gapless weekly grid: n === dates.length (${ix.n}), `
+        + 'strictly ascending ISO dates, every one a Tuesday, every step exactly '
+        + 'seven days',
+        ix.n === d.length && iso && asc && tuesdays && steps.length === 0,
+        JSON.stringify({ n: ix.n, dates: d.length, iso, asc, tuesdays,
+          badSteps: steps.slice(0, 3), first: d[0], last: d[d.length - 1] }));
+
+      const newest = d[d.length - 1];
+      // ONE STRING, and it is the sidecar's: template in, URL out, resolved
+      // against the sidecar's own directory.
+      const weekUrl = new URL(ix.url.replace('{date}', newest), USDM_INDEX).href;
+      const wr = await fetch(weekUrl);
+      const topo = wr.ok ? await wr.json().catch(() => null) : null;
+      check(`the newest week resolves through the sidecar's own template and is `
+        + `served (${newest})`, wr.ok && !!topo,
+        `${weekUrl} — HTTP ${wr.status}${wr.ok && !topo ? ', but did not parse as JSON' : ''}`);
+
+      if (topo) {
+        const g = topo.objects && topo.objects.usdm;
+        const geoms = (g && Array.isArray(g.geometries)) ? g.geometries : [];
+        check('it is a TopoJSON Topology whose one object is `usdm`, and every '
+          + 'geometry in it is a MultiPolygon carrying exactly {date, usdm_class} '
+          + 'and no id',
+          topo.type === 'Topology' && !!g && geoms.length > 0
+          && geoms.every((x) => x.type === 'MultiPolygon' && !('id' in x)
+            && x.properties && x.properties.date === newest
+            && Object.keys(x.properties).sort().join(',') === 'date,usdm_class'),
+          JSON.stringify({ type: topo.type, objects: Object.keys(topo.objects || {}),
+            geometries: geoms.length,
+            types: [...new Set(geoms.map((x) => x.type))],
+            props: [...new Set(geoms.flatMap((x) => Object.keys(x.properties || {})))] }));
+
+        /* THE CLASSES ARE THE PAINT. js/usdm-overlay.js matches D0–D4 and falls
+           through to transparent, so a sixth code would not draw at all and a
+           duplicate would mean the classes overlap — which they do not: the
+           producer publishes three to five NON-OVERLAPPING severity bands, never
+           indexed by position. */
+        const CLASSES = ['D0', 'D1', 'D2', 'D3', 'D4'];
+        const seen = geoms.map((x) => x.properties && x.properties.usdm_class);
+        check('every geometry\'s usdm_class is one of D0–D4, each appears at most '
+          + 'once (the bands are non-overlapping), and there are between three '
+          + 'and five of them',
+          seen.length >= 3 && seen.length <= 5
+          && seen.every((c) => CLASSES.includes(c))
+          && new Set(seen).size === seen.length,
+          JSON.stringify(seen));
+      }
+    }
+  }
+
 } finally {
   await rm(COPY, { force: true });
   await rm(STUB, { force: true });

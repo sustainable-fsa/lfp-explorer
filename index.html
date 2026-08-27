@@ -470,6 +470,34 @@
           <output id="week-out" for="week-range" class="week-out"></output>
         </section>
 
+        <!-- ══ USDM polygons — drought monitor ═══════════════════════════════
+             The counties above answer "what class did this county end up in";
+             this draws the map that answer was read OFF — the Drought Monitor's
+             own weekly polygons, translucent, in the same five class colors.
+
+             Published at about 1:2,000,000 and drawn exactly as published: its
+             edges overrun the coastline, which is the map rather than an error,
+             and clipping it to the counties would be this app editing NDMC's
+             product to look tidier than it is. Off by default, remembered per
+             this view, and it follows the week scrubbed above.
+
+             No bespoke JS: app.js picks both buttons up generically from
+             `[data-choice]` (§ Enumerated choices), which is the machinery this
+             is the first shipped user of. -->
+        <section class="sfsa-drawer-section" id="usdm-polygons-seg" data-view="usdm" hidden>
+          <h2 class="sfsa-drawer-title" id="usdm-polygons-title">USDM polygons</h2>
+          <div class="seg-btns" role="group" aria-labelledby="usdm-polygons-title">
+            <button type="button" class="nav-btn seg-btn" id="btn-polygons-off"
+                    data-choice="polygons" data-value="off" aria-pressed="true">Off</button>
+            <button type="button" class="nav-btn seg-btn" id="btn-polygons-on"
+                    data-choice="polygons" data-value="on" aria-pressed="false">On</button>
+          </div>
+          <p class="control-note">
+            The Drought Monitor's own weekly map, drawn as published (~1:2M), so
+            its edges run past the coastline.
+          </p>
+        </section>
+
         <section class="sfsa-drawer-section" data-view="ngp">
           <h2 class="sfsa-drawer-title">Pasture type</h2>
           <label class="control-label sr-only" for="type-select">Pasture type</label>

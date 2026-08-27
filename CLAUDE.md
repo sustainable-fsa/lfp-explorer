@@ -115,7 +115,63 @@ Specifics that bite in this repo:
   year-domain `years.max` tripwire in `applyYearDomain` (`js/app.js`), fixed
   2026-08-26 after two releases of gating nothing.
 
-## Where we left off (2026-08-23, later the same day)
+## Where we left off (2026-08-26)
+
+**The Drought monitor now draws the drought itself.** The *USDM polygons*
+toggle lays the selected week's actual Drought Monitor map over the county
+choropleth — translucent (`fill-opacity` 0.45, the same NDMC class hexes,
+`CLASS_HEX` in js/interfaces/usdm.js), between the front county fill and the
+county lines, so every thin line, the state mesh and the selection ring stay
+on top. OFF by default; `?polygons=on`, elided at off; LS
+`sfsa-ngp-polygons-usdm`. It is the FIRST USER of the dormant
+`descriptor.choices` mechanism, which supplied the URL param, the LS key, the
+boot re-validation and the aria-pressed sync with zero new plumbing. The
+owner's call, twice: translucent over the live choropleth (not a paint swap),
+and NO masking — the polygons are published unclipped at ~1:2M and are drawn
+exactly as published, coastline overspill and all, with the control note and
+help.md saying so.
+
+**`js/usdm-overlay.js` owns everything about it** — the sidecar, the per-week
+TopoJSON fetch/decode LRU (cap 8; raw weeks trend hard upward, 0.45 MB in 2000
+to 2.25 MB in 2026), one GeoJSON source + one fill layer, and the settle
+marker `data-ngp-overlay` (absent | `loading` | `YYYY-MM-DD` | `missing` |
+`error`; the ISO stamps only after `isSourceLoaded` + double rAF). app.js
+calls exactly one reconciler, `syncUsdmOverlay()`, from the tail of
+`recolor()` and `syncSections()`, and re-anchors in `swapBoundary()` after the
+flip (`swapVintage` inserts the arriving stack BELOW the lowest resident
+layer, so a mid-stack app layer is stranded above the new stack on every swap
+— `handle.layers.line`, read at the moment of use, is the anchor both there
+and at creation). A week scrub refetches WITHOUT bumping `data-ngp-view-seq`;
+the marker, not the pill, is the overlay's settle signal. Clear-before-fetch:
+an uncached target week empties the source before fetching, because last
+week's D4 blob over this week's choropleth is a map that lies.
+
+Three facts measured on the way in, worth not rediscovering:
+
+- **MapLibre 5.18 fires `sourcedata` with `sourceDataType: 'metadata'` and
+  `isSourceLoaded: true` computed from the PREVIOUS data** immediately on
+  `setData()`, before the tile manager reloads — a stamp listener that
+  ignores that filter announces the new week over the old picture. The module
+  filters it; the fake-map test reproduces it.
+- **An aborted in-flight week must be evicted from the LRU synchronously at
+  abort time**, not at rejection time — scrub away and straight back
+  otherwise hangs the marker on `loading` forever, waiting on a promise whose
+  fetch was already cancelled.
+- **`queryRenderedFeatures` on a layer the style does not hold does not
+  throw** — it reports through the map's error event, straight into the
+  console the harnesses collect. Same lesson as the missing-`sourceLayer` one
+  from the tiled cutover; the harness probe gates the query on `getLayer()`.
+
+Gates after: verify prints 561 (was 535 — new `8e` in `usdmExtraChecks`, plus
+`data-ngp-overlay` in the MARKERS table and the `overlay` fixture block in
+tools/config.mjs, all driven at the frozen 2012-07-24 week, never the moving
+newest); the a11y `usdm-view` state now audits with the overlay ON;
+check-boundaries grew a § 9 that walks the live sidecar and the newest week
+(26 checks). Same day, PR #12 connected the `years.max` tripwire
+(`console.error`, finally collected) after measuring every shipped payload
+inside the 2000–2026 whitelist.
+
+## The buffered authority swap (shipped 2026-08-23)
 
 **A change of county authority no longer shows the reader a hole**, and the
 reader who reported it was right twice over: it flashed twice for an archive
@@ -286,11 +342,14 @@ that in CI, and an injected off-by-one fails five of its assertions.
   2000 + 2009–2025), each with a `-index.json` sidecar and an
   `-outline-dummy.geojson`. `census-counties` unblocked and published
   2026-08-22, so the whole upstream chain is live.
-- **The USDM weekly-polygon overlay is NOT built.** No browser-ready form of
-  those polygons exists: the archive publishes 1,390 weekly GeoParquet files
-  (median 1.17 MB, five non-overlapping MultiPolygons per week, `usdm_class`
-  `"D0"`–`"D4"`, CRS84) and `data-tiles` has no USDM script. That is the next
-  piece of work and it is a producer job first.
+- **`data-tiles` also publishes the USDM weekly polygons** (2026-08-22, weekly
+  Thursday cron), and they are NOT tiles: one TopoJSON per week
+  (`usdm/USDM_{date}.topojson`, object `usdm`, quantization 1e6), because a
+  week is 3–5 non-overlapping MultiPolygons of ~1:2M data with nothing to
+  simplify. The sidecar `usdm/usdm-index.json` (`sfsa-usdm-index/1`) names
+  every week in the archive and the URL template; the geometry arrives in the
+  same dummy space through the same `to_dummy` transform as the county tiles.
+  Published UNCLIPPED — the app draws it as published (§ Where we left off).
 
 ## The four-interface expansion (shipped 2026-08-20)
 
@@ -398,16 +457,17 @@ html-validate clean; LHCI a11y 1.0:
 
 ## Open threads
 
-The live question is now **the USDM weekly-polygon overlay**, and it is a
-PRODUCER job first: there is no browser-ready form of those polygons anywhere.
-The archive publishes 1,390 weekly GeoParquet files and `data-tiles` has no USDM
-script. Start there, not here.
-
-App-side, in rough priority order:
+The USDM weekly-polygon overlay shipped 2026-08-26 (§ Where we left off), which
+closes the producer thread that used to lead this list. App-side, in rough
+priority order:
 
 1. **Manual AUDIT-CHECKLIST walk** — the three passes automation cannot do
-   (keyboard-only, 375 px on a real phone, the figures pass), now with two items
-   the tiled path adds: at maximum zoom on one county the boundary must be
+   (keyboard-only, 375 px on a real phone, the figures pass). The overlay adds
+   one: toggle *USDM polygons* on at a coastal county and confirm the
+   drought's own edge visibly overruns the coastline (that is the published
+   map) while the county lines stay crisp above it — and that the toggle is
+   keyboard-reachable and warms on focus. Still standing are the two items
+   the tiled path added: at maximum zoom on one county the boundary must be
    smooth, and flipping *Census counties* ⇄ *FSA LFP boundaries* at z14–15 on
    one coastal county must visibly move the boundary without moving the camera.
    That flip is now instant in both directions (both archives stay resident), so
