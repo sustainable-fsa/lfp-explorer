@@ -66,10 +66,10 @@
                         and the weekly-polygon toggle), a categorical swatches
                         legend where the other view has a colour ramp, and a card
                         whose picture is a 1,389-week heatmap instead of a span
-                        chart. Audited with the POLYGON OVERLAY ON, which is the
-                        app's only state where a translucent geometry is drawn
-                        over the choropleth rather than beside it, and where a
-                        third seg group shares the drawer with a range input.
+                        chart. Audited with the POLYGONS SWITCH ON, which is
+                        the app's only state where the Monitor's own map
+                        replaces the county colors, and where a third seg
+                        group shares the drawer with a range input.
                         None of that markup exists on the default view, so a run
                         that never switched would audit half the app
          elig-view      the third interface: LFP eligibility, whose drawer adds
@@ -357,10 +357,11 @@ const STATES = [
        than a prettier one. The overlay adds a third seg group to a drawer that
        already carries a dataset seg and a range input (so the group's own
        labelling, and the pressed/unpressed contrast of one more pair of
-       buttons, are only auditable here), it puts a translucent second geometry
-       over the canvas — the one surface in the app where a colour is drawn over
-       another colour rather than beside it — and it adds a sentence to the live
-       region and a clause to the legend key. None of that markup or copy exists
+       buttons, are only auditable here), it swaps the county colors for the
+       Monitor's own weekly map — the polygons at full strength over
+       None-colored counties, a hard switch rather than a blend — and it adds
+       a sentence to the live region and a clause to the legend key. None of
+       that markup or copy exists
        in any other state. It is toggled on AFTER the card, so this state is the
        compound a reader actually reaches, and toggled back off in exit(). */
     async enter(page) {

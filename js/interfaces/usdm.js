@@ -356,15 +356,39 @@ function colorsFor(data, xw, sel) {
 
   const classes = data.classesFor(sel.week);
 
+  /* THE HARD SWITCH. While the reader has the Monitor's own weekly polygons up
+     (§ the `polygons` choice), the county fills stop being a second reading of
+     the same week and become the ground that map is drawn on: every county the
+     archive classed paints CLASS_COLORS[0], the warm None the legend already
+     names, and the D0–D4 arrives from the polygons above it. The colours ARE
+     the choropleth's channel, and while the Monitor's map is up that channel
+     honestly says "no drought here" for everything outside the polygons —
+     which, the polygons being the source the county classes were reduced from,
+     is true of every square metre they do not cover.
+
+     It replaces the translucent overlay this shipped as, on the owner's call:
+     two maps of one week blended over each other are two answers to the same
+     question at every pixel, and a reader cannot tell which one they are
+     reading. One map, whole, is the honest picture.
+
+     ONLY THE COLOURS MOVE. `stats` is counted off the real classes in the same
+     pass, and the card, the tooltip, the table and the live sentence all read
+     the DATA rather than the paint — a readout that told a reader "None" for a
+     county the Monitor put in D4 would be exactly the confusion this switch
+     exists to remove. */
+  const hardSwitch = !!(sel && sel.polygons === 'on');
+
   /* One pass, no join. `classes` is keyed by this archive's own county ids and
      so is the authority underneath it, so a class code IS a colour for that
      polygon (§ THERE IS NO JOIN ANY MORE). A negative code is a county the
      archive does not report this week — '.' in the series, which on the Census
      set is how a county outside the week's boundary vintage appears — and it
-     falls through to --no-data rather than being coloured "None". */
+     falls through to --no-data rather than being coloured "None"; that is
+     unchanged by the switch, because a county with no row is not a county the
+     Monitor found drought-free. */
   for (const [id, code] of classes) {
     if (code < 0) continue;
-    colors.set(id, CLASS_COLORS[code]);
+    colors.set(id, hardSwitch ? CLASS_COLORS[0] : CLASS_COLORS[code]);
     if (code >= D2_CODE) stats.severe += 1;
   }
 
@@ -416,24 +440,29 @@ function legendNoDataLabel() {
  * area-weighted average will misread every county on it.
  *
  * @param {object} [sel] the app's selection (js/app.js § syncLegend calls this
- *        as `legend.key(sel)`). Taken now because the polygon overlay puts a
- *        second thing on the map, and a key that described only the counties
- *        would be describing half the picture.
+ *        as `legend.key(sel)`). Taken because the polygons switch puts a
+ *        DIFFERENT map on the canvas, and a key that described only the
+ *        choropleth would be describing a picture that is not on screen.
  */
 function legendKey(sel) {
   let msg = 'Color is the worst drought class touching any part of the county that '
     + 'week — the same any-area rule LFP uses (7 U.S.C. § 1531(d)(3)). Yellow is '
     + 'abnormally dry; deep red is exceptional drought. Pale counties are '
     + 'drought-free; gray counties are not in this week\'s county set.';
-  /* The swatches are the same five hexes either way (CLASS_HEX), so nothing in
-     the legend's PICTURE changes when the overlay comes on — which is exactly
-     why the key has to say it in words. "Drawn as published" is doing real
-     work: the USDM is issued at roughly 1:2,000,000 and unclipped, so its
-     edges overrun the coastline, and a reader who took that for a rendering
-     fault would distrust the layer instead of reading it. */
+  /* THE LEGEND DOES NOT CHANGE, and that is deliberate rather than an
+     omission. The switch paints the polygons in the same five hexes the
+     swatches already name and the counties in the same None, so every chip
+     still means what it says — there is nothing to re-draw and a second
+     legend would suggest there was. What the PICTURE cannot say is that those
+     hexes have moved from the counties to the Monitor's own shapes, so the key
+     says it in words. "Drawn as published" is doing real work: the USDM is
+     issued at roughly 1:2,000,000 and unclipped, so its edges overrun the
+     coastline, and a reader who took that for a rendering fault would distrust
+     the layer instead of reading it. */
   if (sel && sel.polygons === 'on') {
-    msg += ' The translucent overlay is the USDM\'s own weekly map, drawn as '
-      + 'published.';
+    msg += ' While the polygons are on, the map is the USDM\'s own weekly map, '
+      + 'drawn as published; counties it does not cover show the same None as '
+      + 'the legend.';
   }
   return msg;
 }
@@ -798,16 +827,18 @@ function liveSentence(sel, shown, total, missingGeometry, stats) {
     ? 'Week of ' + stats.label
       + (stats.week ? ' (week ' + stats.week + ' of ' + stats.weeks + ')' : '')
     : 'Drought monitor';
-  /* The overlay is a second layer on the same canvas, and the canvas has one
-     live region. A reader who cannot see it is otherwise told the county
-     counts and nothing about the polygons sitting over them — which on this
-     view is the difference between "the county reached D4" and "here is the
-     four per cent of it that did". No numbers: a week is 3–5 national
+  /* The switch changes what the canvas IS, and the canvas has one live region.
+     A reader who cannot see it is otherwise told county counts that describe a
+     choropleth nobody is looking at — the county colours are set aside while
+     the Monitor's own map is up, and the counts that follow are still the
+     week's real classes, read off the data rather than off the paint. No
+     numbers about the polygons themselves: a week is 3–5 national
      MultiPolygons, and "5 features" is a fact about the file rather than about
      the map. Appended to BOTH endings below, because the polygons can be on
      screen while the county payload is still arriving. */
   const overlay = (sel && sel.polygons === 'on')
-    ? ' The weekly USDM drought polygons are drawn over the counties.' : '';
+    ? ' The map shows the Drought Monitor\'s own weekly map; the county colors '
+      + 'are set aside while it is on.' : '';
   if (!stats || !stats.total) {
     return head + ', ' + datasetLabel(sel) + ': nothing to show yet.' + overlay;
   }
@@ -1057,23 +1088,30 @@ export const USDM = Object.freeze({
   controls: Object.freeze({ type: false, variable: false, week: true }),
   /**
    * The first enumerated choice any shipped family declares (js/app.js
-   * § Enumerated choices): whether the USDM's OWN weekly polygons are drawn,
-   * translucent, over the county choropleth (js/usdm-overlay.js).
+   * § Enumerated choices), and a HARD SWITCH rather than a second layer:
+   * whether the map is the county choropleth, or the USDM's OWN weekly map
+   * (js/usdm-overlay.js). On, the counties all paint the warm None and the
+   * Monitor's polygons draw over them opaque; off, exactly the choropleth.
    *
    * OFF BY DEFAULT, and that is an editorial decision rather than a
    * performance one. The subject of this view is the reduction — the worst
    * class touching a county, which is what LFP is administered on — and the
-   * raw polygons are the evidence a reader turns to when they want to check
-   * it. Opening with both layers up would present the reduction and its
-   * evidence as one picture, which is the confusion this view exists to
-   * remove.
+   * Monitor's own map is the evidence a reader turns to when they want to
+   * check it. Opening on the evidence would bury the subject.
+   *
+   * IT SHIPPED AS A TRANSLUCENT OVERLAY AND THAT WAS WALKED BACK (2026-08-27,
+   * the owner: "too confusing to see them over the county layers"). Two maps
+   * of one week blended together answer the same question twice at every
+   * pixel, and no opacity makes it clear which answer a reader is reading. So
+   * there is one map at a time, and the switch says which.
    *
    * A choice and not a dataset: it changes nothing about which numbers are
-   * read, which county set is drawn, or what the legend's swatches mean. Only
-   * whether a second layer is on the canvas. The app's generic machinery
-   * carries it from here — `?polygons=on` (elided at the default),
-   * `sfsa-ngp-polygons-usdm`, and the seg buttons — with no plumbing of its
-   * own, which is the whole point of declaring it rather than wiring it.
+   * read, which county set is drawn, or what the legend's swatches mean — the
+   * card, the tooltip and the table still report the county's real class. Only
+   * what the canvas draws. The app's generic machinery carries it from here —
+   * `?polygons=on` (elided at the default), `sfsa-ngp-polygons-usdm`, and the
+   * seg buttons — with no plumbing of its own, which is the whole point of
+   * declaring it rather than wiring it.
    */
   choices: Object.freeze([Object.freeze({
     id: 'polygons',

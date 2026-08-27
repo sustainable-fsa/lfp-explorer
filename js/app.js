@@ -36,10 +36,9 @@
              derived; disasters: one archive, so this view never emits it)
      ?year   2000–2026, narrowed to the ACTIVE view's own domain
      ?week   1-based week WITHIN ?year, on a view that has weeks (usdm)
-     ?polygons on — the drought monitor's overlay of the USDM's own weekly
-             polygons over the counties; elided at its default, which is off
-     ?opacity how strongly that overlay is painted, 0–100; emitted only while
-             the polygons are actually drawn, and elided at its default of 45
+     ?polygons on — the drought monitor's hard switch from the county
+             choropleth to the USDM's own weekly map; elided at its default,
+             which is off
      ?type   pasture-type slug — read against the ACTIVE DATASET's dictionary
      ?source which county aggregation a dataset that publishes several is read
              at (eligibility's derived archive; dropped on every other dataset)
@@ -137,11 +136,12 @@ import {
 } from './interfaces/registry.js';
 import { loadDataset } from './decoders/common.js';
 import { loadCrosswalk } from './decoders/crosswalk.js';
-/* The drought monitor's optional overlay of the USDM's OWN weekly polygons,
-   drawn over the county choropleth. A module rather than a descriptor leaf
-   because it owns a GeoJSON source, a layer and a fetch of its own, and a
-   descriptor paints counties and nothing else. app.js only ever tells it what
-   is on screen — see § The USDM polygon overlay. */
+/* The drought monitor's optional switch from the county choropleth to the
+   USDM's OWN weekly map. A module rather than a descriptor leaf because it owns
+   a GeoJSON source, a layer and a fetch of its own, and a descriptor paints
+   counties and nothing else — which is also why the OTHER half of that switch,
+   the counties going None, is the descriptor's. app.js only ever tells this one
+   what is on screen — see § The USDM polygon overlay. */
 import * as usdmOverlay from './usdm-overlay.js';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
@@ -211,13 +211,16 @@ const LS = Object.freeze({
       here is re-validated against the family's own list on read, and a family
       with no list has nothing to validate. */
   choice: (view, id) => 'sfsa-ngp-' + id + '-' + view,
-  /** How strongly a family's polygon overlay is painted — per interface, like
-      the aggregation above. It is NOT one of the `choice` keys even though it
-      reads like one: a choice is an enumeration validated against a declared
-      list, and this is an integer 0–100 with nothing to enumerate. It gets an
-      entry of its own for the same reason `source` does, and the same suspicion
-      on read (opacityValue). */
-  opacity: (view) => 'sfsa-ngp-opacity-' + view,
+  /* RETIRED, and listed here so nobody re-mints them. `sfsa-ngp-opacity-usdm`
+     held how strongly the drought polygons were painted, 0–100, while they
+     were a translucent overlay with a slider; the polygons became a HARD
+     SWITCH on 2026-08-27 (js/interfaces/usdm.js § the hard switch) and there
+     is no strength to remember. It is never read and never written, exactly
+     like the two disaster keys named at `choice` above, and a returning
+     visitor's stored copy is inert — the same standing as the retired
+     `?decl=`/`?disaster=` params. `?opacity=` is inert with it: the app reads
+     no such param, so an old link still opens the map it named, minus a
+     translucency that no longer exists. */
   drawer: 'sfsa-ngp-drawer',
   seenIntro: 'sfsa-ngp-seen-intro',
 });
@@ -239,14 +242,6 @@ const BOUNDARY_DEBOUNCE_MS = 250;
     way; only the SENTENCE waits. */
 const LIVE_REST_MS = 350;
 
-/** How strongly the USDM polygon overlay is painted when nobody has said
-    otherwise, as a percentage — the number the slider comes up on, the one
-    `?opacity=` is elided at, and the one every unusable stored or URL value
-    falls back to. 45 is the look the overlay shipped with (js/usdm-overlay.js
-    § Paint says what it buys); the slider exists because reading the drought's
-    own shape and reading the county under it want different numbers. */
-const OVERLAY_OPACITY_DEFAULT = 45;
-
 /* ── Element handles ─────────────────────────────────────────────────────── */
 
 const $ = (sel) => document.querySelector(sel);
@@ -267,12 +262,6 @@ const els = {
   weekOut: $('#week-out'),
   weekPrev: $('#btn-week-prev'),
   weekNext: $('#btn-week-next'),
-  /* The overlay's strength: the one control in the drought monitor's polygon
-     section that is not a seg button, so unlike the two beside it, it is not
-     picked up generically (§ The USDM polygon overlay). */
-  opacity: $('#opacity-range'),
-  opacityOut: $('#opacity-out'),
-  opacityWrap: $('#usdm-opacity-wrap'),
   type: $('#type-select'),
   /* The eligibility family's own three controls. Its type select is separate
      because its options carry a sentinel ("All types") that is in no payload's
@@ -318,7 +307,7 @@ const els = {
     disables itself on error strands them there. */
 const dataControls = [
   els.year, els.type, els.eligType, els.eligSource, ...els.segs, els.search,
-  els.week, els.weekPrev, els.weekNext, ...els.choiceBtns, els.opacity,
+  els.week, els.weekPrev, els.weekNext, ...els.choiceBtns,
   els.btnTable, els.btnExport, els.btnShare,
 ];
 
@@ -367,17 +356,15 @@ const viewState = {
    * county, and a returning visitor wants the latest map rather than the one
    * they happened to be reading last month.
    *
-   * `opacity` is the other side of that coin, and it is here rather than beside
-   * `polygons` in the choice machinery because it is a number rather than an
-   * enumeration. It IS persisted: how strongly to draw a translucent layer over
-   * the counties is a way of READING the map — like the eligibility view's
-   * aggregation, and unlike the week — so a reader who turned the polygons
-   * down to a whisper meant it, and comes back to it.
+   * The polygons themselves are not here: `polygons` is one of this family's
+   * declared choices (js/interfaces/usdm.js § choices) and the generic choice
+   * machinery keeps it in this same slice under its own id. There used to be an
+   * `opacity` beside it, for the days when the polygons were translucent and
+   * had a slider; the hard switch retired both.
    */
   usdm: {
     dataset: 'fsa-lfp',
     week: null,
-    opacity: OVERLAY_OPACITY_DEFAULT,
   },
   /**
    * LFP eligibility: which of the three archives is painted, which pasture type
@@ -673,13 +660,6 @@ function selection() {
   for (const choice of choicesOf(iface)) {
     sel[choice.id] = choiceValue(iface, choice.id);
   }
-  // …and, on the one family that has an overlay, how strongly it is drawn. It
-  // rides beside `polygons` rather than inside it (a choice is an enumeration;
-  // this is a number), and it is present only where the toggle is, so a leaf
-  // reading `sel.opacity` on another family gets undefined rather than a number
-  // about somebody else's map. js/export.js is the reader: the poster has to be
-  // painted at the strength the screen was.
-  if (hasOverlayChoice(iface)) sel.opacity = opacityValue(iface);
   return sel;
 }
 
@@ -793,7 +773,6 @@ function readInitialState() {
   // a week these need no payload and are resolved here — for the family being
   // ASKED FOR, whose remembered state a parked switch will then come up on.
   readChoices(iface);
-  readOverlayOpacity(iface);
 
   // A type slug means whatever the ACTIVE DATASET's dictionary says it means,
   // so it is read from that dataset's own stored key and resolved against that
@@ -915,16 +894,6 @@ function pushState() {
     const value = choiceValue(iface, choice.id);
     if (value !== choice.default) p[choice.id] = value;
   }
-  // The overlay's strength, on the family that has an overlay — and only while
-  // that overlay is actually being drawn. `?opacity=20` beside a map with the
-  // polygons off describes a slider the reader cannot see, on a layer that is
-  // not there; the value is still remembered, so turning the polygons back on
-  // brings it back into the URL with them. Elided at the default like every
-  // other param.
-  if (hasOverlayChoice(iface) && choiceValue(iface, 'polygons') !== 'off') {
-    const value = opacityValue(iface);
-    if (value !== OVERLAY_OPACITY_DEFAULT) p.opacity = String(value);
-  }
   if (state.countyId) p.county = state.countyId;
   // Camera params are emitted only when the camera has been moved off the
   // default fit, so an untouched view keeps a clean URL.
@@ -961,12 +930,6 @@ function persist() {
   // remembering: a reader who turned the drought polygons on meant it.
   for (const choice of choicesOf(iface)) {
     lsSet(LS.choice(state.view, choice.id), choiceValue(iface, choice.id));
-  }
-  // …and how strongly that overlay is drawn, which is a way of reading for
-  // exactly the same reason. Stored whether the polygons are on or off, unlike
-  // the URL param above: this is the number they will come back ON at.
-  if (hasOverlayChoice(iface)) {
-    lsSet(LS.opacity(state.view), String(opacityValue(iface)));
   }
   lsSet(LS.view, state.view);
   lsSet(LS.dataset(state.view), vs.dataset);
@@ -1022,22 +985,24 @@ function colorsNow() {
 /**
  * …and the same, applied.
  *
- * THE TAIL IS PACKAGED RATHER THAN RUN, and that is the whole of the fused week
+ * THE TAIL IS PACKAGED RATHER THAN RUN, and that is the whole of the fused
  * cutover. What this closure carries — the choropleth, the county card, the
- * sentence in the live region — is one week's answer, and the polygons drawn
- * over it (js/usdm-overlay.js) are the same week's evidence. They used to change
- * at different times: the feature state was synchronous and the polygons were a
+ * sentence in the live region — is one week's answer, and the polygons
+ * (js/usdm-overlay.js) are that week's evidence. They used to change at
+ * different times: the feature state was synchronous and the polygons were a
  * fetch away, so for a few hundred milliseconds the map paired this week's
  * counties with last week's blobs, which is the one pairing a reader cannot
- * detect and cannot correct for.
+ * detect and cannot correct for. Under the hard switch the same gap has a
+ * second shape — the counties would go all-None the instant the toggle was
+ * pressed, and stay that way, alone, for the length of the fetch.
  *
  * So the overlay is handed the tail and decides when it runs. It runs it on the
- * spot in every case but one — including for the three families that have no
- * overlay at all, where `on` is false and nothing is ever held — and holds it,
- * for as long as a week takes to arrive, when running it now would split the
- * map in two. The county card and the week's own <output> do NOT wait: a
- * control that does not answer reads as a broken control, and only the canvas
- * has two halves to keep together.
+ * spot in almost every case — including for the three families that have no
+ * polygons at all, where `on` is false and nothing is ever held — and holds it,
+ * for as long as a week takes to arrive, when running it now would put a map on
+ * screen that is true of no week. The county card and the week's own <output>
+ * do NOT wait: a control that does not answer reads as a broken control, and
+ * only the canvas has two halves to keep together.
  *
  * @returns {Promise<boolean>} resolved once the tail has run, false if a newer
  *        selection superseded it. Ignored by the scrub and swap paths, which
@@ -1990,9 +1955,20 @@ function applyWeek(instance) {
 
 /* ── The USDM polygon overlay ────────────────────────────────────────────────
    The county choropleth answers "what class did this county end up in"; the
-   overlay is the map that ANSWER was read off — the USDM's own weekly polygons,
-   published unclipped at about 1:2,000,000, drawn translucent over the counties
-   when the reader asks for them.
+   polygons are the map that ANSWER was read off — the USDM's own weekly map,
+   published unclipped at about 1:2,000,000, drawn INSTEAD OF the county colours
+   when the reader asks for it.
+
+   IT IS A HARD SWITCH, and that is the whole of what changed on 2026-08-27. It
+   shipped translucent over the live choropleth with a slider for its strength,
+   and the owner walked that back on sight ("too confusing to see them over the
+   county layers"). What replaced it takes two files and one instant: the
+   descriptor paints every classed county the warm None while the choice is on
+   (js/interfaces/usdm.js § the hard switch), and the module draws the polygons
+   opaque over them. Neither half is a picture on its own — all-None counties
+   are a map of a week that never happened, and the polygons alone have no
+   coastline — which is why the fuse below now covers the toggle as well as the
+   week.
 
    Everything about it is the module's (js/usdm-overlay.js): the source, the
    layer, the fetch, the LRU and the `data-ngp-overlay` settle marker. What this
@@ -2004,25 +1980,21 @@ function applyWeek(instance) {
    what lets recolor() and syncSections() carry it without either of them
    knowing what an overlay is.
 
-   AND THE CUTOVER IS FUSED. The choropleth and the polygons are one week's
-   answer and that week's evidence, and they used to arrive at different times:
-   feature state is synchronous, a 250 KB weekly file is not. So recolor() does
-   not paint any more — it packages the paint, the card and the announcement and
-   hands them to the reconciler, which runs them on the spot unless doing so
-   would pair this week's counties with last week's blobs, and otherwise holds
-   them until the incoming week is drawable and runs them in that same task. The
-   held picture is the OLD one, whole: old counties under old polygons, which is
-   a true map of a week the reader was just looking at. That is the same argument
-   the buffered authority swap makes (§ swapBoundary) on the other axis.
+   AND THE CUTOVER IS FUSED. The county colours are synchronous and a 250 KB
+   weekly file is not, so recolor() does not paint any more — it packages the
+   paint, the card and the announcement and hands them to the reconciler, which
+   runs them on the spot unless doing so would show a map that is true of no
+   week, and otherwise holds them until the polygons are drawable and runs them
+   in that same task. Two transitions qualify: a change of WEEK while the
+   polygons are up (the held picture is the OLD one, whole), and the TOGGLE
+   COMING ON (the held picture is the live choropleth, which is the reader's own
+   last true map). That is the same argument the buffered authority swap makes
+   (§ swapBoundary) on two more axes.
 
-   The one piece of overlay STATE this file owns is its strength, because it is
-   not a fact about the data at all — it is how hard the reader wants to look
-   through it. There is no right answer: the drought's own shape and the county
-   colour underneath it are two things to read off one picture, and 45% is a
-   compromise rather than a finding. So it is a slider, it rides the URL, and it
-   is remembered per view like the aggregation picker and unlike the week. It is
-   deliberately NOT one of the family's enumerated choices: those are validated
-   against a declared list of values, and a number 0–100 has no list. */
+   This file owns no overlay state at all now. `polygons` is one of the family's
+   declared choices and rides the generic machinery; the strength that used to
+   live here — a number, a slider, a URL param and a stored preference — went
+   with the translucency. */
 
 /** The selected week as an ISO date, or null when the family on screen has no
     weeks (or its payload has not landed yet). UTC-pinned via toISOString,
@@ -2035,137 +2007,21 @@ function usdmWeekIsoNow() {
   return wd.weekDate(w).toISOString().slice(0, 10);
 }
 
-/** Does this family have a polygon overlay, and therefore a strength? Asked of
-    the family's own declaration rather than of its slug, so the answer is the
-    descriptor's and not this file's. */
-function hasOverlayChoice(iface) {
-  return choicesOf(iface).some((c) => c.id === 'polygons');
-}
-
-/** A usable overlay strength: an INTEGER percentage, 0 through 100. Anything
-    else — a hand-edited `?opacity=banana`, a stored value from a version of
-    this app that meant something different by the key, a float — is not a
-    weaker opacity, it is not an opacity. */
-function validOpacity(v) {
-  return Number.isInteger(v) && v >= 0 && v <= 100;
-}
-
-/**
- * How strongly one family's overlay is painted, 0–100 — RE-VALIDATED ON EVERY
- * READ, exactly like choiceValue().
- *
- * The number in `viewState` may have arrived from a URL or from localStorage,
- * and a stored value gets the same suspicion as a URL one. The failure this
- * guards is quiet: a `NaN` reaching a GL paint property is accepted without
- * complaint and the layer simply stops being visible, which reads as "the
- * overlay is broken" rather than as "that value was junk".
- *
- * @param {object} [iface] the family whose overlay it is; the active one by
- *        default
- * @returns {number} an integer 0–100
- */
-function opacityValue(iface = currentInterface()) {
-  if (!hasOverlayChoice(iface)) return OVERLAY_OPACITY_DEFAULT;
-  const slice = viewState[iface.id];
-  const held = slice ? slice.opacity : null;
-  return validOpacity(held) ? held : OVERLAY_OPACITY_DEFAULT;
-}
-
-/**
- * Read the boot strength: URL param > stored preference > default, validated.
- *
- * Honoured only for the family being ASKED FOR, which is the same rule
- * readChoices() follows and the same rule `?type=` follows: a param for a
- * control that will not be on screen describes a different map. Written as a
- * function of the interface for the same reason too — readInitialState runs
- * before any switch has happened.
- *
- * A warn rather than an error, like every other unusable param: the app cannot
- * stop a visitor's storage or address bar from holding anything at all, and a
- * tripwire that CI could not keep clean is not a tripwire (CLAUDE.md).
- */
-function readOverlayOpacity(iface) {
-  if (!hasOverlayChoice(iface)) return;
-  const slice = viewState[iface.id];
-  if (!slice) return;
-  const raw = params.get('opacity') ?? lsGet(LS.opacity(iface.id));
-  if (raw == null || String(raw).trim() === '') return;
-  // Number() on a PERCENTAGE, never on a county id. Number('') is 0 and 0 is a
-  // real opacity, which is why the empty case is excluded above rather than
-  // left to the range check.
-  const value = Number(raw);
-  if (validOpacity(value)) slice.opacity = value;
-  else {
-    console.warn('[ngp] ' + JSON.stringify(String(raw)) + ' is not an overlay '
-      + 'opacity (0–100) — falling back to ' + OVERLAY_OPACITY_DEFAULT + '.');
-  }
-}
-
-/**
- * Paint the overlay harder or softer.
- *
- * What a landed change costs is ONE `setPaintProperty` on a constant paint
- * property, and that is the whole of it. No recolor: the county colours are
- * the same colours, and repainting 3,200 features to change a translucency
- * would be work in exchange for nothing. No `data-ngp-view-seq`: nothing is
- * fetched, and that counter means a transition that involved one landed. And
- * no live-region sentence: the <output> beside the thumb is the readout, a
- * range input announces its own value natively as it moves, and a sentence per
- * frame of a drag is the noise LIVE_REST_MS exists to prevent.
- *
- * @param {number|string} next an integer percentage, 0–100
- */
-function setOpacity(next) {
-  const iface = currentInterface();
-  if (!hasOverlayChoice(iface)) return;
-  const value = Number(next);
-  if (!validOpacity(value) || opacityValue(iface) === value) return;
-  viewState[iface.id].opacity = value;
-  syncOpacityOut();
-  persist();
-  pushState();
-  syncUsdmOverlay();
-}
-
-/** The readout beside the thumb. Separate from syncOpacityControl() for the
-    same reason syncWeekOut() is separate from syncWeekControl(): this is the
-    half that runs on every frame of a drag. */
-function syncOpacityOut() {
-  if (els.opacityOut) els.opacityOut.textContent = opacityValue() + '%';
-}
-
-/**
- * Show the strength slider only while there is something to make stronger.
- *
- * Narrower than its section, like the eligibility view's aggregation picker:
- * `#usdm-polygons-seg` belongs to the drought monitor, and this control belongs
- * to the state of that section in which the polygons are actually drawn.
- *
- * @param {boolean} on whether the overlay is on
- */
-function syncOpacityControl(on) {
-  if (els.opacityWrap) els.opacityWrap.hidden = !on;
-  // Written only when it differs, for the reason syncWeekControl() re-authors
-  // its bounds that way: assigning to a range input mid-drag is how a dragged
-  // thumb starts jumping.
-  const value = String(opacityValue());
-  if (els.opacity && els.opacity.value !== value) els.opacity.value = value;
-  syncOpacityOut();
-}
-
 /**
  * Tell the overlay module what is on screen — and, when the caller has one, hand
  * it the work that has to land at the same instant the polygons do.
  *
- * The DOM half runs first and unguarded, because the slider is a control rather
- * than a layer: it has to be right in the frames before there is a map, which
- * is exactly when syncSections() first runs. The map half is guarded for the
- * mirror-image reason — the module's job starts with `map.addLayer`.
+ * Guarded on the map, because the module's job starts with `map.addLayer` and
+ * syncSections() runs before there is one. There is no unguarded DOM half any
+ * more: the section's two seg buttons are driven by the generic choice
+ * machinery, and the strength slider that used to be shown and hidden here went
+ * with the translucency.
  *
  * `onSettle` is recolor()'s apply-tail (§ recolor). It is run by the module,
- * synchronously in every case but a change of week with polygons already drawn,
- * and it must not be lost when there is no map to reconcile — hence the explicit
- * call in the guard below rather than a bare `return`.
+ * synchronously except across a change of week with the polygons up and across
+ * the toggle coming on, and it must not be lost when there is no map to
+ * reconcile — hence the explicit call in the guard below rather than a bare
+ * `return`.
  *
  * @param {{onSettle?: () => void}} [opts]
  * @returns {Promise<boolean>} what usdmOverlay.sync() returns: resolved once the
@@ -2174,7 +2030,6 @@ function syncOpacityControl(on) {
 function syncUsdmOverlay({ onSettle } = {}) {
   const iface = currentInterface();
   const on = state.view === 'usdm' && choiceValue(iface, 'polygons') === 'on';
-  syncOpacityControl(on);
   if (!map || !handle) {
     if (typeof onSettle === 'function') onSettle();
     return Promise.resolve(true);
@@ -2185,9 +2040,6 @@ function syncUsdmOverlay({ onSettle } = {}) {
     on,
     onSettle,
     dateIso: on ? usdmWeekIsoNow() : null,
-    // Percent here, 0–1 at the paint property: the reader's units and GL's
-    // units are not the same units, and this is the one place they meet.
-    opacity: opacityValue(iface) / 100,
     // The module speaks to the reader exactly once — when a week it was told to
     // draw could not be fetched — and this is the same channel every other
     // sentence in this file uses. Wrapped rather than passed, because `live` is
@@ -2389,7 +2241,7 @@ function applySource(instance) {
    none of them a different quantity.
 
    ONE SHIPPED FAMILY DECLARES ONE: the drought monitor's `polygons`, which says
-   whether the USDM's own weekly polygons are drawn over the counties
+   whether the map is the county choropleth or the USDM's own weekly map
    (js/interfaces/usdm.js, § The USDM polygon overlay below). It is the first
    user of this machinery and it needed no new plumbing, which is what the
    mechanism was kept for — the disaster designations had two (Secretarial or
@@ -2412,8 +2264,9 @@ function applySource(instance) {
    `data-ngp-view-seq` — that counter means "a transition that involved a fetch
    has landed" (tools/config.mjs § MARKERS), and a week scrub does not bump it
    either. `polygons` does fetch a file of its own, and it still does not bump
-   the counter: what it fetches is drawn OVER the map rather than being the map,
-   and it settles on a marker of its own (§ The USDM polygon overlay). And it is
+   the counter: what it fetches is one week of one layer rather than the view's
+   own archive, and it settles on a marker of its own (§ The USDM polygon
+   overlay). And it is
    not a payload-driven select like the aggregation picker
    above: the values are static, so a choice param needs no parking and is
    resolved at boot like any other whitelisted param. */
@@ -2948,24 +2801,6 @@ function wireControls() {
   }
   if (els.weekPrev) els.weekPrev.addEventListener('click', () => stepWeek(-1));
   if (els.weekNext) els.weekNext.addEventListener('click', () => stepWeek(1));
-
-  // The overlay's strength, on the same rAF throttle as the two sliders above —
-  // and the <output> written immediately, so the percentage under the thumb
-  // never lags the thumb. What a landed change does is one setPaintProperty
-  // (setOpacity says why that is all it is), and NOTHING is deferred to the
-  // live region: this is the one scrubbed control in the app that says nothing,
-  // because a range input already announces its own value.
-  let opacityRaf = 0;
-  if (els.opacity) {
-    els.opacity.addEventListener('input', () => {
-      if (els.opacityOut) els.opacityOut.textContent = els.opacity.value + '%';
-      if (opacityRaf) return;
-      opacityRaf = requestAnimationFrame(() => {
-        opacityRaf = 0;
-        setOpacity(els.opacity.value);
-      });
-    });
-  }
 
   els.type.addEventListener('change', () => setType(els.type.value));
   // The eligibility family's own select — same handler, different dictionary

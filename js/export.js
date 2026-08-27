@@ -467,18 +467,13 @@ export async function runExport(ctx = appCtx) {
       // Nothing here writes `data-ngp-overlay`: that marker says what the READER
       // is looking at, and nobody ever looks at this map.
       if (overlayOn) {
-        /* AT THE STRENGTH THE READER SET IT TO. A poster printed at the
-           shipped 45% when the screen was at 15% is a different picture of the
-           same week — the polygons would swallow a choropleth the reader had
-           deliberately kept legible — so the number is frozen off the same
-           `sel` as the colours, the week and the filename.
-
-           Validated here rather than trusted, because this is a boundary: `sel`
-           is the app's own and app.js re-validates it on every read, but the
-           poster is the artifact that outlives the tab. Anything unusable falls
-           back to the same default js/usdm-overlay.js would have applied. */
-        usdmOverlay.addOverlayLayers(offscreen, overlayFc, offHandle.layers.line,
-          { opacity: (Number.isInteger(sel.opacity) ? sel.opacity : 45) / 100 });
+        /* THE OTHER HALF OF THE HARD SWITCH IS ALREADY IN `colors`, and that is
+           why there is nothing to pass here. The polygons draw opaque over
+           counties the descriptor painted the warm None — `colorsFor` reads the
+           same `sel.polygons` this line does (js/interfaces/usdm.js § the hard
+           switch) — so the poster reproduces the screen by construction rather
+           than by a second decision taken on this path. */
+        usdmOverlay.addOverlayLayers(offscreen, overlayFc, offHandle.layers.line);
       }
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },

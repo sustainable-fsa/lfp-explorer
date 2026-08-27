@@ -473,7 +473,15 @@
         <!-- ══ USDM polygons — drought monitor ═══════════════════════════════
              The counties above answer "what class did this county end up in";
              this draws the map that answer was read OFF — the Drought Monitor's
-             own weekly polygons, translucent, in the same five class colors.
+             own weekly map, in the same five class colors.
+
+             A HARD SWITCH, not an overlay (2026-08-27). It shipped translucent
+             over the choropleth, with a slider for its strength, and the owner
+             walked that back on sight: two maps of one week blended together
+             answer the same question twice at every pixel. On, the counties all
+             go to the legend's None and the polygons draw opaque over them; the
+             county and state lines stay above both, so a reader can still see
+             which county a blob is sitting on.
 
              Published at about 1:2,000,000 and drawn exactly as published: its
              edges overrun the coastline, which is the map rather than an error,
@@ -481,11 +489,9 @@
              product to look tidier than it is. Off by default, remembered per
              this view, and it follows the week scrubbed above.
 
-             No bespoke JS for the TOGGLE: app.js picks both buttons up
-             generically from `[data-choice]` (§ Enumerated choices), which is
-             the machinery this is the first shipped user of. The strength
-             slider below them is wired by hand, because a choice is an
-             enumeration and this is a number. -->
+             No bespoke JS at all: app.js picks both buttons up generically from
+             `[data-choice]` (§ Enumerated choices), which is the machinery this
+             is the first shipped user of. -->
         <section class="sfsa-drawer-section" id="usdm-polygons-seg" data-view="usdm" hidden>
           <h2 class="sfsa-drawer-title" id="usdm-polygons-title">USDM polygons</h2>
           <div class="seg-btns" role="group" aria-labelledby="usdm-polygons-title">
@@ -494,30 +500,10 @@
             <button type="button" class="nav-btn seg-btn" id="btn-polygons-on"
                     data-choice="polygons" data-value="on" aria-pressed="false">On</button>
           </div>
-          <!-- Unhidden by app.js only while the polygons are ON: a strength
-               control for a layer that is not drawn is a slider with nothing on
-               the other end of it. The same narrower-than-its-section
-               arrangement #elig-source-wrap uses, and for the same reason.
-
-               There is no single right opacity — reading the drought's own
-               shape and reading the county underneath it pull in opposite
-               directions — so the reader gets the number. 45% is where it
-               starts, which is the look this overlay shipped with.
-
-               The kit's `.sfsa-range` row, exactly like the year slider above:
-               a CLIPPED <label> (the accessible name has to survive a closed
-               drawer, so it is sr-only rather than absent) and an <output>
-               bound to the input by `for`. -->
-          <div id="usdm-opacity-wrap" hidden>
-            <div class="sfsa-range">
-              <label class="control-label sr-only" for="opacity-range">Overlay opacity</label>
-              <input type="range" id="opacity-range" min="0" max="100" step="5" value="45">
-              <output id="opacity-out" for="opacity-range">45%</output>
-            </div>
-          </div>
           <p class="control-note">
-            The Drought Monitor's own weekly map, drawn as published (~1:2M), so
-            its edges run past the coastline.
+            Replaces the county colors with the Drought Monitor's own weekly map,
+            drawn as published (~1:2M) — county and state lines stay for
+            reference.
           </p>
         </section>
 
