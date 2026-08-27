@@ -148,9 +148,30 @@ flip (`swapVintage` inserts the arriving stack BELOW the lowest resident
 layer, so a mid-stack app layer is stranded above the new stack on every swap
 — `handle.layers.line`, read at the moment of use, is the anchor both there
 and at creation). A week scrub refetches WITHOUT bumping `data-ngp-view-seq`;
-the marker, not the pill, is the overlay's settle signal. Clear-before-fetch:
-an uncached target week empties the source before fetching, because last
-week's D4 blob over this week's choropleth is a map that lies.
+the marker, not the pill, is the overlay's settle signal.
+
+**The week cutover is FUSED (2026-08-27, owner-reported).** With the overlay
+on, a scrub used to repaint the counties instantly and the polygons a fetch
+later — two cutovers, and the old polygons were CLEARED at scrub start. Now
+`recolor()` packages its whole apply-tail (`handle.recolor`, the live
+region, the card) into `sync({onSettle})`, and the module releases it in the
+SAME TASK as the incoming week's drawable `sourcedata` — the old coherent
+picture (old counties + old polygons) holds through the fetch, then one
+flip. Clear-before-fetch is REVERSED: it existed because the counties moved
+first; under the hold, old-over-old is the truth. Not fusing (toggle-on from
+nothing, same-week recolors, the other families) is byte-for-byte the old
+synchronous path; failures and `missing` still release the tail (the county
+repaint is never lost to the overlay); a 6 s `HOLD_CEILING_MS` releases it
+if a fetch never answers, because `applyDataset` now AWAITS `recolor()`
+before `bumpViewSeq` — the seq marker means "recolored and flushed" and must
+not lie over a held tail. Measured: counties never lead the polygons (0
+ticks, structurally — the tail releases only after `isSourceLoaded`); the
+residual is ONE ~16 ms rendered frame of new polygons over old counties,
+because the kit's `recolor()` coalesces feature state to its own rAF while
+MapLibre queues a render before firing `sourcedata`. Closing that last
+frame needs a synchronous feature-state flush in the kit — a v0.4.2
+candidate (§ Open threads). Pre-fix the mismatch was the whole fetch,
+270–480 ms.
 
 Three facts measured on the way in, worth not rediscovering:
 
@@ -167,9 +188,19 @@ Three facts measured on the way in, worth not rediscovering:
   throw** — it reports through the map's error event, straight into the
   console the harnesses collect. Same lesson as the missing-`sourceLayer` one
   from the tiled cutover; the harness probe gates the query on `getLayer()`.
+- **`queryRenderedFeatures` does not read the frame** (2026-08-27): it
+  answers from the source cache as soon as the worker's tiles land, BEFORE
+  the frame that draws them — and `getFeatureState` flips at the kit's
+  coalesced rAF flush, one frame AFTER the app applies. A frame probe built
+  on "rendered means painted" fails a correct app; the fused-cutover gate's
+  witnesses read the SAME PIXEL (a point query at the fixture county's
+  centroid) and the hard-zero direction is "counties never lead", which is
+  structural. Ground truth on actual pixels needs `map.on('render')` +
+  scanline reads.
 
-Gates after: verify prints 570 (was 535 — new `8e` in `usdmExtraChecks`,
-including the slider's eight, plus
+Gates after: verify prints 580 (was 535 — new `8e` in `usdmExtraChecks`,
+including the slider's eight, plus the fused cutover's own section running
+the frame probe COLD then WARM, plus
 `data-ngp-overlay` in the MARKERS table and the `overlay` fixture block in
 tools/config.mjs, all driven at the frozen 2012-07-24 week, never the moving
 newest); the a11y `usdm-view` state now audits with the overlay ON;
@@ -481,7 +512,16 @@ priority order:
    the pass is a real A/B comparison rather than a wait — and the keyboard-only
    walk should confirm that focusing a dataset button warms it, since `focus` is
    the keyboard's half of warm-on-intent and touch has no hover at all.
-2. **A cancelled tile request used to be reported as an error.** MapLibre
+2. **One rendered frame still mismatches on a fused week cutover** — ~16 ms
+   of the new polygons over the old counties, measured on framebuffer
+   scanlines (§ Where we left off). The app cannot close it: the kit's
+   `recolor()` coalesces feature state to its own rAF, and MapLibre's
+   `Map._onData` queues a render before it fires `sourcedata`. The fix is a
+   kit **v0.4.2** candidate — a synchronous feature-state flush the app can
+   call inside the drawable task — and `check-tiled.mjs` would want a frame
+   gate like the app's. One frame, one property, but it is the same class of
+   honesty the buffered swap bought, and the seam is known.
+3. **A cancelled tile request used to be reported as an error.** MapLibre
    decides whether a rejection was a cancellation with exactly one test —
    `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
    with that name; at the network layer Chrome gives
