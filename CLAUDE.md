@@ -535,7 +535,19 @@ priority order:
    the pass is a real A/B comparison rather than a wait — and the keyboard-only
    walk should confirm that focusing a dataset button warms it, since `focus` is
    the keyboard's half of warm-on-intent and touch has no hover at all.
-2. **One rendered frame still mismatches on a fused week cutover** — ~16 ms
+2. **verify.mjs is now the CI wall (~10.3 min).** The audit workflow runs as
+   FOUR PARALLEL JOBS since 2026-08-27 (checks ~20 s · verify ~11 min · a11y
+   as a 4-leg theme×viewport matrix ~4 min · lighthouse ~1.3 min; wall 25 →
+   ~11 min, identical coverage; `A11Y_THEME`/`A11Y_VIEWPORT` filter the a11y
+   harness, unset = full matrix, bogus value = loud exit 1). Sharding verify
+   itself was assessed 2026-08-27: feasible (sections are already
+   runtime-independent; the honest shape is one file per section, the glob as
+   the registry, plus a summary job asserting the shards' union — never a
+   hand-maintained list), but it is a ~7,000-line move of the most
+   load-bearing gate. The cheap first move: `console.time` per section
+   banner to learn whether the 10.3 min is one section or twenty, then split
+   only the heavy one behind an env gate the way the a11y filter works.
+3. **One rendered frame still mismatches on a fused week cutover** — ~16 ms
    of the new polygons over the old counties, measured on framebuffer
    scanlines (§ Where we left off). The app cannot close it: the kit's
    `recolor()` coalesces feature state to its own rAF, and MapLibre's
@@ -544,7 +556,7 @@ priority order:
    call inside the drawable task — and `check-tiled.mjs` would want a frame
    gate like the app's. One frame, one property, but it is the same class of
    honesty the buffered swap bought, and the seam is known.
-3. **The scale bar is invisible to axe and absent from the poster.** Every
+4. **The scale bar is invisible to axe and absent from the poster.** Every
    a11y-audit state sits at the national fit, where the region-gated bar is
    correctly hidden — one state with a zoomed `?lng&lat&zoom` camera would
    sweep it (risk is low: `role="img"` + `aria-label`, vendor colors the
@@ -552,7 +564,7 @@ priority order:
    so the DOM control never reaches the PNG; painting a bar there belongs in
    that file's own idiom beside the title/legend/attribution, using the
    poster camera's region and factor.
-4. **A cancelled tile request used to be reported as an error.** MapLibre
+5. **A cancelled tile request used to be reported as an error.** MapLibre
    decides whether a rejection was a cancellation with exactly one test —
    `err.name === 'AbortError'` — and an aborted `fetch()` does not always reject
    with that name; at the network layer Chrome gives
@@ -580,28 +592,28 @@ priority order:
    why this took two harness changes to place: the source LOCATION in the
    console capture (now permanent, and what put it in the bundle rather than in
    app code), then a `requestfailed` listener to name `net::ERR_ABORTED`.
-5. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
+6. **Kit gap worth a CONSUMERS.md note**: `scrollable-region-focusable`
    fires on any `.sfsa-card-body` whose content has no focusable element at
    compact widths — the other views escape only because their card bodies
    contain a `<details><summary>`. The durable fix belongs in the kit's
    card component; this app carries a per-view `tabindex="0"` meanwhile.
-6. **Fire events for eligibility** remain out of scope until the archive
+7. **Fire events for eligibility** remain out of scope until the archive
    adds them to an events payload.
-7. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
+8. **Crosswalk lineage**: `assets/fsa-fips-crosswalk.json` is committed here
    for now; moving it behind an archive-published Pages URL is a one-line
    URL change in `js/decoders/crosswalk.js`. It now serves TWO datasets rather
    than five — the nClimGrid grazing periods and the disaster designations —
    because everything else draws its own polygons.
-8. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
+9. **Connecticut on the NDMC-reported set** stays uncoloured, and that is
    honest: the archive keys nine planning regions and the FSA LFP determination
    boundaries answer eight traditional counties. Drawing it would need a
    planning-region tileset, which nobody publishes. The *Census counties*
    dataset already shows Connecticut correctly from program year 2023.
-9. **Compact reveal is best-effort only**: the bottom sheet gets a
+10. **Compact reveal is best-effort only**: the bottom sheet gets a
    mesonet-style pan, which the bounds cage clamps at the fit floor. A
    vertical push (`#map { bottom: var(--sheet-h) }` + resize, mirroring the
    desktop push) is the symmetric fix if it ever matters on phones.
-10. **The card's "Combined from" rows are gone from the drought view**, and that
+11. **The card's "Combined from" rows are gone from the drought view**, and that
    was a real loss to the reduction story, not an oversight — an identity
    authority has no constituents. It survives on the two views that still
    crosswalk.

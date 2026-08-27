@@ -8,6 +8,16 @@
 
      node tools/a11y-audit.mjs [workspaceRoot]
 
+   Two optional env filters slice the theme × viewport matrix, and only that —
+   every combo that runs still walks every state:
+
+     A11Y_THEME=light|high-contrast       one theme  (unset = both)
+     A11Y_VIEWPORT=wide|narrow            one size   (unset = both)
+
+   CI sets both, once per leg of a four-way matrix, so the 780 s axe pass runs
+   as four parallel ~195 s ones. A value matching neither list exits 1 naming
+   the valid values — never a silent zero-combo pass. See § The combo filter.
+
    Tooling is dev-only and lives in tools/package.json (the repo-root
    package.json stays gitignored, per the kit's zero-dependency inheritance):
 
@@ -104,7 +114,8 @@
    two places is eighteen chances for one of them to drift a version behind,
    and the failure mode is that both harnesses stay green while auditing two
    subtly different pages. The knobs that are genuinely this harness's — the
-   settle window, the state list — are still here.
+   settle window, the state list, the combo filter that lets CI fan the matrix
+   out without either list moving — are still here.
    ========================================================================== */
 import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
@@ -126,6 +137,46 @@ const AUDIT_VIEWPORTS = [
   { name: 'wide', ...VIEWPORTS.wide },
   { name: 'narrow', ...VIEWPORTS.compact },
 ];
+
+/* ── The combo filter ──────────────────────────────────────────────────────
+   CI runs this harness as FOUR PARALLEL LEGS, one theme × one viewport each
+   (.github/workflows/audit.yaml, job `a11y`), because the four combos never
+   touch each other's page and 780 s of them in series was most of a 25-minute
+   workflow. Each leg still walks the WHOLE state list: the split is across the
+   matrix, never across the states.
+
+   UNSET means the full matrix, so `node tools/a11y-audit.mjs` locally is
+   exactly the run it has always been. Setting one and not the other is a legal
+   slice too — `A11Y_THEME=high-contrast` alone audits both viewports of it,
+   which is the shape you want when chasing one theme's contrast finding.
+
+   A VALUE THAT MATCHES NOTHING EXITS 1, naming the valid values. It must never
+   be a silent zero-combo pass: a typo in the workflow matrix, or a rename of a
+   theme in tools/config.mjs, would otherwise turn a leg into a green check
+   that audited an empty list — and four green checks would say the app is
+   accessible on the strength of no axe passes at all. The loud failure is what
+   lets the workflow hand-enumerate the four combos safely. */
+function pickCombos(list, envName, noun, nameOf) {
+  const want = process.env[envName];
+  if (want === undefined || want === '') return list;
+  const hit = list.filter((item) => nameOf(item) === want);
+  if (!hit.length) {
+    console.error(`\n${envName}=${JSON.stringify(want)} matches no ${noun} this `
+      + 'harness knows.');
+    console.error(`  valid values: ${list.map(nameOf).join(', ')}`);
+    console.error('  (leave it unset to audit all of them)');
+    process.exit(1);
+  }
+  return hit;
+}
+
+const themes = pickCombos(THEMES, 'A11Y_THEME', 'theme', (t) => t);
+const viewports = pickCombos(AUDIT_VIEWPORTS, 'A11Y_VIEWPORT', 'viewport', (v) => v.name);
+if (themes.length * viewports.length < THEMES.length * AUDIT_VIEWPORTS.length) {
+  console.log(`combo filter: ${themes.join('/')} × ${viewports.map((v) => v.name).join('/')} `
+    + `— ${themes.length * viewports.length} of ${THEMES.length * AUDIT_VIEWPORTS.length} `
+    + 'combos, every state in each');
+}
 
 /** After ngpReady: the font swap, the legend, the map's first frames. */
 const SETTLE_MS = 1500;
@@ -610,8 +661,8 @@ async function clearSearch(page) {
 const rows = [];
 let failed = false;
 
-for (const theme of THEMES) {
-  for (const vp of AUDIT_VIEWPORTS) {
+for (const theme of themes) {
+  for (const vp of viewports) {
     const label = `${theme} · ${vp.name} ${vp.width}×${vp.height}`;
     // @axe-core/playwright requires a page created from an explicit context.
     const context = await browser.newContext({
